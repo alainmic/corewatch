@@ -1,0 +1,237 @@
+<p align="center">
+  <img src="docs/images/icon.svg" width="112" alt="Corewatch icon: a cyan telemetry waveform on a dark slate badge" />
+</p>
+
+<h1 align="center">Corewatch</h1>
+
+<p align="center">
+  <b>Compact system telemetry, thermal/battery wattage inspector, display mode auditor, and "Caffeine" keep-awake utility for Googlebooks.</b><br>
+  Real-time thermal headroom &amp; per-core P/E CPU frequencies, live USB-C PD battery wattage (<code>W = V × I</code>), external monitor refresh rate &amp; 30Hz bottleneck detection, memory/<code>zram</code> swap pressure, and a 320×420dp Mini-HUD: one universal download for Intel and Snapdragon Googlebooks.
+</p>
+
+<p align="center">
+  <a href="../../releases/latest/download/Corewatch.apk"><b>⬇ Download Corewatch.apk</b></a>
+  &nbsp;·&nbsp; <a href="#what-it-is">Features</a>
+  &nbsp;·&nbsp; <a href="#mini-hud-and-workbench">Mini-HUD &amp; Workbench</a>
+  &nbsp;·&nbsp; <a href="#caffeine-and-power">Caffeine &amp; Power</a>
+  &nbsp;·&nbsp; <a href="#made-for-the-googlebook">Googlebook Design</a>
+  &nbsp;·&nbsp; <a href="#keyboard-shortcuts">Shortcuts</a>
+  &nbsp;·&nbsp; <a href="#limitations">Limitations</a>
+  &nbsp;·&nbsp; <a href="#install">Install</a>
+  &nbsp;·&nbsp; <a href="#privacy">Privacy</a>
+  &nbsp;·&nbsp; <a href="#how-its-built">Architecture</a>
+  &nbsp;·&nbsp; <a href="#licenses">Licenses</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Googlebook_OS-Android_15+-133F43" alt="Googlebook OS, Android 15+" />
+  <img src="https://img.shields.io/badge/developed_on-a_Googlebook-E0407E?style=flat" alt="Developed on a Googlebook" />
+  <img src="https://img.shields.io/badge/developed_for-Googlebooks-1F6F66" alt="Developed for Googlebooks" />
+  <img src="https://img.shields.io/badge/license-Apache_2.0-555555" alt="Apache 2.0 license" />
+</p>
+
+<p align="center">
+  <sub>A personal passion project, proudly developed on and for a Googlebook in its Linux Terminal.<br>
+  Not affiliated with, endorsed by, or sponsored by Google or any employer (<a href="#about-this-project">more</a>).</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/workbench_light.png" width="900" alt="Corewatch Full Workbench in Light Theme showing live thermal, wattage, and CPU pills in the desktop caption bar, thermal headroom sparkline, and per-core P/E CPU frequency bars" />
+  <br>
+  <sub>Live thermal, wattage, and CPU pills sit right inside the desktop caption bar with no wasted vertical space.</sub>
+</p>
+
+---
+
+## What it is
+
+**Corewatch** (`com.droid.corewatch`) brings the high-density hardware telemetry of **macOS Activity Monitor / iStat Menus**, **CoconutBattery**, and **Amphetamine** to Android laptops and Googlebooks. Built from scratch in 100% Kotlin with Jetpack Compose and Material 3, Corewatch gives power users instant visibility into thermal headroom, per-core CPU frequencies, USB-C PD charging wattage, memory/`zram` swap pressure, and external monitor negotiation—without oversized mobile typography:
+
+* **Dual-layout desktop UI & Translucent Always-On-Top PiP Mini-HUD (`Ctrl+M`):**
+  * **Full Workbench (`1120dp × 760dp`):** Live thermal/wattage/CPU telemetry badges drawn directly into Android 15's desktop caption bar with four diagnostic tabs (`Thermals & CPU`, `Battery & W`, `Memory & Swap`, `Displays & Net`) and quick actions immediately below.
+  * **Translucent Always-On-Top Mini-HUD (`340dp × 384dp`):** Ultra-dense floating Picture-in-Picture (`TYPE_APPLICATION_OVERLAY`) sparkline dashboard with **adjustable translucency (`88%` / `75%` / `100%`)**, drag-to-reposition header, and one-click `"↗ Full"` restore, using crisp `11sp`/`12sp` tabular monospace typography (`fontFeatureSettings = "tnum"`).
+* **Thermal & per-core CPU frequency telemetry:**
+  * Displays real-time **Thermal Status** (`Nominal`, `Light Throttling`, `Moderate Throttling`, `Severe Throttling`, `Critical Thermal`), predictive **Thermal Headroom** (`PowerManager.getThermalHeadroom(10)`), battery temperature (`°C` / `°F`), and world-readable `/sys/class/thermal/` and `/sys/class/hwmon/` sensors.
+  * Live per-core frequency bars and 60-second sparklines reading `/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq` vs. `scaling_max_freq`, automatically classifying **Performance (`P-Core`)** and **Efficiency (`E-Core`)** clusters on hybrid Intel Core Ultra and Qualcomm Snapdragon processors.
+* **Live battery wattage (`W = V × I`), USB-C PD profiler & drain tracker:**
+  * Computes signed real-time power flow in Watts from `EXTRA_VOLTAGE` and `BATTERY_PROPERTY_CURRENT_NOW` / `BATTERY_PROPERTY_CURRENT_AVERAGE` (auto-normalizing microamps vs. milliamps across fuel-gauge drivers), displaying e.g. **`+46.6 W (USB-C PD / AC)`** or **`-8.4 W (Discharging — Est. 6h 15m remaining)`**.
+  * Reports battery health, cycle count (`EXTRA_CYCLE_COUNT`), voltage (`mV`), current (`mA`), capacity (`%`), energy counter (`Wh`), and a 60-second session power curve.
+* **"Caffeine" Keep-Awake controller (`Ctrl+K`) & Quick Settings Tile:**
+  * One-click toggle in the caption bar and in the system Quick Settings tray (`CaffeineTileService`) to prevent the Googlebook from dimming or sleeping during compilations, large file transfers, or docked presentations.
+  * Configurable timer modes (**30m**, **1h**, **Indefinitely**) plus smart auto-triggers (*Keep awake while charging on AC* and *Keep awake while an external display is connected*) with an automatic **`< 15%` low-battery safety cutoff**.
+* **External display & refresh rate auditor:**
+  * Queries `DisplayManager.getDisplays()` to inspect the built-in laptop panel and every connected external monitor (`HDMI` / `USB-C DP Alt Mode`), showing negotiated resolution, refresh rate (`Hz`), physical vs. logical DPI, HDR capabilities (`Dolby Vision`, `HDR10`, `HDR10+`, `HLG`), all supported `Display.Mode` configurations, and a **30Hz Dock Bottleneck Warning** whenever a `>= 1440p` external monitor is negotiated below `50Hz`.
+* **Memory + `zram` swap pressure & 1-click Markdown diagnostic copy (`Ctrl+Shift+C`):**
+  * Parses `/proc/meminfo` (`MemTotal`, `MemAvailable`, `Cached`, `Buffers`, `SwapTotal`, `SwapFree`, `Dirty`) and `ActivityManager.MemoryInfo` alongside live network throughput (`TrafficStats` RX/TX `Mbps`) and internal storage capacity.
+  * Generates a clean, anonymized Markdown hardware & thermal diagnostic table on the clipboard for pasting directly into community forum threads or bug reports.
+
+---
+
+<h2 id="mini-hud-and-workbench">Mini-HUD (Translucent Always-On-Top PiP) &amp; Full Workbench</h2>
+
+Corewatch transitions seamlessly between a multi-column desktop workbench and a translucent Always-On-Top Picture-in-Picture (PiP) Mini-HUD:
+
+* **Translucent Always-On-Top Mini-HUD (`Ctrl+M`):** Toggling Mini-HUD (`Ctrl+M` or the title-bar Mini-HUD button) spawns a floating, Always-On-Top `340dp × 384dp` overlay (`TYPE_APPLICATION_OVERLAY` when "Display over other apps" is granted, or a translucent compact freeform window otherwise) with **clickable opacity cycling (`88%` → `75%` → `100%`)**, drag-anywhere positioning, and four stacked 60-second sparkline cards (**CPU**, **Thermal**, **Battery Wattage**, and **RAM & `zram` Swap**). Clicking **`↗ Full`** immediately restores the Full Workbench window.
+* **Zero-allocation ring buffers:** Time-series histories use fixed-capacity primitive circular buffers (`FloatRingBuffer`), rendering 60-second `Canvas` line and area sparklines at 1Hz without allocating `Path` objects on the UI thread.
+* **Jitter-free tabular typography:** Every numeric metric uses OpenType tabular numerals (`tnum`) so live MHz frequencies, wattages, and throughput counters never shift horizontally as values update.
+
+<p align="center">
+  <img src="docs/images/mini_hud.png" width="900" alt="Corewatch Translucent Always-On-Top Mini-HUD PiP overlay in Dark Mode and Light Mode at 88% opacity showing 4 stacked sparkline cards over the desktop" />
+  <br>
+  <sub>Translucent Always-On-Top Mini-HUD PiP overlay (<code>88%</code> opacity, toggleable <code>88% / 75% / 100%</code>) in Dark Mode (left) and Light Mode (right).</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/workbench_memory.png" width="900" alt="Corewatch Battery and Power Workbench tab showing live USB-C PD wattage flow and the Caffeine Keep-Awake controller" />
+  <br>
+  <sub>Battery &amp; Power tab showing live signed USB-C PD wattage (<code>+46.6 W</code>) alongside the Caffeine Keep-Awake controller and auto-trigger rules.</sub>
+</p>
+
+---
+
+<h2 id="caffeine-and-power">Caffeine Keep-Awake &amp; USB-C Power Telemetry</h2>
+
+Long compilations, container builds, and docked multi-monitor sessions shouldn't be interrupted by aggressive mobile screen-off timers or silent USB-C hub power drops:
+
+* **Caption-bar & Quick Settings integration:** Toggle Caffeine from Corewatch's title bar (`Ctrl+K`) or add the **Corewatch Caffeine** tile to Android's system Quick Settings panel for instant access even when Corewatch is closed.
+* **Rule-based keep-awake automation:** Enable **Auto-enable on AC / USB-C PD charging** or **Auto-enable when external monitor is attached** so your Googlebook stays awake automatically when docked at your desk and resumes normal battery-saving sleep the moment you unplug.
+* **Low-battery protection:** Even if Indefinite mode or an external-display rule is active, Corewatch automatically releases its wake lock if battery charge drops below **15%** while discharging.
+
+---
+
+<h2 id="made-for-the-googlebook">Made for the Googlebook</h2>
+
+Mobile system monitor apps were designed for narrow portrait phone screens with oversized cards and no awareness of desktop windowing. Corewatch is engineered specifically for Googlebook laptops and desktop setups:
+
+* **Native Android 15+ desktop caption bar:** Corewatch opts into freeform caption-bar inset handling (`WindowInsets.Type.captionBar()`), dynamically keeping navigation tabs anchored on the left and status/action buttons clear of the system minimize/maximize/close controls across any window resize.
+* **Keyboard-first workflow:** Every tab, mode switch, pause/resume toggle, counter reset, and clipboard export has a dedicated keyboard shortcut. Press `F1` or `?` anytime to view the interactive shortcut cheatsheet.
+* **Expressive Dark, Light & System themes:** High-contrast Carbon Slate Dark theme by default for low glare in a corner HUD, plus crisp Alabaster Light and automatic System theme modes.
+
+<p align="center">
+  <img src="docs/images/workbench_overview.png" width="900" alt="Corewatch Full Workbench in Carbon Slate Dark Theme showing live thermal/wattage pills in the desktop caption bar, thermal headroom sparkline, and per-core P/E CPU frequency bars" />
+  <br>
+  <sub>Carbon Slate Dark theme with live thermal headroom, 60-second CPU frequency scaling sparkline, and per-core P/E cluster frequency bars.</sub>
+</p>
+
+---
+
+<h2 id="keyboard-shortcuts">Desktop Keyboard Shortcuts</h2>
+
+| Shortcut | Action |
+| :--- | :--- |
+| `Ctrl+M` | Toggle between **Full Workbench** and **Compact Mini-HUD** mode |
+| `Ctrl+1` .. `Ctrl+4` | Switch tabs: `1` Overview & Thermals, `2` Battery & Power, `3` Memory & Storage, `4` Displays & Network |
+| `Ctrl+K` | Toggle **Caffeine Keep-Awake** active state (`Off` ↔ `Indefinite`) |
+| `Space` | Pause / Resume live telemetry sampling and graph scrolling to inspect a spike |
+| `Ctrl+Shift+C` | Copy anonymized Markdown System & Thermal Diagnostic Snapshot to clipboard |
+| `F5` / `Ctrl+R` | Reset session min/max/average telemetry counters and sparkline history |
+| `F1` / `?` | Open the keyboard shortcuts cheatsheet dialog |
+
+---
+
+<h2 id="limitations">Known Limitations</h2>
+
+Because Corewatch runs as a standard, unprivileged open-source Android application without root access or platform OS signing keys, a few Android SELinux (`untrusted_app`) security boundaries apply:
+
+* **Vendor-Specific Thermal Zones & Fan RPMs:** Corewatch always reports official Android thermal status (`PowerManager.getCurrentThermalStatus()`), predictive thermal headroom (`PowerManager.getThermalHeadroom()`), battery temperature (`BatteryManager.EXTRA_TEMPERATURE`), and all world-readable `/sys/class/thermal/` and `/sys/class/hwmon/` nodes. On hardware where specific embedded-controller (EC) fan tachometers or vendor thermal zones are restricted by SELinux policy, Corewatch gracefully falls back to the standard `PowerManager` and `BatteryManager` thermal envelope telemetry.
+* **Per-Process CPU Breakdown:** Android 10+ restricts `/proc/[pid]/stat` enumeration across other applications' processes for untrusted packages. Corewatch therefore focuses on hardware-level per-core CPU frequency scaling (`/sys/devices/system/cpu/cpu*/cpufreq/`), system-wide memory and `zram` swap pressure (`/proc/meminfo`), and total device network throughput (`TrafficStats`).
+
+---
+
+<h2 id="install">Install</h2>
+
+**[⬇ Download Corewatch.apk](../../releases/latest/download/Corewatch.apk)** (universal pure-JVM APK for Intel `x86_64` and Snapdragon `arm64-v8a` Googlebooks).
+
+1. **Download the APK:** Click the link above to download **`Corewatch.apk`**.
+2. **Open the file:** Click the download notification in Chrome, or open `Corewatch.apk` in Wayfinder / Files from your `Downloads` folder.
+3. **Allow install:** If Android asks to permit installing unknown apps, click **Settings**, enable **Allow from this source**, and tap **Install**.
+4. **Optional Quick Settings Tile:** Open the system Quick Settings tray, click the edit (pencil) icon, and drag the **Corewatch Caffeine** tile into your active tiles for one-click keep-awake control from anywhere.
+
+> **Updating:** Install newer versions of `Corewatch.apk` directly over your existing installation. Your Caffeine auto-trigger preferences will remain preserved.
+
+---
+
+<h2 id="privacy">Privacy &amp; Security</h2>
+
+* **Zero network permissions, zero telemetry, zero ads:** Corewatch does not request `android.permission.INTERNET` and contains no analytics, crash reporters, advertising SDKs, or third-party tracking scripts. All hardware telemetry stays 100% in memory on your device.
+* **Minimal permission footprint:** Requests only `android.permission.WAKE_LOCK` (so the user-controlled Caffeine controller can keep the screen awake when explicitly enabled) and optional `android.permission.SYSTEM_ALERT_WINDOW` (used solely to float the translucent Always-On-Top Mini-HUD PiP overlay when Mini-HUD mode is toggled).
+* **Anonymized diagnostic snapshots:** The `Ctrl+Shift+C` Markdown snapshot exporter includes only hardware model, CPU architecture, OS version, thermal/power/memory metrics, and display modes—never serial numbers, MAC/IP addresses, account names, or personal file paths. All strings are sanitized against Markdown table and control-character injection.
+* **Strict backup exclusions:** App preferences are excluded from cloud backups and device-to-device transfers (`data_extraction_rules.xml` & `backup_rules.xml`).
+* **Audited, fuzz-tested & 96.1% code coverage:** Backed by automated unit tests, headless Robolectric Compose UI tests across desktop and Mini-HUD window sizes (**96.1% overall line coverage**, **100% class coverage**), and property-based fuzzers (**125,000+ iterations** across `/proc/meminfo`, `cpufreq`, `thermal_zone`/`hwmon`, battery wattage math, display mode auditing, and Markdown escaping). See [SECURITY.md](SECURITY.md) for vulnerability reporting.
+
+---
+
+<h2 id="how-its-built">How it's built</h2>
+
+Corewatch is written in 100% modern Kotlin with Jetpack Compose:
+
+```mermaid
+flowchart LR
+    subgraph Sources["Unprivileged Android 15/16 & Linux Sysfs Telemetry"]
+        PowerMgr["PowerManager\n(Thermal Headroom & Status)"]
+        BattMgr["BatteryManager\n(Current uA, Voltage mV,\nTemp, Cycle Count, Health)"]
+        Sysfs["Sysfs / Procfs Readers\n(/sys/devices/system/cpu/cpufreq,\n/proc/meminfo, zram, thermal_zone)"]
+        DispMgr["DisplayManager & TrafficStats\n(Connected Monitors, Hz, HDR,\nNetwork RX/TX Mbps)"]
+    end
+
+    subgraph Corewatch["Corewatch Desktop App (Kotlin + Jetpack Compose)"]
+        Sampler["Low-Overhead Coroutine Sampler\n(1Hz FloatRingBuffer History,\nZero Allocations on UI Thread)"]
+        FullUI["Full Workbench Window\n(Thermals/CPU, Battery/USB-C W,\nMemory/Swap, Displays/Net)"]
+        MiniHUD["Compact Mini-HUD Mode\n(320x420dp Dense Sparkline Panel)"]
+        Caffeine["Caffeine Keep-Awake Controller\n(WakeLock + Quick Settings Tile +\nAC/External Display Auto-Triggers)"]
+        Export["Diagnostic Snapshot Exporter\n(1-Click Anonymized Markdown Table)"]
+    end
+
+    PowerMgr --> Sampler
+    BattMgr --> Sampler
+    Sysfs --> Sampler
+    DispMgr --> Sampler
+    Sampler --> FullUI
+    Sampler --> MiniHUD
+    Caffeine --> FullUI
+    Caffeine --> MiniHUD
+    Sampler --> Export
+```
+
+* **Language & Tooling:** Kotlin 2.3, Jetpack Compose BOM `2026.03.01`, Material 3, Gradle 9.1, Android SDK 36 (Android 15+ Desktop Windowing).
+* **Pure Data & Telemetry Architecture (`com.droid.corewatch.data`):**
+  * `SysfsParsers`: Defensive, bounds-checked parsers for `/proc/meminfo`, `/sys/devices/system/cpu/cpu*/cpufreq/`, `/sys/class/thermal/`, and `/sys/class/hwmon/`.
+  * `BatteryPowerCalculator`: Signed wattage (`W = V × I`), unit normalization (`µA`/`mA`, `mV`/`V`), charger profiling, and remaining charge/discharge time estimation.
+  * `DisplayAuditor`: External monitor refresh rate, resolution, DPI scale, HDR format mapping, and `< 50Hz` dock bottleneck detection.
+  * `CaffeinePolicy`: Pure state evaluator for timed keep-awake modes, AC/external-display auto-triggers, and the `< 15%` low-battery safety cutoff.
+  * `DiagnosticReportBuilder`: Anonymized, Markdown-injection-safe hardware and thermal snapshot formatter.
+
+```bash
+# Clone and build directly in the Googlebook Linux Terminal
+git clone https://github.com/alainmic/corewatch.git
+cd corewatch
+./gradlew assembleDebug                                          # Builds app/build/outputs/apk/debug/Corewatch-debug.apk
+./gradlew testDebugUnitTest createDebugUnitTestCoverageReport    # Runs all unit, UI, and fuzz tests + JaCoCo report
+```
+
+---
+
+## Made on a Googlebook
+
+Corewatch was created, built, and tested directly on a Googlebook:
+
+* **Developed in the Linux Terminal:** Kotlin sources, Gradle builds, unit/UI/fuzz test suites, and APK packaging were executed inside the Googlebook's built-in Linux environment.
+* **Tested headlessly and live on-device:** Verified both on-device in freeform desktop windowing and headlessly via Robolectric Compose UI tests across full workbench (`1120×760dp`) and minimal Mini-HUD (`320×420dp`) window geometries.
+* **Pure JVM portability:** Zero native C/C++ `.so` libraries, allowing a single lightweight APK to run natively on both Intel `x86_64` and Qualcomm Snapdragon `arm64-v8a` Googlebooks.
+
+---
+
+<h2 id="about-this-project">About this project</h2>
+
+**Corewatch** is an independent, open-source passion project developed on and for Googlebooks to give Googlebook users compact, desktop-grade visibility into thermals, per-core CPU frequencies, battery wattage, memory swap pressure, and external display negotiation.
+
+It is **not affiliated with, endorsed by, or sponsored by Google or any employer**. See [CONTRIBUTING.md](CONTRIBUTING.md) if you'd like to contribute.
+
+---
+
+<h2 id="licenses">Licenses</h2>
+
+* **Corewatch source code:** Licensed under the [Apache License, Version 2.0](LICENSE).
+* **Third-Party Libraries:** Built using open-source AndroidX, Jetpack Compose, Kotlin, Guava `ListenableFuture`, and JSpecify libraries. Complete license texts and attributions are available in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+<p align="center"><sub>Crafted with passion on a Googlebook, for the Googlebook community.</sub></p>
