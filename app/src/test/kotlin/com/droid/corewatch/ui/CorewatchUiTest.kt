@@ -563,6 +563,13 @@ class CorewatchUiTest {
             java.io.File(cpu1, "scaling_min_freq").writeText("400000\n")
             java.io.File(cpu1, "scaling_governor").writeText("powersave\n")
 
+            val cpu0Idle = java.io.File(cpuRoot, "cpu0/cpuidle/state0").apply { mkdirs() }
+            val cpu0IdleTime = java.io.File(cpu0Idle, "time")
+            cpu0IdleTime.writeText("1000000\n")
+            val cpu1Idle = java.io.File(cpuRoot, "cpu1/cpuidle/state0").apply { mkdirs() }
+            val cpu1IdleTime = java.io.File(cpu1Idle, "time")
+            cpu1IdleTime.writeText("2000000\n")
+
             val thermalRoot = java.io.File(tempRoot, "thermal").apply { mkdirs() }
             val tz0 = java.io.File(thermalRoot, "thermal_zone0").apply { mkdirs() }
             java.io.File(tz0, "type").writeText("x86_pkg_temp\n")
@@ -596,8 +603,14 @@ class CorewatchUiTest {
                 procMemInfoFile = memInfo,
             )
             val snap1 = populatedCollector.sample(CaffeineConfig(), nowElapsedMs = 1_000L)
+            // Advance 1,000 ms (1,000,000 us): cpu0 sleeps 940,000 us (6% active), cpu1 sleeps 950,000 us (5% active)
+            cpu0IdleTime.writeText("1940000\n")
+            cpu1IdleTime.writeText("2950000\n")
             val snap2 = populatedCollector.sample(CaffeineConfig(), nowElapsedMs = 2_000L)
             assertEquals(2, snap1.cpuCores.size)
+            assertEquals(0.06f, snap2.cpuCores[0].utilizationFraction, 0.01f)
+            assertEquals(0.05f, snap2.cpuCores[1].utilizationFraction, 0.01f)
+            assertEquals("powersave", snap2.cpuCores[1].scalingStateLabel)
             assertTrue(snap1.thermalSensors.any { it.celsius > 50f })
             assertTrue(snap2.memory.totalBytes > 0L)
 

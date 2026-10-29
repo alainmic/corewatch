@@ -34,6 +34,11 @@ class TelemetryCollector(
     private var lastNetSampleElapsedMs: Long = 0L
     private var lastRxBytes: Long = -1L
     private var lastTxBytes: Long = -1L
+    private var lastCpuSampleElapsedMs: Long = 0L
+    private val lastCoreIdleTimeUs = HashMap<Int, Long>()
+    private var discoveredCoreIndices: List<Int>? = null
+    private val cachedStaticCoreAttrs = HashMap<Int, Map<String, String>>()
+    private val cachedCpuIdleFiles = HashMap<Int, List<File>>()
     private var thermalSysfsReadable: Boolean? = null
     private var hwmonSysfsReadable: Boolean? = null
 
@@ -45,7 +50,7 @@ class TelemetryCollector(
 
         val thermalLevel = readThermalLevel(pm)
         val battery = readBattery(bm)
-        val cpuCores = readCpuCores()
+        val cpuCores = readCpuCores(nowElapsedMs)
         val headroom = readThermalHeadroom(pm, thermalLevel, battery.temperatureCelsius)
         val thermalSensors = readThermalSensors(battery.temperatureCelsius, headroom, cpuCores)
         val memory = readMemory(am)
@@ -95,25 +100,86 @@ class TelemetryCollector(
         return maxOf(level.severityFraction, tempRatio)
     }
 
-    private fun readCpuCores(): List<CpuCoreReading> {
+    private fun readCpuCores(nowElapsedMs: Long): List<CpuCoreReading> {
         val rawMap = LinkedHashMap<Int, Map<String, String>>()
+        val currentIdleUsMap = HashMap<Int, Long>()
         val cpuRoot = cpuSysfsRoot
         if (cpuRoot.isDirectory) {
-            for (coreIdx in 0..63) {
+            val indices = discoveredCoreIndices ?: (0..63).filter { idx ->
+                File(cpuRoot, "cpu$idx/cpufreq").isDirectory
+            }.also { found ->
+                if (found.isNotEmpty()) discoveredCoreIndices = found
+            }
+            for (coreIdx in indices) {
                 val freqDir = File(cpuRoot, "cpu$coreIdx/cpufreq")
-                if (!freqDir.isDirectory) continue
-                val attrs = HashMap<String, String>()
-                for (name in listOf("scaling_cur_freq", "scaling_max_freq", "cpuinfo_max_freq", "cpuinfo_min_freq", "scaling_min_freq", "scaling_governor")) {
+                val staticAttrs = cachedStaticCoreAttrs.getOrPut(coreIdx) {
+                    val map = HashMap<String, String>()
+                    for (name in listOf("cpuinfo_max_freq", "scaling_max_freq", "cpuinfo_min_freq", "scaling_min_freq")) {
+                        val v = readSmallFile(File(freqDir, name))
+                        if (v != null) map[name] = v
+                    }
+                    map
+                }
+                val attrs = HashMap<String, String>(staticAttrs)
+                for (name in listOf("scaling_cur_freq", "scaling_governor")) {
                     val v = readSmallFile(File(freqDir, name))
                     if (v != null) attrs[name] = v
                 }
                 if (attrs.isNotEmpty()) {
                     rawMap[coreIdx] = attrs
                 }
+
+                val idleFiles = cachedCpuIdleFiles.getOrPut(coreIdx) {
+                    val idleDir = File(cpuRoot, "cpu$coreIdx/cpuidle")
+                    if (!idleDir.isDirectory) {
+                        emptyList()
+                    } else {
+                        (0..15).mapNotNull { stateIdx ->
+                            File(idleDir, "state$stateIdx/time").takeIf { it.isFile && it.canRead() }
+                        }
+                    }
+                }
+                if (idleFiles.isNotEmpty()) {
+                    var sumIdleUs = 0L
+                    var anyRead = false
+                    for (f in idleFiles) {
+                        val us = readSmallFile(f)?.toLongOrNull()
+                        if (us != null && us >= 0L) {
+                            sumIdleUs += us
+                            anyRead = true
+                        }
+                    }
+                    if (anyRead) {
+                        currentIdleUsMap[coreIdx] = sumIdleUs
+                    }
+                }
             }
         }
         val parsed = SysfsParsers.parseCpuCores(rawMap)
-        if (parsed.isNotEmpty()) return parsed
+        if (parsed.isNotEmpty()) {
+            val dtUs = (nowElapsedMs - lastCpuSampleElapsedMs) * 1_000L
+            val hasValidDeltaWindow = lastCpuSampleElapsedMs > 0L && dtUs in 50_000L..30_000_000L
+            val enriched = parsed.map { core ->
+                val curIdleUs = currentIdleUsMap[core.coreIndex]
+                val prevIdleUs = lastCoreIdleTimeUs[core.coreIndex]
+                val activeFraction: Float? = if (hasValidDeltaWindow && curIdleUs != null && prevIdleUs != null && curIdleUs >= prevIdleUs) {
+                    val deltaIdleUs = curIdleUs - prevIdleUs
+                    (1.0 - (deltaIdleUs.toDouble() / dtUs.toDouble())).toFloat().coerceIn(0f, 1f)
+                } else if (curIdleUs != null && core.maxKhz > core.minKhz) {
+                    // First sample before a cpuidle delta window is available: normalize above minKhz floor.
+                    ((core.curKhz - core.minKhz).toFloat() / (core.maxKhz - core.minKhz).toFloat()).coerceIn(0f, 1f)
+                } else {
+                    null
+                }
+                core.copy(activeResidencyFraction = activeFraction)
+            }
+            if (currentIdleUsMap.isNotEmpty()) {
+                lastCpuSampleElapsedMs = nowElapsedMs
+                lastCoreIdleTimeUs.clear()
+                lastCoreIdleTimeUs.putAll(currentIdleUsMap)
+            }
+            return enriched
+        }
 
         // Fallback when cpufreq sysfs is unavailable (e.g. unit test / container environment).
         val count = Runtime.getRuntime().availableProcessors().coerceIn(2, 16)

@@ -18,16 +18,20 @@ data class CpuCoreReading(
     val maxKhz: Long,
     val governor: String,
     val cluster: CoreCluster,
+    val activeResidencyFraction: Float? = null,
 ) {
     val curMhz: Int get() = (curKhz / 1_000L).toInt().coerceAtLeast(0)
     val maxMhz: Int get() = (maxKhz / 1_000L).toInt().coerceAtLeast(0)
     val minMhz: Int get() = (minKhz / 1_000L).toInt().coerceAtLeast(0)
 
-    val utilizationFraction: Float
+    val frequencyFraction: Float
         get() {
             if (maxKhz <= 0L) return 0f
             return (curKhz.toFloat() / maxKhz.toFloat()).coerceIn(0f, 1f)
         }
+
+    val utilizationFraction: Float
+        get() = activeResidencyFraction?.coerceIn(0f, 1f) ?: frequencyFraction
 
     val scalingStateLabel: String
         get() = when {
