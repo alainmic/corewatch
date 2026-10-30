@@ -779,13 +779,13 @@ class TelemetryCollector(
             AudioDeviceInfo.TYPE_BLE_HEADSET, AudioDeviceInfo.TYPE_BLE_SPEAKER, AudioDeviceInfo.TYPE_BLE_BROADCAST -> "LC3 (LE Audio)"
             AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "mSBC / CVSD (HFP Voice)"
             AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "A2DP Audio Stream"
-            else -> "None (No Active BT Audio)"
+            else -> "None (No Active Bluetooth Audio)"
         }
         var sampleRateStr = String.format(java.util.Locale.US, "%.1f kHz", defaultRateHz / 1_000.0)
         var bitsStr = "24-bit"
         var channelStr = "Stereo"
         var qualityStr = if (btOutput != null) "Active Stream" else "Idle"
-        var selectableSummary = "Connect BT headphones to inspect"
+        var selectableSummary = "Connect Bluetooth headphones to inspect"
 
         if (adapter == null) {
             return BluetoothTelemetrySnapshot(
@@ -977,7 +977,7 @@ class TelemetryCollector(
             }
         }
 
-        if (selectableSummary == "Connect BT headphones to inspect") {
+        if (selectableSummary == "Connect Bluetooth headphones to inspect") {
             val activeAudio = peripherals.firstOrNull { it.isConnected && it.categoryLabel.contains("Audio") }
             val pairedAudio = peripherals.firstOrNull { it.categoryLabel.contains("Audio") }
             if (activeAudio != null) {

@@ -92,7 +92,7 @@ class CorewatchUiTest {
         composeRule.onNodeWithText("Internal User Storage (/data)").assertIsDisplayed()
         composeRule.onNodeWithTag("lmkd_monitor_card").assertIsDisplayed()
 
-        // 4. Switch to Tab 4 (Display / Displays) and Tab 5 (Network & BT)
+        // 4. Switch to Tab 4 (Display / Displays) and Tab 5 (Network & Bluetooth)
         assertEquals("Display", CorewatchTab.Displays.labelForDisplayCount(1, compact = false))
         assertEquals("Displays", CorewatchTab.Displays.labelForDisplayCount(2, compact = false))
         composeRule.onNodeWithTag("tab_3").performClick()
@@ -252,7 +252,7 @@ class CorewatchUiTest {
         }
 
         // At 758dp window width with desktop caption insets (usableCaptionWidth = 473dp),
-        // all 5 compact tabs ("CPU", "Battery", "Memory", "Display(s)", "Net & BT") must be visible and clickable
+        // all 5 compact tabs ("CPU", "Battery", "Memory", "Display(s)", "Net & Bluetooth") must be visible and clickable
         composeRule.onNodeWithTag("btn_copy_markdown").performClick()
         assertTrue(vm.state.value.statusBanner!!.contains("Copied Markdown"))
         composeRule.onNodeWithTag("tab_1").assertIsDisplayed().performClick()

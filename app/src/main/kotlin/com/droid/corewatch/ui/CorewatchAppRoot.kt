@@ -327,7 +327,7 @@ internal fun CorewatchTitleBar(state: CorewatchUiState, vm: CorewatchViewModel, 
         // or when the caption width is narrow, preventing Embedded{Caption} pointer-stealing and minimize-button overlap.
         val splitTwoRowHeader = hasDesktopCaption || usableCaptionWidth < 520.dp
         val showBrandText = usableCaptionWidth >= 560.dp || cap.start == 0.dp || splitTwoRowHeader
-        val useFullTabTitles = if (splitTwoRowHeader) totalWidth >= 720.dp else usableCaptionWidth >= 760.dp
+        val useFullTabTitles = if (splitTwoRowHeader) totalWidth >= 780.dp else usableCaptionWidth >= 820.dp
         val showWattagePill = usableCaptionWidth >= 820.dp || splitTwoRowHeader
         val showThermalPill = usableCaptionWidth >= 420.dp || splitTwoRowHeader
         val showCaffeineLabel = if (splitTwoRowHeader) totalWidth >= 560.dp else usableCaptionWidth >= 640.dp
@@ -2436,7 +2436,7 @@ private fun DisplayCard(disp: DisplaySpec) {
 private fun ShortcutsDialog(onDismiss: () -> Unit) {
     val shortcuts = listOf(
         "Ctrl+M" to "Toggle between Full Workbench and Compact Mini-HUD mode",
-        "Ctrl+1 .. Ctrl+5" to "Switch tabs (Compute, Battery, Memory, Display(s), Network & BT)",
+        "Ctrl+1 .. Ctrl+5" to "Switch tabs (Compute, Battery, Memory, Display(s), Network & Bluetooth)",
         "Ctrl+K" to "Toggle Caffeine Keep-Awake active state",
         "Space" to "Pause / Resume live telemetry graph scrolling",
         "Ctrl+Shift+C" to "Copy Markdown Hardware & Thermal Diagnostic Snapshot",

@@ -61,7 +61,7 @@ data class WifiTelemetrySnapshot(
  */
 data class BluetoothAudioCodecSnapshot(
     val activeRouteLabel: String = "Built-in Speaker",
-    val activeCodecName: String = "None (No Active BT Audio)",
+    val activeCodecName: String = "None (No Active Bluetooth Audio)",
     val sampleRateLabel: String = "48.0 kHz",
     val bitsPerSampleLabel: String = "24-bit",
     val channelModeLabel: String = "Stereo",

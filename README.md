@@ -48,7 +48,7 @@
 **Corewatch** (`com.droid.corewatch`) brings the high-density hardware telemetry of **macOS Activity Monitor / iStat Menus**, **CoconutBattery**, and **Amphetamine** to Android laptops and Googlebooks. Built in modern Kotlin with Jetpack Compose and Material 3, Corewatch gives power users instant visibility into thermal headroom, per-core CPU frequencies, GPU & NPU hardware accelerators, USB-C PD charging wattage, memory/`zram` swap pressure, and external monitor negotiation—without oversized mobile typography:
 
 * **Dual-layout desktop UI & Translucent Always-On-Top PiP Mini-HUD (`Ctrl+M`):**
-  * **Full Workbench (`1120dp × 760dp`):** Live thermal/wattage/CPU telemetry badges drawn directly into Android 15's desktop caption bar with five diagnostic tabs (`Thermals & Compute`, `Battery & W`, `Memory & Swap`, dynamically singular/plural `Display` / `Displays`, and `Network & BT`), a **configurable polling rate selector (`250ms | 500ms | 1s | 2s`)**, and quick actions immediately below.
+  * **Full Workbench (`1120dp × 760dp`):** Live thermal/wattage/CPU telemetry badges drawn directly into Android 15's desktop caption bar with five diagnostic tabs (`Thermals & Compute`, `Battery & W`, `Memory & Swap`, dynamically singular/plural `Display` / `Displays`, and `Network & Bluetooth`), a **configurable polling rate selector (`250ms | 500ms | 1s | 2s`)**, and quick actions immediately below.
   * **Translucent Always-On-Top Mini-HUD (`340dp × 398dp`):** Ultra-dense floating Picture-in-Picture (`TYPE_APPLICATION_OVERLAY`) 5-tile sparkline dashboard (**CPU**, **GPU & NPU**, **Thermal**, **Battery**, and **RAM & `zram` Swap**) with **adjustable translucency (`88%` / `75%` / `100%`)**, drag-to-reposition header, and one-click `"↗ Full"` restore, using crisp `11sp`/`12sp` tabular monospace typography (`fontFeatureSettings = "tnum"`).
 * **Thermal, per-core CPU, GPU & NPU hardware accelerator telemetry:**
   * Displays real-time **Thermal Status** (`Nominal`, `Light Throttling`, `Moderate Throttling`, `Severe Throttling`, `Critical Thermal`), predictive **Thermal Headroom** (`PowerManager.getThermalHeadroom(10)`), battery temperature (`°C` / `°F`), and world-readable `/sys/class/thermal/` and `/sys/class/hwmon/` sensors.
@@ -126,9 +126,9 @@ Mobile system monitor apps were designed for narrow portrait phone screens with 
 </p>
 
 <p align="center">
-  <img src="docs/images/workbench_network_bt.png" width="900" alt="Corewatch Network & BT tab showing Wi-Fi 7 (802.11be) link state, RSSI -41 dBm, TX/RX PHY speeds, MAC frame retry/drop counters, Network Throughput, and Bluetooth Audio Codec & Peripherals with battery level" />
+  <img src="docs/images/workbench_network_bt.png" width="900" alt="Corewatch Network & Bluetooth tab showing Wi-Fi 7 (802.11be) link state, RSSI -39 dBm, TX/RX PHY speeds, MAC frame retry/drop counters, Network Throughput, and Bluetooth Audio Codec & Peripherals with battery level" />
   <br>
-  <sub><b>Network &amp; BT</b> tab showing live <b>Wi-Fi 7 (802.11be)</b> link state (RSSI <code>-41 dBm</code>, <code>5 GHz · Ch 149</code>, <code>WPA3-SAE</code>, TX/RX PHY link speeds, MAC frame retry/drop counters), <b>TrafficStats RX/TX</b> packet rates, and <b>Bluetooth Audio Codec &amp; Peripherals</b>.</sub>
+  <sub><b>Network &amp; Bluetooth</b> tab showing live <b>Wi-Fi 7 (802.11be)</b> link state (RSSI <code>-39 dBm</code>, <code>5 GHz · Ch 149</code>, <code>WPA3-SAE</code>, TX/RX PHY link speeds, MAC frame retry/drop counters), <b>TrafficStats RX/TX</b> packet rates, and <b>Bluetooth Audio Codec &amp; Peripherals</b>.</sub>
 </p>
 
 ---
@@ -138,7 +138,7 @@ Mobile system monitor apps were designed for narrow portrait phone screens with 
 | Shortcut | Action |
 | :--- | :--- |
 | `Ctrl+M` | Toggle between **Full Workbench** and **Compact Mini-HUD** mode |
-| `Ctrl+1` .. `Ctrl+5` | Switch tabs: `1` Thermals & Compute, `2` Battery & Power, `3` Memory & Storage, `4` Display(s), `5` Network & BT |
+| `Ctrl+1` .. `Ctrl+5` | Switch tabs: `1` Thermals & Compute, `2` Battery & Power, `3` Memory & Storage, `4` Display(s), `5` Network & Bluetooth |
 | `Ctrl+K` | Toggle **Caffeine Keep-Awake** active state (`Off` ↔ `Indefinite`) |
 | `Space` | Pause / Resume live telemetry sampling and graph scrolling to inspect a spike |
 | `Ctrl+Shift+C` | Copy anonymized Markdown System & Thermal Diagnostic Snapshot to clipboard |
