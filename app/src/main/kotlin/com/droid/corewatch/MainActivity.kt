@@ -3,9 +3,11 @@
 
 package com.droid.corewatch
 
+import android.Manifest
 import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.PixelFormat
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
@@ -45,6 +47,7 @@ import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.droid.corewatch.ui.CorewatchAppRoot
+import com.droid.corewatch.ui.CorewatchTab
 import com.droid.corewatch.ui.CorewatchViewModel
 import com.droid.corewatch.ui.PipOverlayRoot
 import com.droid.corewatch.ui.theme.CorewatchTheme
@@ -158,6 +161,15 @@ class MainActivity : ComponentActivity() {
                     alpha = if (state.isMiniHud) state.miniHudAlpha else 1.0f
                 }
                 updatePipOverlayAlpha(state.miniHudAlpha)
+            }
+            LaunchedEffect(state.activeTab) {
+                if (state.activeTab == CorewatchTab.NetworkBluetooth && Build.VERSION.SDK_INT >= 31) {
+                    runCatching {
+                        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                            requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 1001)
+                        }
+                    }
+                }
             }
             CorewatchTheme(dark = dark) {
                 CorewatchAppRoot(

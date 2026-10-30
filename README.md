@@ -5,8 +5,8 @@
 <h1 align="center">Corewatch</h1>
 
 <p align="center">
-  <b>Compact system telemetry, CPU/GPU/NPU compute monitor, thermal/battery wattage inspector, Variable Refresh Rate (VRR) &amp; frame-jank auditor, LMKD/PSI memory monitor, and "Caffeine" keep-awake utility for Googlebooks.</b><br>
-  Real-time thermal headroom, CPU model identification &amp; per-core P/E CPU frequencies/C-state residency, live GPU (Render + Media engine) &amp; NPU hardware accelerator counters, USB-C PD battery wattage (<code>W = V × I</code>), Variable Refresh Rate (VRR) 5-minute time-in-state residency &amp; VRR-aware frame jank profiler, memory/<code>zram</code> swap/LMKD/PSI pressure, configurable sampling rates (<code>250ms | 500ms | 1s | 2s</code>), and a translucent Always-On-Top 340×398dp Mini-HUD: one universal download for Intel and Snapdragon Googlebooks.
+  <b>Compact system telemetry, CPU/GPU/NPU compute monitor, thermal/battery wattage inspector, Variable Refresh Rate (VRR) &amp; frame-jank auditor, Wi-Fi 7 &amp; Bluetooth audio codec/peripheral inspector, LMKD/PSI memory monitor, and "Caffeine" keep-awake utility for Googlebooks.</b><br>
+  Real-time thermal headroom, CPU model identification &amp; per-core P/E CPU frequencies/C-state residency, live GPU (Render + Media engine) &amp; NPU hardware accelerator counters, USB-C PD battery wattage (<code>W = V × I</code>), Variable Refresh Rate (VRR) 5-minute time-in-state residency &amp; VRR-aware frame jank profiler, Wi-Fi 7 (<code>802.11be</code>) PHY link &amp; Bluetooth audio codec/peripheral telemetry, memory/<code>zram</code> swap/LMKD/PSI pressure, configurable sampling rates (<code>250ms | 500ms | 1s | 2s</code>), and a translucent Always-On-Top 340×398dp Mini-HUD: one universal download for Intel and Snapdragon Googlebooks.
 </p>
 
 <p align="center">
@@ -48,7 +48,7 @@
 **Corewatch** (`com.droid.corewatch`) brings the high-density hardware telemetry of **macOS Activity Monitor / iStat Menus**, **CoconutBattery**, and **Amphetamine** to Android laptops and Googlebooks. Built in modern Kotlin with Jetpack Compose and Material 3, Corewatch gives power users instant visibility into thermal headroom, per-core CPU frequencies, GPU & NPU hardware accelerators, USB-C PD charging wattage, memory/`zram` swap pressure, and external monitor negotiation—without oversized mobile typography:
 
 * **Dual-layout desktop UI & Translucent Always-On-Top PiP Mini-HUD (`Ctrl+M`):**
-  * **Full Workbench (`1120dp × 760dp`):** Live thermal/wattage/CPU telemetry badges drawn directly into Android 15's desktop caption bar with four diagnostic tabs (`Thermals & Compute`, `Battery & W`, `Memory & Swap`, `Displays & Net`), a **configurable polling rate selector (`250ms | 500ms | 1s | 2s`)**, and quick actions immediately below.
+  * **Full Workbench (`1120dp × 760dp`):** Live thermal/wattage/CPU telemetry badges drawn directly into Android 15's desktop caption bar with five diagnostic tabs (`Thermals & Compute`, `Battery & W`, `Memory & Swap`, dynamically singular/plural `Display` / `Displays`, and `Network & BT`), a **configurable polling rate selector (`250ms | 500ms | 1s | 2s`)**, and quick actions immediately below.
   * **Translucent Always-On-Top Mini-HUD (`340dp × 398dp`):** Ultra-dense floating Picture-in-Picture (`TYPE_APPLICATION_OVERLAY`) 5-tile sparkline dashboard (**CPU**, **GPU & NPU**, **Thermal**, **Battery**, and **RAM & `zram` Swap**) with **adjustable translucency (`88%` / `75%` / `100%`)**, drag-to-reposition header, and one-click `"↗ Full"` restore, using crisp `11sp`/`12sp` tabular monospace typography (`fontFeatureSettings = "tnum"`).
 * **Thermal, per-core CPU, GPU & NPU hardware accelerator telemetry:**
   * Displays real-time **Thermal Status** (`Nominal`, `Light Throttling`, `Moderate Throttling`, `Severe Throttling`, `Critical Thermal`), predictive **Thermal Headroom** (`PowerManager.getThermalHeadroom(10)`), battery temperature (`°C` / `°F`), and world-readable `/sys/class/thermal/` and `/sys/class/hwmon/` sensors.
@@ -64,6 +64,9 @@
   * Queries `DisplayManager.getDisplays()` and unprivileged `/dev/dri/card0` KMS properties (`DRM_IOCTL_MODE_GETCONNECTOR` & `DRM_IOCTL_MODE_OBJ_GETPROPERTIES`) to inspect the built-in eDP panel (`BOE NB140B91-ML1`, `12 bpc`) and every connected external monitor (`HDMI` / `USB-C DP Alt Mode`).
   * Reports **Variable Refresh Rate (VRR) & Cadence** telemetry: hardware `vrr_capable` and CRTC `VRR_ENABLED` states, Android Adaptive Refresh Rate (`hasArrSupport`), dynamic refresh range & discrete steps (e.g. **`20–120 Hz (20, 24, 30, 40, 60, 120 Hz)`**), live SurfaceFlinger render frame rate vs. physical panel VSync cadence (`Render 60 Hz · VSync 120 Hz`), **rolling 5-minute refresh-rate time-in-state residency bars & switch counter**, HDR capabilities (`Dolby Vision`, `HDR10`, `HDR10+`, `HLG`), and a **30Hz Dock Bottleneck Warning** whenever a `>= 1440p` external monitor is negotiated below `50Hz`.
   * **Dropped & Janky Frames (5m · VRR-Aware):** Evaluates per-frame `Window.OnFrameMetricsAvailableListener` deadlines (`FrameMetrics.DEADLINE`, CPU stage durations, and `GPU_DURATION`) against the active VRR cadence over a rolling 5-minute window, breaking down **Dropped Frames %**, **Janky Frames %**, a 60-second Jank % sparkline, and **Jank Causes** (`Long CPU`, `Long GPU`, `Buffer Stuffing`, `Missed VSync`).
+* **Wi-Fi 7 (`802.11be`) Link State, Packet Throughput & Bluetooth Audio Codec / Peripheral Inspector (`Ctrl+5`):**
+  * **Wi-Fi & Network Link State:** Uses non-intrusive install-time `ACCESS_NETWORK_STATE` and `ACCESS_WIFI_STATE` permissions (zero `INTERNET` and zero Location permission) to report **Wi-Fi Standard** (`Wi-Fi 7 (802.11be)`, `Wi-Fi 6/6E (802.11ax)`, `Wi-Fi 5 (802.11ac)`), **Band & Channel** (e.g. `5 GHz · Ch 149 (5745 MHz)` or `6 GHz`), **RSSI (`dBm`) & Signal Quality %** with a 60-second RSSI sparkline, **TX / RX PHY Link Speeds (`Mbps`)**, **WPA3-SAE / OWE Security**, **Wi-Fi 7 MLO (Multi-Link Operation) link count**, and **Wi-Fi MAC Frame Counters** (`TX Good/s`, `RX Good/s`, `TX Retries/s`, `TX Dropped/s`) alongside live `TrafficStats` `Mbps` and `pkt/s` throughput.
+  * **Bluetooth Audio Codec & Peripherals:** Reports active audio output routing (`AudioManager.getDevices`), negotiated **Bluetooth A2DP / LE Audio codec** (`SBC`, `AAC`, `aptX`, `aptX HD`, `LDAC`, `LC3 (LE Audio)`, `Opus`), sample rate (`44.1`–`96.0 kHz`), bit depth (`16`/`24`/`32-bit`), channel mode, bitrate/quality (`990 kbps` LDAC, etc.), headset selectable codecs, controller hardware capabilities (`LE Audio (LC3)`, `Auracast`, `LE 2M PHY`, `LE Coded PHY`, max concurrent audio sinks), and connected/paired peripherals (`BLE GATT / HID`, `Dual BR/EDR + LE`) with live battery percentages.
 * **Memory + `zram` swap + LMKD / PSI pressure & 1-click Markdown diagnostic copy (`Ctrl+Shift+C`):**
   * Parses `/proc/meminfo` (`MemTotal`, `MemAvailable`, `Cached`, `Buffers`, `SwapTotal`, `SwapFree`, `Dirty`), `ActivityManager.MemoryInfo` (**LMKD / AMS low-memory threshold** & `lowMemory` flag), **rolling 5-minute LMKD (Low Memory Killer Daemon) invocations** (via `EventLog` `am_kill` / `am_low_memory` when `READ_LOGS` is granted, or `ActivityManager.getHistoricalProcessExitReasons` + `onTrimMemory` fallback), and Linux `/proc/pressure/memory` PSI (`some` / `full` 10s averages) alongside live network throughput (`TrafficStats` RX/TX `Mbps`) and internal storage capacity.
   * Generates a clean, anonymized Markdown hardware & thermal diagnostic table on the clipboard for pasting directly into community forum threads or bug reports.
@@ -117,9 +120,15 @@ Mobile system monitor apps were designed for narrow portrait phone screens with 
 </p>
 
 <p align="center">
-  <img src="docs/images/workbench_displays.png" width="900" alt="Corewatch Displays & Net tab showing Variable Refresh Rate (VRR) & Cadence telemetry (20-120 Hz range, discrete eDP steps, DRM vrr_capable=1, 12 bpc color depth, and BOE NB140B91-ML1 EDID model)" />
+  <img src="docs/images/workbench_displays.png" width="900" alt="Corewatch Displays tab showing connected internal eDP and external 4K displays, 5-minute Variable Refresh Rate (VRR) time-in-state residency bars, and the 5-minute VRR-aware Dropped & Janky Frames card" />
   <br>
-  <sub><b>Displays &amp; Net</b> tab inspecting hardware <b>Variable Refresh Rate (VRR) &amp; Cadence</b> (<code>20–120 Hz</code> across <code>20, 24, 30, 40, 60, 120 Hz</code> eDP steps, DRM <code>vrr_capable: Yes (1)</code>, <code>12 bpc</code> color depth, and EDID panel identity).</sub>
+  <sub><b>Display / Displays</b> tab (dynamically singular or plural based on connected display count) inspecting hardware <b>Variable Refresh Rate (VRR) 5-minute time-in-state residency</b> and <b>Dropped &amp; Janky Frames (5m · VRR-Aware)</b>.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/workbench_network_bt.png" width="900" alt="Corewatch Network & BT tab showing Wi-Fi 7 (802.11be) link state, RSSI -41 dBm, TX/RX PHY speeds, MAC frame retry/drop counters, Network Throughput, and Bluetooth Audio Codec & Peripherals with battery level" />
+  <br>
+  <sub><b>Network &amp; BT</b> tab showing live <b>Wi-Fi 7 (802.11be)</b> link state (RSSI <code>-41 dBm</code>, <code>5 GHz · Ch 149</code>, <code>WPA3-SAE</code>, TX/RX PHY link speeds, MAC frame retry/drop counters), <b>TrafficStats RX/TX</b> packet rates, and <b>Bluetooth Audio Codec &amp; Peripherals</b>.</sub>
 </p>
 
 ---
@@ -129,7 +138,7 @@ Mobile system monitor apps were designed for narrow portrait phone screens with 
 | Shortcut | Action |
 | :--- | :--- |
 | `Ctrl+M` | Toggle between **Full Workbench** and **Compact Mini-HUD** mode |
-| `Ctrl+1` .. `Ctrl+4` | Switch tabs: `1` Thermals & Compute, `2` Battery & Power, `3` Memory & Storage, `4` Displays & Network |
+| `Ctrl+1` .. `Ctrl+5` | Switch tabs: `1` Thermals & Compute, `2` Battery & Power, `3` Memory & Storage, `4` Display(s), `5` Network & BT |
 | `Ctrl+K` | Toggle **Caffeine Keep-Awake** active state (`Off` ↔ `Indefinite`) |
 | `Space` | Pause / Resume live telemetry sampling and graph scrolling to inspect a spike |
 | `Ctrl+Shift+C` | Copy anonymized Markdown System & Thermal Diagnostic Snapshot to clipboard |
@@ -162,8 +171,8 @@ Because Corewatch runs as a standard, unprivileged open-source Android applicati
 
 <h2 id="privacy">Privacy &amp; Security</h2>
 
-* **Zero network permissions, zero telemetry, zero ads:** Corewatch does not request `android.permission.INTERNET` and contains no analytics, crash reporters, advertising SDKs, or third-party tracking scripts. All hardware telemetry stays 100% in memory on your device.
-* **Minimal permission footprint:** Requests only `android.permission.WAKE_LOCK` (so the user-controlled Caffeine controller can keep the screen awake when explicitly enabled) and optional `android.permission.SYSTEM_ALERT_WINDOW` (used solely to float the translucent Always-On-Top Mini-HUD PiP overlay when Mini-HUD mode is toggled).
+* **Zero internet permissions, zero location permissions, zero telemetry, zero ads:** Corewatch does not request `android.permission.INTERNET` or `android.permission.ACCESS_FINE_LOCATION` and contains no analytics, crash reporters, advertising SDKs, or third-party tracking scripts. All hardware telemetry stays 100% in memory on your device.
+* **Minimal permission footprint:** Requests only `android.permission.WAKE_LOCK` (for the user-controlled Caffeine controller), install-time `ACCESS_NETWORK_STATE` & `ACCESS_WIFI_STATE` (for Wi-Fi 7 PHY link speed, RSSI, and MAC retry/drop counters without reading SSID/BSSID location data), `BLUETOOTH_CONNECT` (for inspecting negotiated A2DP/LE Audio codecs and connected Bluetooth peripheral battery levels, without `BLUETOOTH_SCAN`), and optional `android.permission.SYSTEM_ALERT_WINDOW` (used solely to float the translucent Always-On-Top Mini-HUD PiP overlay when Mini-HUD mode is toggled).
 * **Anonymized diagnostic snapshots:** The `Ctrl+Shift+C` Markdown snapshot exporter includes only hardware model, CPU architecture, OS version, thermal/power/memory metrics, and display modes—never serial numbers, MAC/IP addresses, account names, or personal file paths. All strings are sanitized against Markdown table and control-character injection.
 * **Strict backup exclusions:** App preferences are excluded from cloud backups and device-to-device transfers (`data_extraction_rules.xml` & `backup_rules.xml`).
 * **Audited, fuzz-tested & 96.1% code coverage:** Backed by automated unit tests, headless Robolectric Compose UI tests across desktop and Mini-HUD window sizes (**96.1% overall line coverage**, **100% class coverage**), and property-based fuzzers (**125,000+ iterations** across `/proc/meminfo`, `cpufreq`, `thermal_zone`/`hwmon`, battery wattage math, display mode auditing, and Markdown escaping). See [SECURITY.md](SECURITY.md) for vulnerability reporting.

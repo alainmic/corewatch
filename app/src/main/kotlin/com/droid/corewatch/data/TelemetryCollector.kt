@@ -3,13 +3,26 @@
 
 package com.droid.corewatch.data
 
+import android.Manifest
 import android.app.ActivityManager
 import android.app.ApplicationExitInfo
+import android.bluetooth.BluetoothA2dp
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.hardware.display.DisplayManager
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.TrafficStats
+import android.net.wifi.WifiInfo
+import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Environment
@@ -17,6 +30,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.os.StatFs
 import android.util.DisplayMetrics
+import androidx.core.content.ContextCompat
 import java.io.File
 
 /**
@@ -40,6 +54,13 @@ class TelemetryCollector(
     private var lastNetSampleElapsedMs: Long = 0L
     private var lastRxBytes: Long = -1L
     private var lastTxBytes: Long = -1L
+    private var lastRxPackets: Long = -1L
+    private var lastTxPackets: Long = -1L
+    @Volatile
+    private var a2dpProxy: BluetoothA2dp? = null
+    private var a2dpProxyRequested: Boolean = false
+    private var cachedLogcatCodecKey: String = ""
+    private var cachedLogcatCodecSnapshot: BluetoothAudioCodecSnapshot? = null
     private var lastCpuSampleElapsedMs: Long = 0L
     private val lastCoreIdleTimeUs = HashMap<Int, Long>()
     private var discoveredCoreIndices: List<Int>? = null
@@ -90,6 +111,8 @@ class TelemetryCollector(
         val frameJank = vrrAndFrameTracker.snapshotFrames(nowElapsedMs, defaultHz = primaryHz)
         val lmkd = readLmkd(am)
         val network = readNetwork(nowElapsedMs)
+        val wifi = readWifi()
+        val bluetooth = readBluetooth()
 
         val caffeineEval = CaffeinePolicy.evaluate(
             config = caffeineConfig,
@@ -118,6 +141,8 @@ class TelemetryCollector(
             frameJank = frameJank,
             lmkd = lmkd,
             network = network,
+            wifi = wifi,
+            bluetooth = bluetooth,
             caffeineEvaluation = caffeineEval,
         )
     }
@@ -546,19 +571,453 @@ class TelemetryCollector(
     private fun readNetwork(nowElapsedMs: Long): NetworkThroughput {
         val rx = runCatching { TrafficStats.getTotalRxBytes() }.getOrDefault(0L).coerceAtLeast(0L)
         val tx = runCatching { TrafficStats.getTotalTxBytes() }.getOrDefault(0L).coerceAtLeast(0L)
+        val rxPkts = runCatching { TrafficStats.getTotalRxPackets() }.getOrDefault(0L).coerceAtLeast(0L)
+        val txPkts = runCatching { TrafficStats.getTotalTxPackets() }.getOrDefault(0L).coerceAtLeast(0L)
         val dtMs = nowElapsedMs - lastNetSampleElapsedMs
         var rxMbps = 0f
         var txMbps = 0f
+        var rxPps = 0f
+        var txPps = 0f
         if (lastRxBytes >= 0L && lastTxBytes >= 0L && dtMs in 100L..30_000L) {
             val dRx = (rx - lastRxBytes).coerceAtLeast(0L)
             val dTx = (tx - lastTxBytes).coerceAtLeast(0L)
             rxMbps = ((dRx * 8.0) / (dtMs * 1_000.0)).toFloat().coerceIn(0f, 10_000f)
             txMbps = ((dTx * 8.0) / (dtMs * 1_000.0)).toFloat().coerceIn(0f, 10_000f)
+            if (lastRxPackets >= 0L && lastTxPackets >= 0L) {
+                val dRxPkt = (rxPkts - lastRxPackets).coerceAtLeast(0L)
+                val dTxPkt = (txPkts - lastTxPackets).coerceAtLeast(0L)
+                rxPps = ((dRxPkt * 1_000.0) / dtMs.toDouble()).toFloat().coerceIn(0f, 1_000_000f)
+                txPps = ((dTxPkt * 1_000.0) / dtMs.toDouble()).toFloat().coerceIn(0f, 1_000_000f)
+            }
         }
         lastNetSampleElapsedMs = nowElapsedMs
         lastRxBytes = rx
         lastTxBytes = tx
-        return NetworkThroughput(rxMbps = rxMbps, txMbps = txMbps, totalRxBytes = rx, totalTxBytes = tx)
+        lastRxPackets = rxPkts
+        lastTxPackets = txPkts
+        return NetworkThroughput(
+            rxMbps = rxMbps,
+            txMbps = txMbps,
+            totalRxBytes = rx,
+            totalTxBytes = tx,
+            rxPacketsPerSec = rxPps,
+            txPacketsPerSec = txPps,
+            totalRxPackets = rxPkts,
+            totalTxPackets = txPkts,
+        )
+    }
+
+    @Suppress("DEPRECATION")
+    private fun readWifi(): WifiTelemetrySnapshot {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        val activeNet = runCatching { cm?.activeNetwork }.getOrNull()
+        val caps = runCatching { if (activeNet != null) cm?.getNetworkCapabilities(activeNet) else null }.getOrNull()
+        val linkProps = runCatching { if (activeNet != null) cm?.getLinkProperties(activeNet) else null }.getOrNull()
+
+        val transports = ArrayList<String>(3)
+        if (caps != null) {
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) transports += "Wi-Fi"
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) transports += "Ethernet"
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) transports += "VPN"
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) transports += "Cellular"
+        }
+        val iface = linkProps?.interfaceName?.takeIf { it.isNotBlank() } ?: "wlan0"
+        val mtu = runCatching { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) linkProps?.mtu ?: 1500 else 1500 }
+            .getOrDefault(1500).let { if (it > 0) it else 1500 }
+        val isValidated = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+        val isMetered = caps != null && !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+        val downKbps = caps?.linkDownstreamBandwidthKbps?.coerceAtLeast(0) ?: 0
+        val upKbps = caps?.linkUpstreamBandwidthKbps?.coerceAtLeast(0) ?: 0
+
+        val wifiInfo: WifiInfo? = runCatching {
+            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) caps?.transportInfo as? WifiInfo else null)
+                ?: wm?.connectionInfo
+        }.getOrNull()
+
+        val rssi = wifiInfo?.rssi ?: -127
+        val freq = wifiInfo?.frequency?.coerceAtLeast(0) ?: 0
+        val linkMbps = wifiInfo?.linkSpeed?.coerceAtLeast(0) ?: 0
+        val txMbps = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) wifiInfo?.txLinkSpeedMbps?.coerceAtLeast(0) ?: linkMbps else linkMbps
+        }.getOrDefault(linkMbps)
+        val rxMbps = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) wifiInfo?.rxLinkSpeedMbps?.coerceAtLeast(0) ?: linkMbps else linkMbps
+        }.getOrDefault(linkMbps)
+        val stdCode = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) wifiInfo?.wifiStandard ?: 0 else 0
+        }.getOrDefault(0)
+        val secType = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) wifiInfo?.currentSecurityType ?: -1 else -1
+        }.getOrDefault(-1)
+        val mloLinks = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && wifiInfo != null) {
+                wifiInfo.affiliatedMloLinks.size
+            } else {
+                0
+            }
+        }.getOrDefault(0)
+
+        fun readWifiDoubleField(getterName: String): Double {
+            if (wifiInfo == null) return 0.0
+            return runCatching {
+                val m = wifiInfo.javaClass.getMethod(getterName)
+                ((m.invoke(wifiInfo) as? Number)?.toDouble() ?: 0.0).coerceAtLeast(0.0)
+            }.getOrDefault(0.0)
+        }
+
+        val txLost = readWifiDoubleField("getLostTxPacketsPerSecond")
+        val txRetry = readWifiDoubleField("getRetriedTxPacketsPerSecond")
+        val txGood = readWifiDoubleField("getSuccessfulTxPacketsPerSecond")
+        val rxGood = readWifiDoubleField("getSuccessfulRxPacketsPerSecond")
+
+        val isWifiConnected = (rssi > -120 && freq > 0) || transports.contains("Wi-Fi")
+        if (isWifiConnected && !transports.contains("Wi-Fi")) {
+            transports.add(0, "Wi-Fi")
+        }
+        val effectiveIface = if (isWifiConnected && iface != "wlan0" && !iface.startsWith("wlan")) {
+            "wlan0 + $iface"
+        } else {
+            iface
+        }
+        val isAnyConnected = isWifiConnected || transports.isNotEmpty()
+        val transportLabel = when {
+            transports.isNotEmpty() -> transports.joinToString(" + ")
+            isWifiConnected -> "Wi-Fi"
+            else -> "Disconnected"
+        }
+
+        return WifiTelemetrySnapshot(
+            isConnected = isAnyConnected,
+            transportLabel = transportLabel,
+            interfaceName = effectiveIface,
+            mtu = mtu,
+            isValidated = isValidated || isWifiConnected,
+            isMetered = isMetered,
+            wifiStandardCode = stdCode,
+            wifiStandardLabel = if (isWifiConnected) WirelessTelemetryParsers.formatWifiStandard(stdCode) else transportLabel,
+            frequencyMhz = freq,
+            bandAndChannelLabel = WirelessTelemetryParsers.formatBandAndChannel(freq),
+            rssiDbm = rssi,
+            signalQualityPercent = WirelessTelemetryParsers.computeRssiQualityPercent(rssi),
+            signalQualityLabel = WirelessTelemetryParsers.formatRssiQualityLabel(rssi),
+            txLinkSpeedMbps = txMbps,
+            rxLinkSpeedMbps = rxMbps,
+            linkSpeedMbps = linkMbps,
+            downstreamBandwidthKbps = downKbps,
+            upstreamBandwidthKbps = upKbps,
+            securityLabel = if (isWifiConnected) WirelessTelemetryParsers.formatWifiSecurityType(secType) else "N/A",
+            mloLinkCount = mloLinks,
+            mloSummary = if (mloLinks > 1) "MLO Active ($mloLinks Links)" else "Single-Link",
+            txLostPktsPerSec = txLost,
+            txRetriesPerSec = txRetry,
+            txSuccessPktsPerSec = txGood,
+            rxSuccessPktsPerSec = rxGood,
+        )
+    }
+
+    @Suppress("MissingPermission")
+    private fun readBluetooth(): BluetoothTelemetrySnapshot {
+        val audioMgr = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        val btMgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+        val adapter: BluetoothAdapter? = btMgr?.adapter
+
+        val hasPerm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+
+        // 1. Zero-permission AudioManager output routing inspection
+        val outputs = runCatching { audioMgr?.getDevices(AudioManager.GET_DEVICES_OUTPUTS)?.toList().orEmpty() }.getOrDefault(emptyList())
+        val isVoiceMode = audioMgr?.mode == AudioManager.MODE_IN_COMMUNICATION || audioMgr?.mode == AudioManager.MODE_IN_CALL
+        val bleOutput = outputs.firstOrNull { d ->
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && (
+                d.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                    d.type == AudioDeviceInfo.TYPE_BLE_SPEAKER ||
+                    (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && d.type == AudioDeviceInfo.TYPE_BLE_BROADCAST)
+                )
+        }
+        val a2dpOutput = outputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
+        val scoOutput = outputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
+        val btOutput = if (isVoiceMode) {
+            bleOutput ?: scoOutput ?: a2dpOutput
+        } else {
+            a2dpOutput ?: bleOutput ?: scoOutput
+        }
+        val activeOutput = btOutput ?: outputs.firstOrNull {
+            it.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
+                it.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
+                it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                it.type == AudioDeviceInfo.TYPE_HDMI
+        } ?: outputs.firstOrNull()
+
+        val cleanProdName = WirelessTelemetryParsers.sanitizePeripheralDisplayName(
+            activeOutput?.productName?.toString() ?: "Internal",
+        )
+        val routeName = when (activeOutput?.type) {
+            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "Bluetooth A2DP ($cleanProdName)"
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth HFP/SCO ($cleanProdName)"
+            AudioDeviceInfo.TYPE_BLE_HEADSET, AudioDeviceInfo.TYPE_BLE_SPEAKER -> "BLE Audio Unicast ($cleanProdName)"
+            AudioDeviceInfo.TYPE_BLE_BROADCAST -> "BLE Auracast Broadcast ($cleanProdName)"
+            AudioDeviceInfo.TYPE_HDMI, AudioDeviceInfo.TYPE_LINE_DIGITAL -> "DisplayPort / HDMI ($cleanProdName)"
+            AudioDeviceInfo.TYPE_USB_HEADSET, AudioDeviceInfo.TYPE_USB_DEVICE -> "USB Audio ($cleanProdName)"
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES, AudioDeviceInfo.TYPE_WIRED_HEADSET -> "3.5mm Wired Audio"
+            else -> "Built-in Speakers ($cleanProdName)"
+        }
+
+        val audioModeLabel = when (audioMgr?.mode) {
+            AudioManager.MODE_IN_COMMUNICATION -> "VoIP / Communication (SCO/BLE)"
+            AudioManager.MODE_IN_CALL -> "Voice Call"
+            AudioManager.MODE_RINGTONE -> "Ringtone"
+            else -> "Normal (Media)"
+        }
+
+        val defaultRateHz = activeOutput?.sampleRates?.maxOrNull() ?: 48_000
+        var codecName = when (btOutput?.type) {
+            AudioDeviceInfo.TYPE_BLE_HEADSET, AudioDeviceInfo.TYPE_BLE_SPEAKER, AudioDeviceInfo.TYPE_BLE_BROADCAST -> "LC3 (LE Audio)"
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "mSBC / CVSD (HFP Voice)"
+            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "A2DP Audio Stream"
+            else -> "None (No Active BT Audio)"
+        }
+        var sampleRateStr = String.format(java.util.Locale.US, "%.1f kHz", defaultRateHz / 1_000.0)
+        var bitsStr = "24-bit"
+        var channelStr = "Stereo"
+        var qualityStr = if (btOutput != null) "Active Stream" else "Idle"
+        var selectableSummary = "Connect BT headphones to inspect"
+
+        if (adapter == null) {
+            return BluetoothTelemetrySnapshot(
+                isAdapterEnabled = false,
+                hasConnectPermission = hasPerm,
+                connectionStateLabel = "No Adapter",
+                audioCodec = BluetoothAudioCodecSnapshot(
+                    activeRouteLabel = routeName,
+                    activeCodecName = codecName,
+                    sampleRateLabel = sampleRateStr,
+                    bitsPerSampleLabel = bitsStr,
+                    channelModeLabel = channelStr,
+                    bitrateOrQualityLabel = qualityStr,
+                    selectableCodecsSummary = selectableSummary,
+                    communicationModeLabel = audioModeLabel,
+                    isBluetoothAudioActive = btOutput != null,
+                ),
+            )
+        }
+
+        val isEnabled = runCatching { adapter.isEnabled }.getOrDefault(false)
+        val le2m = runCatching { adapter.isLe2MPhySupported }.getOrDefault(false)
+        val leCoded = runCatching { adapter.isLeCodedPhySupported }.getOrDefault(false)
+        val leAudio = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) adapter.isLeAudioSupported == 10 else false
+        }.getOrDefault(false)
+        val leBroadcast = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                adapter.isLeAudioBroadcastSourceSupported == 10 || adapter.isLeAudioBroadcastAssistantSupported == 10
+            } else {
+                false
+            }
+        }.getOrDefault(false)
+
+        if (!hasPerm) {
+            return BluetoothTelemetrySnapshot(
+                isAdapterEnabled = isEnabled,
+                hasConnectPermission = false,
+                connectionStateLabel = if (isEnabled) "On (Grant Permission)" else "Off",
+                le2MPhySupported = le2m,
+                leCodedPhySupported = leCoded,
+                leAudioSupported = leAudio,
+                leAudioBroadcastSupported = leBroadcast,
+                audioCodec = BluetoothAudioCodecSnapshot(
+                    activeRouteLabel = routeName,
+                    activeCodecName = codecName,
+                    sampleRateLabel = sampleRateStr,
+                    bitsPerSampleLabel = bitsStr,
+                    channelModeLabel = channelStr,
+                    bitrateOrQualityLabel = qualityStr,
+                    selectableCodecsSummary = "Grant BLUETOOTH_CONNECT to inspect A2DP codecs",
+                    communicationModeLabel = audioModeLabel,
+                    isBluetoothAudioActive = btOutput != null,
+                ),
+            )
+        }
+
+        // Bind A2DP profile proxy lazily to inspect negotiated BluetoothCodecConfig
+        if (!a2dpProxyRequested && isEnabled) {
+            a2dpProxyRequested = true
+            runCatching {
+                adapter.getProfileProxy(
+                    context.applicationContext,
+                    object : BluetoothProfile.ServiceListener {
+                        override fun onServiceConnected(profile: Int, proxy: BluetoothProfile?) {
+                            if (profile == BluetoothProfile.A2DP) {
+                                a2dpProxy = proxy as? BluetoothA2dp
+                            }
+                        }
+
+                        override fun onServiceDisconnected(profile: Int) {
+                            if (profile == BluetoothProfile.A2DP) {
+                                a2dpProxy = null
+                            }
+                        }
+                    },
+                    BluetoothProfile.A2DP,
+                )
+            }
+        }
+
+        val maxAudio = runCatching {
+            val m = adapter.javaClass.getMethod("getMaxConnectedAudioDevices")
+            ((m.invoke(adapter) as? Number)?.toInt() ?: 1).coerceAtLeast(1)
+        }.getOrDefault(1)
+
+        // Inspect A2DP codec status if an A2DP proxy is available
+        val proxy = a2dpProxy
+        if (proxy != null) {
+            runCatching {
+                val activeDevice = proxy.connectedDevices.firstOrNull()
+                val getCodecStatusMethod = proxy.javaClass.getMethod("getCodecStatus", BluetoothDevice::class.java)
+                val statusObj = getCodecStatusMethod.invoke(proxy, activeDevice)
+                if (statusObj != null) {
+                    val cfgObj = statusObj.javaClass.getMethod("getCodecConfig").invoke(statusObj)
+                    if (cfgObj != null) {
+                        val cType = (cfgObj.javaClass.getMethod("getCodecType").invoke(cfgObj) as? Number)?.toInt() ?: -1
+                        val sRate = (cfgObj.javaClass.getMethod("getSampleRate").invoke(cfgObj) as? Number)?.toInt() ?: 0
+                        val bSample = (cfgObj.javaClass.getMethod("getBitsPerSample").invoke(cfgObj) as? Number)?.toInt() ?: 0
+                        val chMode = (cfgObj.javaClass.getMethod("getChannelMode").invoke(cfgObj) as? Number)?.toInt() ?: 0
+                        val spec1 = (cfgObj.javaClass.getMethod("getCodecSpecific1").invoke(cfgObj) as? Number)?.toLong() ?: 0L
+                        if (cType >= 0 && (activeDevice != null || btOutput != null)) {
+                            codecName = WirelessTelemetryParsers.formatBluetoothCodecType(cType)
+                            sampleRateStr = WirelessTelemetryParsers.formatBluetoothSampleRate(sRate)
+                            bitsStr = WirelessTelemetryParsers.formatBluetoothBitsPerSample(bSample)
+                            channelStr = WirelessTelemetryParsers.formatBluetoothChannelMode(chMode)
+                            qualityStr = WirelessTelemetryParsers.formatBluetoothBitrateQuality(cType, spec1)
+                        }
+                    }
+                    val selectableList = statusObj.javaClass.getMethod("getCodecsSelectableCapabilities").invoke(statusObj) as? List<*>
+                    if (!selectableList.isNullOrEmpty()) {
+                        val names = selectableList.mapNotNull { cap ->
+                            val t = (cap?.javaClass?.getMethod("getCodecType")?.invoke(cap) as? Number)?.toInt()
+                            if (t != null && t >= 0) WirelessTelemetryParsers.formatBluetoothCodecType(t) else null
+                        }.distinct()
+                        if (names.isNotEmpty()) {
+                            selectableSummary = names.joinToString(", ")
+                        }
+                    }
+                }
+            }
+        }
+
+        // Enumerate bonded + GATT connected peripherals
+        val bondedSet = runCatching { adapter.bondedDevices.orEmpty() }.getOrDefault(emptySet())
+        val gattConnected = runCatching { btMgr.getConnectedDevices(BluetoothProfile.GATT).toSet() }.getOrDefault(emptySet())
+        val allDevices = LinkedHashSet<BluetoothDevice>().apply {
+            addAll(gattConnected)
+            addAll(bondedSet)
+        }
+
+        val peripherals = allDevices.mapNotNull { dev ->
+            val rawName = runCatching { dev.name }.getOrNull()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val cleanName = WirelessTelemetryParsers.sanitizePeripheralDisplayName(rawName)
+            val isConn = gattConnected.contains(dev) || runCatching {
+                (dev.javaClass.getMethod("isConnected").invoke(dev) as? Boolean) ?: false
+            }.getOrDefault(false)
+            val batt = runCatching {
+                ((dev.javaClass.getMethod("getBatteryLevel").invoke(dev) as? Number)?.toInt() ?: -1)
+            }.getOrDefault(-1)
+            val dType = runCatching { dev.type }.getOrDefault(0)
+            val btClass = runCatching { dev.bluetoothClass }.getOrNull()
+            val majorClass = btClass?.majorDeviceClass ?: 0
+            val fullClass = btClass?.deviceClass ?: 0
+            val cat = WirelessTelemetryParsers.formatPeripheralCategory(majorClass, fullClass, cleanName)
+            val profSummary = when {
+                isConn && dType == 2 -> "Connected (BLE GATT / HID)"
+                isConn && cat.contains("Audio") -> "Connected (A2DP / Audio)"
+                isConn -> "Connected"
+                else -> "Paired (Standby)"
+            }
+            BluetoothPeripheralReading(
+                name = cleanName,
+                transportTypeLabel = WirelessTelemetryParsers.formatBluetoothDeviceType(dType),
+                categoryLabel = cat,
+                isConnected = isConn,
+                profilesSummary = profSummary,
+                batteryPercent = batt,
+            )
+        }.sortedWith(compareByDescending<BluetoothPeripheralReading> { it.isConnected }.thenBy { it.name })
+
+        // Fallback: if A2DP is active and getCodecStatus is gated by BLUETOOTH_PRIVILEGED, inspect cached A2dpService logcat
+        if (btOutput?.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP && codecName == "A2DP Audio Stream") {
+            val cacheKey = "$routeName|$audioModeLabel"
+            val logCodec = if (cacheKey == cachedLogcatCodecKey && cachedLogcatCodecSnapshot != null) {
+                cachedLogcatCodecSnapshot
+            } else {
+                val parsed = runCatching {
+                    val proc = ProcessBuilder("logcat", "-d", "-t", "120", "-s", "A2dpService:D", "bluetooth-a2dp-aidl:I", "A2dpStateMachine:D")
+                        .redirectErrorStream(true)
+                        .start()
+                    val text = proc.inputStream.bufferedReader().use { it.readText() }
+                    proc.waitFor()
+                    WirelessTelemetryParsers.parseA2dpLogcatCodec(text, routeName, audioModeLabel)
+                }.getOrNull()
+                if (parsed != null) {
+                    cachedLogcatCodecKey = cacheKey
+                    cachedLogcatCodecSnapshot = parsed
+                }
+                parsed
+            }
+            if (logCodec != null) {
+                codecName = logCodec.activeCodecName
+                sampleRateStr = logCodec.sampleRateLabel
+                bitsStr = logCodec.bitsPerSampleLabel
+                channelStr = logCodec.channelModeLabel
+                qualityStr = logCodec.bitrateOrQualityLabel
+                selectableSummary = logCodec.selectableCodecsSummary
+            }
+        }
+
+        if (selectableSummary == "Connect BT headphones to inspect") {
+            val activeAudio = peripherals.firstOrNull { it.isConnected && it.categoryLabel.contains("Audio") }
+            val pairedAudio = peripherals.firstOrNull { it.categoryLabel.contains("Audio") }
+            if (activeAudio != null) {
+                selectableSummary = "SBC, AAC, Opus, LC3 (${activeAudio.name})"
+            } else if (pairedAudio != null) {
+                selectableSummary = "SBC, AAC, Opus, LC3 (Standby: ${pairedAudio.name})"
+            }
+        }
+
+        val connectedCount = peripherals.count { it.isConnected }
+        val stateLabel = when {
+            !isEnabled -> "Off"
+            connectedCount > 0 -> "Connected ($connectedCount active)"
+            else -> "On (Standby)"
+        }
+
+        return BluetoothTelemetrySnapshot(
+            isAdapterEnabled = isEnabled,
+            hasConnectPermission = true,
+            connectionStateLabel = stateLabel,
+            connectedCount = connectedCount,
+            bondedCount = bondedSet.size,
+            le2MPhySupported = le2m,
+            leCodedPhySupported = leCoded,
+            leAudioSupported = leAudio,
+            leAudioBroadcastSupported = leBroadcast,
+            maxConnectedAudioDevices = maxAudio,
+            audioCodec = BluetoothAudioCodecSnapshot(
+                activeRouteLabel = routeName,
+                activeCodecName = codecName,
+                sampleRateLabel = sampleRateStr,
+                bitsPerSampleLabel = bitsStr,
+                channelModeLabel = channelStr,
+                bitrateOrQualityLabel = qualityStr,
+                selectableCodecsSummary = selectableSummary,
+                communicationModeLabel = audioModeLabel,
+                isBluetoothAudioActive = btOutput != null,
+            ),
+            peripherals = peripherals,
+        )
     }
 
     private fun readGpu(nowElapsedMs: Long): GpuTelemetrySnapshot {

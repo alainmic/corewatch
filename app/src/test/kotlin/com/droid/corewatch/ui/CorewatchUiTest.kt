@@ -92,12 +92,20 @@ class CorewatchUiTest {
         composeRule.onNodeWithText("Internal User Storage (/data)").assertIsDisplayed()
         composeRule.onNodeWithTag("lmkd_monitor_card").assertIsDisplayed()
 
-        // 4. Switch to Tab 4 (Displays & Network)
+        // 4. Switch to Tab 4 (Display / Displays) and Tab 5 (Network & BT)
+        assertEquals("Display", CorewatchTab.Displays.labelForDisplayCount(1, compact = false))
+        assertEquals("Displays", CorewatchTab.Displays.labelForDisplayCount(2, compact = false))
         composeRule.onNodeWithTag("tab_3").performClick()
+        assertEquals(CorewatchTab.Displays, vm.state.value.activeTab)
         composeRule.onNodeWithTag("frame_jank_card").assertIsDisplayed()
+
+        composeRule.onNodeWithTag("tab_4").performClick()
+        assertEquals(CorewatchTab.NetworkBluetooth, vm.state.value.activeTab)
+        composeRule.onNodeWithTag("wifi_link_card").assertIsDisplayed()
+        composeRule.onNodeWithTag("bluetooth_card").assertIsDisplayed()
         composeRule.onNodeWithText("Network Throughput (TrafficStats RX / TX)").assertIsDisplayed()
 
-        // 5. Copy Markdown Diagnostic Snapshot AND verify switching all 4 tabs works while the notification bar is visible
+        // 5. Copy Markdown Diagnostic Snapshot AND verify switching all 5 tabs works while the notification bar is visible
         composeRule.onNodeWithTag("btn_copy_markdown").performClick()
         composeRule.onNodeWithTag("status_banner").assertIsDisplayed()
         assertTrue(vm.state.value.statusBanner!!.contains("Copied Markdown"))
@@ -118,7 +126,12 @@ class CorewatchUiTest {
         composeRule.onNodeWithTag("status_banner").assertIsDisplayed()
 
         composeRule.onNodeWithTag("tab_3").performClick()
-        assertEquals(CorewatchTab.DisplaysNetwork, vm.state.value.activeTab)
+        assertEquals(CorewatchTab.Displays, vm.state.value.activeTab)
+        composeRule.onNodeWithTag("frame_jank_card").assertIsDisplayed()
+        composeRule.onNodeWithTag("status_banner").assertIsDisplayed()
+
+        composeRule.onNodeWithTag("tab_4").performClick()
+        assertEquals(CorewatchTab.NetworkBluetooth, vm.state.value.activeTab)
         composeRule.onNodeWithText("Network Throughput (TrafficStats RX / TX)").assertIsDisplayed()
         composeRule.onNodeWithTag("status_banner").assertIsDisplayed()
 
@@ -239,7 +252,7 @@ class CorewatchUiTest {
         }
 
         // At 758dp window width with desktop caption insets (usableCaptionWidth = 473dp),
-        // all 4 compact tabs ("CPU", "Battery", "Memory", "Displays") must be visible and clickable
+        // all 5 compact tabs ("CPU", "Battery", "Memory", "Display(s)", "Net & BT") must be visible and clickable
         composeRule.onNodeWithTag("btn_copy_markdown").performClick()
         assertTrue(vm.state.value.statusBanner!!.contains("Copied Markdown"))
         composeRule.onNodeWithTag("tab_1").assertIsDisplayed().performClick()
@@ -247,12 +260,14 @@ class CorewatchUiTest {
         composeRule.onNodeWithTag("tab_2").assertIsDisplayed().performClick()
         assertEquals(CorewatchTab.MemoryStorage, vm.state.value.activeTab)
         composeRule.onNodeWithTag("tab_3").assertIsDisplayed().performClick()
-        assertEquals(CorewatchTab.DisplaysNetwork, vm.state.value.activeTab)
+        assertEquals(CorewatchTab.Displays, vm.state.value.activeTab)
+        composeRule.onNodeWithTag("tab_4").assertIsDisplayed().performClick()
+        assertEquals(CorewatchTab.NetworkBluetooth, vm.state.value.activeTab)
         composeRule.onNodeWithTag("tab_0").assertIsDisplayed().performClick()
         assertEquals(CorewatchTab.OverviewThermals, vm.state.value.activeTab)
 
-        // At 560dp window width with desktop caption insets (usableCaptionWidth = 275dp < 435dp),
-        // splitTwoRowHeader activates so all 4 tabs and pills remain visible and clickable on row 2
+        // At 560dp window width with desktop caption insets (usableCaptionWidth = 275dp < 465dp),
+        // splitTwoRowHeader activates so all 5 tabs and pills remain visible and clickable on row 2
         composeRule.runOnUiThread {
             simulatedWidth.value = 560.dp
         }
@@ -260,7 +275,9 @@ class CorewatchUiTest {
         composeRule.onNodeWithTag("tab_1").assertIsDisplayed().performClick()
         assertEquals(CorewatchTab.BatteryPower, vm.state.value.activeTab)
         composeRule.onNodeWithTag("tab_3").assertIsDisplayed().performClick()
-        assertEquals(CorewatchTab.DisplaysNetwork, vm.state.value.activeTab)
+        assertEquals(CorewatchTab.Displays, vm.state.value.activeTab)
+        composeRule.onNodeWithTag("tab_4").assertIsDisplayed().performClick()
+        assertEquals(CorewatchTab.NetworkBluetooth, vm.state.value.activeTab)
         composeRule.onNodeWithTag("pill_thermal").assertIsDisplayed().performClick()
         composeRule.onNodeWithTag("pill_wattage").assertIsDisplayed()
     }
@@ -399,7 +416,12 @@ class CorewatchUiTest {
         root.performKeyInput {
             withKeyDown(Key.CtrlLeft) { pressKey(Key.Four) }
         }
-        assertEquals(CorewatchTab.DisplaysNetwork, vm.state.value.activeTab)
+        assertEquals(CorewatchTab.Displays, vm.state.value.activeTab)
+
+        root.performKeyInput {
+            withKeyDown(Key.CtrlLeft) { pressKey(Key.Five) }
+        }
+        assertEquals(CorewatchTab.NetworkBluetooth, vm.state.value.activeTab)
 
         root.performKeyInput {
             withKeyDown(Key.CtrlLeft) { pressKey(Key.One) }

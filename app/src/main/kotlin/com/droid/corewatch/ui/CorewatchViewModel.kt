@@ -37,7 +37,13 @@ enum class CorewatchTab(
     OverviewThermals(0, "Thermals & Compute", "Compute", "Thermals & Compute", "Ctrl+1"),
     BatteryPower(1, "Battery & W", "Battery", "Battery & Power", "Ctrl+2"),
     MemoryStorage(2, "Memory & Swap", "Memory", "Memory & Storage", "Ctrl+3"),
-    DisplaysNetwork(3, "Displays & Net", "Displays", "Displays & Network", "Ctrl+4"),
+    Displays(3, "Display", "Display", "Displays", "Ctrl+4"),
+    NetworkBluetooth(4, "Network & BT", "Net & BT", "Network & Bluetooth", "Ctrl+5");
+
+    fun labelForDisplayCount(displayCount: Int, compact: Boolean): String = when (this) {
+        Displays -> if (displayCount > 1) "Displays" else "Display"
+        else -> if (compact) compactTitle else shortTitle
+    }
 }
 
 enum class SamplingInterval(val delayMs: Long, val label: String) {
@@ -71,6 +77,7 @@ data class TelemetryHistoryStats(
     val batteryAvgWatts: Float = 0f,
     val memoryUsedPctSamples: List<Float> = emptyList(),
     val networkMbpsSamples: List<Float> = emptyList(),
+    val wifiSignalSamples: List<Float> = emptyList(),
     val jankPercentSamples: List<Float> = emptyList(),
 )
 
@@ -98,6 +105,7 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
     private val wattsRing = FloatRingBuffer(60)
     private val memRing = FloatRingBuffer(60)
     private val netRing = FloatRingBuffer(60)
+    private val wifiSignalRing = FloatRingBuffer(60)
     private val jankRing = FloatRingBuffer(60)
     private var lastWindowNarrow: Boolean = false
 
@@ -135,6 +143,7 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
         wattsRing.push(abs(snap.battery.watts))
         memRing.push(snap.memory.usedFraction * 100f)
         netRing.push(snap.network.rxMbps + snap.network.txMbps)
+        wifiSignalRing.push(snap.wifi.signalQualityPercent.toFloat())
         jankRing.push(snap.frameJank.latestIntervalJankPercent)
 
         val hist = TelemetryHistoryStats(
@@ -154,6 +163,7 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
             batteryAvgWatts = wattsRing.average(),
             memoryUsedPctSamples = memRing.toList(),
             networkMbpsSamples = netRing.toList(),
+            wifiSignalSamples = wifiSignalRing.toList(),
             jankPercentSamples = jankRing.toList(),
         )
 
@@ -301,6 +311,7 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
         wattsRing.clear()
         memRing.clear()
         netRing.clear()
+        wifiSignalRing.clear()
         jankRing.clear()
         collector.resetWindowCounters()
         sampleNow()

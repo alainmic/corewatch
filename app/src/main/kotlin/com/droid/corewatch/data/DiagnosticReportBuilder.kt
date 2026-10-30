@@ -11,6 +11,10 @@ data class NetworkThroughput(
     val txMbps: Float = 0f,
     val totalRxBytes: Long = 0L,
     val totalTxBytes: Long = 0L,
+    val rxPacketsPerSec: Float = 0f,
+    val txPacketsPerSec: Float = 0f,
+    val totalRxPackets: Long = 0L,
+    val totalTxPackets: Long = 0L,
 )
 
 data class StorageSummary(
@@ -59,6 +63,8 @@ data class SystemTelemetrySnapshot(
     val frameJank: FrameJankSnapshot = FrameJankSnapshot(),
     val lmkd: LmkdTelemetrySnapshot = LmkdTelemetrySnapshot(),
     val network: NetworkThroughput = NetworkThroughput(),
+    val wifi: WifiTelemetrySnapshot = WifiTelemetrySnapshot(),
+    val bluetooth: BluetoothTelemetrySnapshot = BluetoothTelemetrySnapshot(),
     val caffeineEvaluation: CaffeineEvaluation = CaffeineEvaluation(false, "Off", null, false),
 ) {
     val avgCpuUtilizationFraction: Float
@@ -183,6 +189,34 @@ object DiagnosticReportBuilder {
                 ),
             )
             appendLine("| **Displays** | $displaySummary |")
+            appendLine(
+                String.format(
+                    Locale.US,
+                    "| **Wi-Fi & Network** | `%s` (`%s` · `%s` · `%d dBm` `%s` · PHY `%s` · RX `%.2f` / TX `%.2f Mbps`) |",
+                    SysfsParsers.sanitizeSensorName(snapshot.wifi.transportLabel, "Disconnected"),
+                    SysfsParsers.sanitizeSensorName(snapshot.wifi.wifiStandardLabel, "N/A"),
+                    SysfsParsers.sanitizeSensorName(snapshot.wifi.bandAndChannelLabel, "N/A"),
+                    snapshot.wifi.rssiDbm,
+                    SysfsParsers.sanitizeSensorName(snapshot.wifi.linkHealthBadge, "N/A"),
+                    SysfsParsers.sanitizeSensorName(snapshot.wifi.phySpeedSummary, "N/A"),
+                    snapshot.network.rxMbps,
+                    snapshot.network.txMbps,
+                ),
+            )
+            appendLine(
+                String.format(
+                    Locale.US,
+                    "| **Bluetooth & Codec** | `%s` — Route: `%s` · Codec: `%s` (`%s`, `%s`, `%s`) · Connected: `%d` (`%d` paired) |",
+                    SysfsParsers.sanitizeSensorName(snapshot.bluetooth.connectionStateLabel, "Off"),
+                    SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioCodec.activeRouteLabel, "Speaker"),
+                    SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioCodec.activeCodecName, "None"),
+                    SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioCodec.sampleRateLabel, "48.0 kHz"),
+                    SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioCodec.bitsPerSampleLabel, "24-bit"),
+                    SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioCodec.bitrateOrQualityLabel, "Standard"),
+                    snapshot.bluetooth.connectedCount,
+                    snapshot.bluetooth.bondedCount,
+                ),
+            )
             appendLine("| **Caffeine Keep-Awake** | `${SysfsParsers.sanitizeSensorName(snapshot.caffeineEvaluation.activeReason, "Off")}` |")
         }.trimEnd()
     }

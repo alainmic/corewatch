@@ -480,4 +480,50 @@ class CorewatchDataUnitTest {
         assertEquals(1, frameSnap.longCpuJank5m)
         assertEquals("[60, 120] Hz", frameSnap.deadlineRangeLabel)
     }
+
+    @Test
+    fun wirelessTelemetryParsersFormatWifi7BandChannelRssiAndBluetoothCodecs() {
+        assertEquals("Wi-Fi 7 (802.11be)", WirelessTelemetryParsers.formatWifiStandard(8))
+        assertEquals("Wi-Fi 6/6E (802.11ax)", WirelessTelemetryParsers.formatWifiStandard(6))
+        assertEquals("Wi-Fi 5 (802.11ac)", WirelessTelemetryParsers.formatWifiStandard(5))
+
+        assertEquals("5 GHz · Ch 149 (5745 MHz)", WirelessTelemetryParsers.formatBandAndChannel(5745))
+        assertEquals("6 GHz · Ch 33 (6115 MHz)", WirelessTelemetryParsers.formatBandAndChannel(6115))
+        assertEquals("2.4 GHz · Ch 6 (2437 MHz)", WirelessTelemetryParsers.formatBandAndChannel(2437))
+
+        assertEquals(100, WirelessTelemetryParsers.computeRssiQualityPercent(-42))
+        assertEquals(45, WirelessTelemetryParsers.computeRssiQualityPercent(-75))
+        assertEquals(0, WirelessTelemetryParsers.computeRssiQualityPercent(-127))
+        assertEquals("WPA3-SAE", WirelessTelemetryParsers.formatWifiSecurityType(4))
+
+        assertEquals("SBC", WirelessTelemetryParsers.formatBluetoothCodecType(0))
+        assertEquals("AAC", WirelessTelemetryParsers.formatBluetoothCodecType(1))
+        assertEquals("LDAC", WirelessTelemetryParsers.formatBluetoothCodecType(4))
+        assertEquals("LC3 (LE Audio)", WirelessTelemetryParsers.formatBluetoothCodecType(5))
+        assertEquals("Opus", WirelessTelemetryParsers.formatBluetoothCodecType(6))
+        assertEquals("48.0 kHz", WirelessTelemetryParsers.formatBluetoothSampleRate(0x2))
+        assertEquals("24-bit", WirelessTelemetryParsers.formatBluetoothBitsPerSample(0x2))
+        assertEquals("Stereo", WirelessTelemetryParsers.formatBluetoothChannelMode(0x2))
+        assertEquals("990 kbps (High Quality)", WirelessTelemetryParsers.formatBluetoothBitrateQuality(4, 1000L))
+        assertEquals("Mouse / Pointing", WirelessTelemetryParsers.formatPeripheralCategory(0x0500, 0x0580, "MX Master 3 B"))
+        assertEquals("Audio / Headphones", WirelessTelemetryParsers.formatPeripheralCategory(0x0400, 0x0404, "Pixel Buds Pro 2"))
+        assertEquals("Pixel Buds Pro 2", WirelessTelemetryParsers.sanitizePeripheralDisplayName("User's Pixel Buds Pro 2"))
+        assertEquals("Wireless Headphones (LE Audio)", WirelessTelemetryParsers.sanitizePeripheralDisplayName("User's Earbuds PVT"))
+
+        val parsedLogCodec = WirelessTelemetryParsers.parseA2dpLogcatCodec(
+            logText = """
+                I bluetooth-a2dp-aidl: IsCodecOffloadingEnabled: software codec=CodecConfiguration{codecType: SBC, encodedAudioBitrate: 243000, peerMtu: 663, isScmstEnabled: false, config: CodecSpecific{sbcConfig: SbcConfiguration{sampleRateHz: 44100, channelMode: JOINT_STEREO, blockLength: 16, numSubbands: 8, allocMethod: ALLOC_MD_L, bitsPerSample: 16, minBitpool: 2, maxBitpool: 37}}}
+                D A2dpService: broadcastCodecConfig: {mCodecConfig:{codecName:SBC,mCodecType:0,mCodecPriority:1001,mSampleRate:0x1(44100),mBitsPerSample:0x1(16),mChannelMode:0x2(STEREO),mCodecSpecific1:0},mCodecsSelectableCapabilities:[{codecName:SBC},{codecName:AAC}]}
+            """.trimIndent(),
+            activeRouteLabel = "Bluetooth A2DP (Pixel Buds Pro 2)",
+            communicationModeLabel = "Normal (Media)",
+        )
+        assertNotNull(parsedLogCodec)
+        assertEquals("SBC", parsedLogCodec!!.activeCodecName)
+        assertEquals("44.1 kHz", parsedLogCodec.sampleRateLabel)
+        assertEquals("16-bit", parsedLogCodec.bitsPerSampleLabel)
+        assertEquals("Joint Stereo", parsedLogCodec.channelModeLabel)
+        assertEquals("243 kbps (MTU 663 B)", parsedLogCodec.bitrateOrQualityLabel)
+        assertEquals("SBC, AAC", parsedLogCodec.selectableCodecsSummary)
+    }
 }

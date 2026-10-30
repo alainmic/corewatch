@@ -239,7 +239,10 @@ fun CorewatchAppRoot(
                         vm.selectTab(CorewatchTab.MemoryStorage); true
                     }
                     ev.isCtrlPressed && ev.key == Key.Four -> {
-                        vm.selectTab(CorewatchTab.DisplaysNetwork); true
+                        vm.selectTab(CorewatchTab.Displays); true
+                    }
+                    ev.isCtrlPressed && ev.key == Key.Five -> {
+                        vm.selectTab(CorewatchTab.NetworkBluetooth); true
                     }
                     !ev.isCtrlPressed && ev.key == Key.Spacebar -> {
                         vm.togglePaused(); true
@@ -274,7 +277,8 @@ fun CorewatchAppRoot(
                             CorewatchTab.OverviewThermals -> OverviewThermalsTab(state = state, vm = vm)
                             CorewatchTab.BatteryPower -> BatteryPowerTab(state = state, vm = vm)
                             CorewatchTab.MemoryStorage -> MemoryStorageTab(state = state)
-                            CorewatchTab.DisplaysNetwork -> DisplaysNetworkTab(state = state)
+                            CorewatchTab.Displays -> DisplaysTab(state = state)
+                            CorewatchTab.NetworkBluetooth -> NetworkBluetoothTab(state = state)
                         }
                     }
                 }
@@ -321,9 +325,9 @@ internal fun CorewatchTitleBar(state: CorewatchUiState, vm: CorewatchViewModel, 
         val usableCaptionWidth = (totalWidth - startPad - endPad).coerceAtLeast(0.dp)
         // Separate interactive controls below the OS caption drag region whenever an OS caption bar is present
         // or when the caption width is narrow, preventing Embedded{Caption} pointer-stealing and minimize-button overlap.
-        val splitTwoRowHeader = hasDesktopCaption || usableCaptionWidth < 435.dp
+        val splitTwoRowHeader = hasDesktopCaption || usableCaptionWidth < 520.dp
         val showBrandText = usableCaptionWidth >= 560.dp || cap.start == 0.dp || splitTwoRowHeader
-        val useFullTabTitles = if (splitTwoRowHeader) totalWidth >= 680.dp else usableCaptionWidth >= 720.dp
+        val useFullTabTitles = if (splitTwoRowHeader) totalWidth >= 720.dp else usableCaptionWidth >= 760.dp
         val showWattagePill = usableCaptionWidth >= 820.dp || splitTwoRowHeader
         val showThermalPill = usableCaptionWidth >= 420.dp || splitTwoRowHeader
         val showCaffeineLabel = if (splitTwoRowHeader) totalWidth >= 560.dp else usableCaptionWidth >= 640.dp
@@ -398,6 +402,7 @@ internal fun CorewatchTitleBar(state: CorewatchUiState, vm: CorewatchViewModel, 
                     } else {
                         CorewatchTabStrip(
                             activeTab = state.activeTab,
+                            displayCount = snap.displays.size,
                             useFullTabTitles = useFullTabTitles,
                             onSelectTab = vm::selectTab,
                         )
@@ -451,6 +456,7 @@ internal fun CorewatchTitleBar(state: CorewatchUiState, vm: CorewatchViewModel, 
                     ) {
                         CorewatchTabStrip(
                             activeTab = state.activeTab,
+                            displayCount = snap.displays.size,
                             useFullTabTitles = useFullTabTitles,
                             onSelectTab = vm::selectTab,
                         )
@@ -608,6 +614,7 @@ private fun CorewatchActionToolbarButtons(
 @Composable
 private fun CorewatchTabStrip(
     activeTab: CorewatchTab,
+    displayCount: Int,
     useFullTabTitles: Boolean,
     onSelectTab: (CorewatchTab) -> Unit,
 ) {
@@ -621,7 +628,7 @@ private fun CorewatchTabStrip(
             modifier = Modifier.testTag("tab_${tab.index}"),
         ) {
             Text(
-                text = if (useFullTabTitles) tab.shortTitle else tab.compactTitle,
+                text = tab.labelForDisplayCount(displayCount = displayCount, compact = !useFullTabTitles),
                 style = MaterialTheme.typography.labelMedium,
                 color = if (selected) cs.onPrimaryContainer else cs.onSurfaceVariant,
                 maxLines = 1,
@@ -1812,10 +1819,10 @@ private fun MemoryStorageTab(state: CorewatchUiState) {
     }
 }
 
-// ------------------------------------------------------------------------ Tab 4: Displays & Network
+// ------------------------------------------------------------------------ Tab 4: Display / Displays
 
 @Composable
-private fun DisplaysNetworkTab(state: CorewatchUiState) {
+private fun DisplaysTab(state: CorewatchUiState) {
     val cs = MaterialTheme.colorScheme
     val snap = state.snapshot
     val hist = state.history
@@ -1827,8 +1834,15 @@ private fun DisplaysNetworkTab(state: CorewatchUiState) {
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        val displayCount = snap.displays.size
+        val headerLabel = if (displayCount == 1) {
+            val sub = if (snap.externalDisplayCount > 0) "1 external" else "1 built-in"
+            "Connected Display (1 total · $sub)"
+        } else {
+            "Connected Displays ($displayCount total · ${snap.externalDisplayCount} external)"
+        }
         Text(
-            text = "Connected Displays (${snap.displays.size} total · ${snap.externalDisplayCount} external)",
+            text = headerLabel,
             style = MaterialTheme.typography.titleMedium,
         )
 
@@ -1836,16 +1850,142 @@ private fun DisplaysNetworkTab(state: CorewatchUiState) {
             DisplayCard(disp = disp)
         }
 
+        // Dropped & Janky Frames (Rolling 5-Min Window, VRR-Aware)
         val jank = snap.frameJank
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = cs.surfaceContainer,
+            modifier = Modifier.fillMaxWidth().testTag("frame_jank_card"),
+        ) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("Dropped & Janky Frames (Last 5 Mins · VRR-Aware)", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            text = "Window: ${jank.windowElapsedLabel} · ${jank.evaluatedFrames5m} evaluated frames",
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onSurfaceVariant,
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = cs.surfaceContainerHigh,
+                    ) {
+                        Text(
+                            text = jank.scopeBadgeLabel,
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = cs.surfaceContainerHigh,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("DROPPED FRAMES (5M)", style = CorewatchMonoTypography.hudSmall, color = cs.onSurfaceVariant)
+                            Text(
+                                text = String.format(Locale.US, "%.2f%%", jank.droppedPercent5m),
+                                style = CorewatchMonoTypography.metricLarge,
+                                color = if (jank.droppedFrames5m > 0) cs.error else cs.secondary,
+                            )
+                            Text(
+                                text = "${jank.droppedFrames5m} dropped frames (5m)",
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSurfaceVariant,
+                            )
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = cs.surfaceContainerHigh,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("JANKY FRAMES (5M)", style = CorewatchMonoTypography.hudSmall, color = cs.onSurfaceVariant)
+                            Text(
+                                text = String.format(Locale.US, "%.2f%%", jank.jankyPercent5m),
+                                style = CorewatchMonoTypography.metricLarge,
+                                color = if (jank.jankyPercent5m >= 5f) cs.error else cs.primary,
+                            )
+                            Text(
+                                text = "${jank.jankyFrames5m} janky frames (5m)",
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+
+                SparklineCanvas(
+                    samples = hist.jankPercentSamples,
+                    lineColor = cs.tertiary,
+                    gridColor = cs.outlineVariant.copy(alpha = 0.4f),
+                    minFloor = 0f,
+                    maxCeiling = 100f,
+                    modifier = Modifier.fillMaxWidth().height(54.dp),
+                )
+
+                Text(
+                    text = String.format(
+                        Locale.US,
+                        "Jank Causes (5m): Long CPU: %d · Long GPU: %d · Buffer Stuffing: %d · Missed VSync: %d",
+                        jank.longCpuJank5m,
+                        jank.longGpuJank5m,
+                        jank.bufferStuffing5m,
+                        jank.sfMissedFrames5m,
+                    ),
+                    style = CorewatchMonoTypography.hudSmall,
+                    color = cs.onSurfaceVariant,
+                )
+                Text(
+                    text = "VRR Deadline Accounting: Per-frame dynamic FrameMetrics.DEADLINE ${jank.deadlineRangeLabel}",
+                    style = CorewatchMonoTypography.hudSmall,
+                    color = cs.primary,
+                )
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------------------ Tab 5: Network & Bluetooth
+
+@Composable
+private fun NetworkBluetoothTab(state: CorewatchUiState) {
+    val cs = MaterialTheme.colorScheme
+    val snap = state.snapshot
+    val hist = state.history
+    val wifi = snap.wifi
+    val bt = snap.bluetooth
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            // Dropped & Janky Frames (Rolling 5-Min Window, VRR-Aware)
+            // Wi-Fi & Network Link State Card
             Surface(
                 shape = RoundedCornerShape(14.dp),
                 color = cs.surfaceContainer,
-                modifier = Modifier.weight(1.15f).testTag("frame_jank_card"),
+                modifier = Modifier.weight(1.15f).testTag("wifi_link_card"),
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(
@@ -1853,22 +1993,15 @@ private fun DisplaysNetworkTab(state: CorewatchUiState) {
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text("Dropped & Janky Frames (Last 5 Mins · VRR-Aware)", style = MaterialTheme.typography.titleMedium)
-                            Text(
-                                text = "Window: ${jank.windowElapsedLabel} · ${jank.evaluatedFrames5m} evaluated frames",
-                                style = CorewatchMonoTypography.hudSmall,
-                                color = cs.onSurfaceVariant,
-                            )
-                        }
+                        Text("Wi-Fi & Network Link State", style = MaterialTheme.typography.titleMedium)
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = cs.surfaceContainerHigh,
+                            color = if (wifi.isConnected) cs.primaryContainer else cs.surfaceContainerHigh,
                         ) {
                             Text(
-                                text = jank.scopeBadgeLabel,
+                                text = wifi.wifiStandardLabel,
                                 style = CorewatchMonoTypography.hudSmall,
-                                color = cs.onSurfaceVariant,
+                                color = if (wifi.isConnected) cs.onPrimaryContainer else cs.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                             )
                         }
@@ -1876,82 +2009,79 @@ private fun DisplaysNetworkTab(state: CorewatchUiState) {
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = cs.surfaceContainerHigh,
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text("DROPPED FRAMES (5M)", style = CorewatchMonoTypography.hudSmall, color = cs.onSurfaceVariant)
-                                Text(
-                                    text = String.format(Locale.US, "%.2f%%", jank.droppedPercent5m),
-                                    style = CorewatchMonoTypography.metricLarge,
-                                    color = if (jank.droppedFrames5m > 0) cs.error else cs.secondary,
-                                )
-                                Text(
-                                    text = "${jank.droppedFrames5m} dropped frames (5m)",
-                                    style = CorewatchMonoTypography.hudSmall,
-                                    color = cs.onSurfaceVariant,
-                                )
-                            }
-                        }
-
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = cs.surfaceContainerHigh,
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text("JANKY FRAMES (5M)", style = CorewatchMonoTypography.hudSmall, color = cs.onSurfaceVariant)
-                                Text(
-                                    text = String.format(Locale.US, "%.2f%%", jank.jankyPercent5m),
-                                    style = CorewatchMonoTypography.metricLarge,
-                                    color = if (jank.jankyPercent5m >= 5f) cs.error else cs.primary,
-                                )
-                                Text(
-                                    text = "${jank.jankyFrames5m} janky frames (5m)",
-                                    style = CorewatchMonoTypography.hudSmall,
-                                    color = cs.onSurfaceVariant,
-                                )
-                            }
-                        }
+                        Text(
+                            text = if (wifi.rssiDbm > -120) {
+                                "RSSI: ${wifi.rssiDbm} dBm · ${wifi.signalQualityLabel} (${wifi.signalQualityPercent}%)"
+                            } else {
+                                "Signal: ${wifi.linkHealthBadge}"
+                            },
+                            style = CorewatchMonoTypography.hudValue,
+                            color = if (wifi.signalQualityPercent >= 60) cs.secondary else cs.primary,
+                        )
+                        Text(
+                            text = "PHY: ${wifi.phySpeedSummary}",
+                            style = CorewatchMonoTypography.hudValue,
+                            color = cs.primary,
+                        )
                     }
 
-                    SparklineCanvas(
-                        samples = hist.jankPercentSamples,
-                        lineColor = cs.tertiary,
-                        gridColor = cs.outlineVariant.copy(alpha = 0.4f),
-                        minFloor = 0f,
-                        maxCeiling = 100f,
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                    LinearProgressIndicator(
+                        progress = { wifi.signalFraction },
+                        modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
+                        color = if (wifi.signalQualityPercent >= 60) cs.secondary else cs.primary,
+                        trackColor = cs.surfaceContainerHighest,
                     )
 
                     Text(
+                        text = "Band: ${wifi.bandAndChannelLabel} · Security: ${wifi.securityLabel} · MLO: ${wifi.mloSummary}",
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurfaceVariant,
+                    )
+                    Text(
                         text = String.format(
                             Locale.US,
-                            "Jank Causes (5m): Long CPU: %d · Long GPU: %d · Buffer Stuffing: %d · Missed VSync: %d",
-                            jank.longCpuJank5m,
-                            jank.longGpuJank5m,
-                            jank.bufferStuffing5m,
-                            jank.sfMissedFrames5m,
+                            "Interface: %s (MTU %d) · Transport: %s · State: %s (%s)",
+                            wifi.interfaceName,
+                            wifi.mtu,
+                            wifi.transportLabel,
+                            if (wifi.isValidated) "Validated" else "Unvalidated",
+                            if (wifi.isMetered) "Metered" else "Unmetered",
                         ),
                         style = CorewatchMonoTypography.hudSmall,
                         color = cs.onSurfaceVariant,
                     )
                     Text(
-                        text = "VRR Deadline Accounting: Per-frame dynamic FrameMetrics.DEADLINE ${jank.deadlineRangeLabel}",
+                        text = String.format(
+                            Locale.US,
+                            "Wi-Fi MAC Frames: TX Good %.1f/s · RX Good %.1f/s · TX Retries %.1f/s · TX Dropped %.1f/s",
+                            wifi.txSuccessPktsPerSec,
+                            wifi.rxSuccessPktsPerSec,
+                            wifi.txRetriesPerSec,
+                            wifi.txLostPktsPerSec,
+                        ),
                         style = CorewatchMonoTypography.hudSmall,
-                        color = cs.primary,
+                        color = if (wifi.txLostPktsPerSec > 1.0) cs.error else cs.onSurfaceVariant,
+                    )
+
+                    SparklineCanvas(
+                        samples = hist.wifiSignalSamples,
+                        lineColor = cs.secondary,
+                        gridColor = cs.outlineVariant.copy(alpha = 0.4f),
+                        minFloor = 0f,
+                        maxCeiling = 100f,
+                        modifier = Modifier.fillMaxWidth().height(56.dp),
                     )
                 }
             }
 
+            // Network Throughput (TrafficStats RX / TX) Card
             Surface(
                 shape = RoundedCornerShape(14.dp),
                 color = cs.surfaceContainer,
-                modifier = Modifier.weight(0.85f),
+                modifier = Modifier.weight(0.85f).testTag("network_throughput_card"),
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Network Throughput (TrafficStats RX / TX)", style = MaterialTheme.typography.titleMedium)
@@ -1959,6 +2089,18 @@ private fun DisplaysNetworkTab(state: CorewatchUiState) {
                         text = String.format(Locale.US, "↓ %.2f Mbps · ↑ %.2f Mbps", snap.network.rxMbps, snap.network.txMbps),
                         style = CorewatchMonoTypography.metricLarge,
                         color = cs.primary,
+                    )
+                    Text(
+                        text = String.format(
+                            Locale.US,
+                            "Packet Rate: ↓ %.0f pkt/s · ↑ %.0f pkt/s (Total: %d RX / %d TX pkts)",
+                            snap.network.rxPacketsPerSec,
+                            snap.network.txPacketsPerSec,
+                            snap.network.totalRxPackets,
+                            snap.network.totalTxPackets,
+                        ),
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurfaceVariant,
                     )
                     Text(
                         text = String.format(
@@ -1975,8 +2117,158 @@ private fun DisplaysNetworkTab(state: CorewatchUiState) {
                         lineColor = cs.primary,
                         gridColor = cs.outlineVariant.copy(alpha = 0.4f),
                         minFloor = 0f,
-                        modifier = Modifier.fillMaxWidth().height(96.dp),
+                        modifier = Modifier.fillMaxWidth().height(92.dp),
                     )
+                }
+            }
+        }
+
+        // Bluetooth Audio Codec & Peripherals Card
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = cs.surfaceContainer,
+            modifier = Modifier.fillMaxWidth().testTag("bluetooth_card"),
+        ) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("Bluetooth Audio Codec & Peripherals", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            text = "Controller Capabilities: ${bt.controllerCapabilitiesSummary} · Max Concurrent Audio Sinks: ${bt.maxConnectedAudioDevices}",
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onSurfaceVariant,
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (bt.connectedCount > 0) cs.secondaryContainer else cs.surfaceContainerHigh,
+                        ) {
+                            Text(
+                                text = bt.connectionStateLabel,
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = if (bt.connectedCount > 0) cs.onSecondaryContainer else cs.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            )
+                        }
+                    }
+                }
+
+                // Active Audio Route & Negotiated Bluetooth Codec Sub-Card
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = cs.surfaceContainerHigh,
+                    modifier = Modifier.fillMaxWidth().testTag("bluetooth_codec_section"),
+                ) {
+                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "Active Audio Route & Bluetooth Codec",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = cs.onSurface,
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (bt.audioCodec.isBluetoothAudioActive) cs.primaryContainer else cs.surfaceVariant,
+                            ) {
+                                Text(
+                                    text = "Codec: ${bt.audioCodec.activeCodecName}",
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = if (bt.audioCodec.isBluetoothAudioActive) cs.onPrimaryContainer else cs.primary,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                )
+                            }
+                        }
+                        Text(
+                            text = "Output Route: ${bt.audioCodec.activeRouteLabel} · Audio Mode: ${bt.audioCodec.communicationModeLabel}",
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onSurface,
+                        )
+                        Text(
+                            text = "Stream Format: ${bt.audioCodec.sampleRateLabel} · ${bt.audioCodec.bitsPerSampleLabel} · ${bt.audioCodec.channelModeLabel} · Bitrate / Quality: ${bt.audioCodec.bitrateOrQualityLabel}",
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onSurfaceVariant,
+                        )
+                        Text(
+                            text = "Headset Selectable Codecs: ${bt.audioCodec.selectableCodecsSummary}",
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.primary,
+                        )
+                    }
+                }
+
+                // Connected & Paired Bluetooth Peripherals Table
+                Text(
+                    text = "CONNECTED & PAIRED BLUETOOTH PERIPHERALS (${bt.connectedCount} ACTIVE · ${bt.bondedCount} PAIRED)",
+                    style = CorewatchMonoTypography.hudSmall,
+                    color = cs.onSurfaceVariant,
+                )
+
+                if (bt.peripherals.isEmpty()) {
+                    Text(
+                        text = if (bt.hasConnectPermission) {
+                            "No paired Bluetooth peripherals reported by BluetoothAdapter."
+                        } else {
+                            "Grant BLUETOOTH_CONNECT permission to inspect paired Bluetooth peripherals and battery levels."
+                        },
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurfaceVariant,
+                    )
+                } else {
+                    for (dev in bt.peripherals) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = cs.surfaceContainerHigh,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 7.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(
+                                        text = dev.name,
+                                        style = CorewatchMonoTypography.hudValue,
+                                        color = if (dev.isConnected) cs.secondary else cs.onSurface,
+                                    )
+                                    Text(
+                                        text = "${dev.categoryLabel} · Transport: ${dev.transportTypeLabel}",
+                                        style = CorewatchMonoTypography.hudSmall,
+                                        color = cs.onSurfaceVariant,
+                                    )
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    if (dev.batteryPercent in 0..100) {
+                                        Text(
+                                            text = "Battery: ${dev.batteryLabel}",
+                                            style = CorewatchMonoTypography.hudValue,
+                                            color = if (dev.batteryPercent <= 20) cs.error else cs.primary,
+                                        )
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = if (dev.isConnected) cs.secondaryContainer else cs.surfaceVariant,
+                                    ) {
+                                        Text(
+                                            text = dev.profilesSummary,
+                                            style = CorewatchMonoTypography.hudSmall,
+                                            color = if (dev.isConnected) cs.onSecondaryContainer else cs.onSurfaceVariant,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -2144,7 +2436,7 @@ private fun DisplayCard(disp: DisplaySpec) {
 private fun ShortcutsDialog(onDismiss: () -> Unit) {
     val shortcuts = listOf(
         "Ctrl+M" to "Toggle between Full Workbench and Compact Mini-HUD mode",
-        "Ctrl+1 .. Ctrl+4" to "Switch tabs (Thermals, Battery, Memory, Displays)",
+        "Ctrl+1 .. Ctrl+5" to "Switch tabs (Compute, Battery, Memory, Display(s), Network & BT)",
         "Ctrl+K" to "Toggle Caffeine Keep-Awake active state",
         "Space" to "Pause / Resume live telemetry graph scrolling",
         "Ctrl+Shift+C" to "Copy Markdown Hardware & Thermal Diagnostic Snapshot",
