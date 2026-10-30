@@ -11,6 +11,14 @@ data class DrmVersionInfo(
     val version: String,
 )
 
+data class DrmConnectorVrrInfo(
+    val connectorName: String,
+    val vrrCapable: Boolean,
+    val vrrKernelEnabled: Boolean,
+    val maxBpc: Int,
+    val physicalSizeMm: String,
+)
+
 data class IvpuParamInfo(
     val deviceId: Int,
     val revision: Int,
@@ -42,6 +50,7 @@ data class IvpuParamInfo(
 object AccelIoctlBridge {
     internal var testDrmVersionProvider: ((String) -> String?)? = null
     internal var testIvpuParamsProvider: ((String, Boolean) -> LongArray?)? = null
+    internal var testDrmConnectorsProvider: ((String) -> String?)? = null
 
     private val nativeLoaded: Boolean by lazy {
         runCatching {
@@ -55,6 +64,47 @@ object AccelIoctlBridge {
 
     @JvmStatic
     private external fun nativeQueryIvpuParams(path: String, heartbeatOnly: Boolean): LongArray?
+
+    @JvmStatic
+    private external fun nativeQueryDrmConnectors(path: String): String?
+
+    fun queryDrmConnectors(path: String = "/dev/dri/card0"): List<DrmConnectorVrrInfo> {
+        val raw = try {
+            val override = testDrmConnectorsProvider
+            if (override != null) {
+                override(path)
+            } else if (nativeLoaded) {
+                nativeQueryDrmConnectors(path)
+            } else {
+                null
+            }
+        } catch (_: Throwable) {
+            null
+        } ?: return emptyList()
+
+        return parseDrmConnectorString(raw)
+    }
+
+    fun parseDrmConnectorString(raw: String): List<DrmConnectorVrrInfo> {
+        if (raw.isBlank()) return emptyList()
+        return raw.split(';').mapNotNull { entry ->
+            val parts = entry.trim().split('|')
+            if (parts.size < 5) return@mapNotNull null
+            val name = SysfsParsers.sanitizeSensorName(parts[0], "")
+            if (name.isEmpty()) return@mapNotNull null
+            val vrrCapable = parts[1].trim() == "1"
+            val vrrEnabled = parts[2].trim() == "1"
+            val maxBpc = parts[3].trim().toIntOrNull()?.coerceIn(6, 16) ?: 8
+            val sizeMm = SysfsParsers.sanitizeSensorName(parts[4], "")
+            DrmConnectorVrrInfo(
+                connectorName = name,
+                vrrCapable = vrrCapable,
+                vrrKernelEnabled = vrrEnabled,
+                maxBpc = maxBpc,
+                physicalSizeMm = sizeMm,
+            )
+        }
+    }
 
     fun queryDrmVersion(path: String): DrmVersionInfo? {
         val raw = try {

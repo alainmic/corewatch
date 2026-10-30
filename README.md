@@ -5,8 +5,8 @@
 <h1 align="center">Corewatch</h1>
 
 <p align="center">
-  <b>Compact system telemetry, thermal/battery wattage inspector, display mode auditor, and "Caffeine" keep-awake utility for Googlebooks.</b><br>
-  Real-time thermal headroom &amp; per-core P/E CPU frequencies, live USB-C PD battery wattage (<code>W = V × I</code>), external monitor refresh rate &amp; 30Hz bottleneck detection, memory/<code>zram</code> swap pressure, and a 320×420dp Mini-HUD: one universal download for Intel and Snapdragon Googlebooks.
+  <b>Compact system telemetry, CPU/GPU/NPU compute monitor, thermal/battery wattage inspector, Variable Refresh Rate (VRR) &amp; display auditor, and "Caffeine" keep-awake utility for Googlebooks.</b><br>
+  Real-time thermal headroom, per-core P/E CPU frequencies &amp; C-state residency, live GPU &amp; NPU hardware accelerator counters, USB-C PD battery wattage (<code>W = V × I</code>), Variable Refresh Rate (VRR) range &amp; live cadence + external 30Hz bottleneck detection, memory/<code>zram</code> swap pressure, and a translucent Always-On-Top 340×398dp Mini-HUD: one universal download for Intel and Snapdragon Googlebooks.
 </p>
 
 <p align="center">
@@ -36,32 +36,33 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/workbench_light.png" width="900" alt="Corewatch Full Workbench in Light Theme showing live thermal, wattage, and CPU pills in the desktop caption bar, thermal headroom sparkline, and per-core P/E CPU frequency bars" />
+  <img src="docs/images/workbench_light.png" width="900" alt="Corewatch Full Workbench in Light Theme showing the Thermals & Compute tab with live thermal, wattage, and CPU pills in the desktop caption bar, per-core P/E CPU frequency bars, and GPU & NPU hardware accelerator cards" />
   <br>
-  <sub>Live thermal, wattage, and CPU pills sit right inside the desktop caption bar with no wasted vertical space.</sub>
+  <sub><b>Thermals &amp; Compute</b> workbench in Alabaster Light theme: live caption-bar telemetry pills, per-core P/E CPU frequencies, and dedicated GPU &amp; NPU hardware accelerator cards.</sub>
 </p>
 
 ---
 
 ## What it is
 
-**Corewatch** (`com.droid.corewatch`) brings the high-density hardware telemetry of **macOS Activity Monitor / iStat Menus**, **CoconutBattery**, and **Amphetamine** to Android laptops and Googlebooks. Built from scratch in 100% Kotlin with Jetpack Compose and Material 3, Corewatch gives power users instant visibility into thermal headroom, per-core CPU frequencies, USB-C PD charging wattage, memory/`zram` swap pressure, and external monitor negotiation—without oversized mobile typography:
+**Corewatch** (`com.droid.corewatch`) brings the high-density hardware telemetry of **macOS Activity Monitor / iStat Menus**, **CoconutBattery**, and **Amphetamine** to Android laptops and Googlebooks. Built in modern Kotlin with Jetpack Compose and Material 3, Corewatch gives power users instant visibility into thermal headroom, per-core CPU frequencies, GPU & NPU hardware accelerators, USB-C PD charging wattage, memory/`zram` swap pressure, and external monitor negotiation—without oversized mobile typography:
 
 * **Dual-layout desktop UI & Translucent Always-On-Top PiP Mini-HUD (`Ctrl+M`):**
-  * **Full Workbench (`1120dp × 760dp`):** Live thermal/wattage/CPU telemetry badges drawn directly into Android 15's desktop caption bar with four diagnostic tabs (`Thermals & CPU`, `Battery & W`, `Memory & Swap`, `Displays & Net`) and quick actions immediately below.
-  * **Translucent Always-On-Top Mini-HUD (`340dp × 384dp`):** Ultra-dense floating Picture-in-Picture (`TYPE_APPLICATION_OVERLAY`) sparkline dashboard with **adjustable translucency (`88%` / `75%` / `100%`)**, drag-to-reposition header, and one-click `"↗ Full"` restore, using crisp `11sp`/`12sp` tabular monospace typography (`fontFeatureSettings = "tnum"`).
+  * **Full Workbench (`1120dp × 760dp`):** Live thermal/wattage/CPU telemetry badges drawn directly into Android 15's desktop caption bar with four diagnostic tabs (`Thermals & Compute`, `Battery & W`, `Memory & Swap`, `Displays & Net`) and quick actions immediately below.
+  * **Translucent Always-On-Top Mini-HUD (`340dp × 398dp`):** Ultra-dense floating Picture-in-Picture (`TYPE_APPLICATION_OVERLAY`) 5-tile sparkline dashboard (**CPU**, **GPU & NPU**, **Thermal**, **Battery**, and **RAM & `zram` Swap**) with **adjustable translucency (`88%` / `75%` / `100%`)**, drag-to-reposition header, and one-click `"↗ Full"` restore, using crisp `11sp`/`12sp` tabular monospace typography (`fontFeatureSettings = "tnum"`).
 * **Thermal, per-core CPU, GPU & NPU hardware accelerator telemetry:**
   * Displays real-time **Thermal Status** (`Nominal`, `Light Throttling`, `Moderate Throttling`, `Severe Throttling`, `Critical Thermal`), predictive **Thermal Headroom** (`PowerManager.getThermalHeadroom(10)`), battery temperature (`°C` / `°F`), and world-readable `/sys/class/thermal/` and `/sys/class/hwmon/` sensors.
   * Live per-core CPU frequency bars and 60-second sparklines reading `/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq` and hardware C-state idle residency (`/sys/devices/system/cpu/cpu*/cpuidle/state*/time`), automatically classifying **Performance (`P-Core`)** and **Efficiency (`E-Core`)** clusters on hybrid Intel Core Ultra and Qualcomm Snapdragon processors.
-  * **GPU & NPU Accelerator Counters:** Tracks live **GPU** active duty cycle (from `/sys/class/drm/card0/device/tile0/gt0/gtidle/idle_residency_ms`), actual vs. requested MHz (`act_freq`, `cur_freq`, `rpe_freq`, `rp0_freq`), power profile, and hardware throttle reasons (`PL1`, `PL2`, `PL4`, `PROCHOT`, `THERMAL`), alongside **NPU** telemetry via unprivileged `/dev/accel0` DRM/Accel ioctls (`DRM_IOCTL_VERSION` & `DRM_IOCTL_IVPU_GET_PARAM` for PCI device/revision, max DPU clock rate, firmware version, contexts, and engine heartbeat) and `/sys/class/accel/accel0/device/` counters.
+  * **GPU & NPU Accelerator Counters:** Tracks live **GPU** active duty cycle (from `/sys/class/drm/card0/device/tile0/gt0/gtidle/idle_residency_ms`), GuC SLPC operating vs. slice clocks (`cur_freq`, `act_freq`, `rpe_freq`, `rp0_freq`), power profile, and hardware throttle reasons (`PL1`, `PL2`, `PL4`, `PROCHOT`, `THERMAL`), alongside **NPU** telemetry via unprivileged `/dev/accel0` DRM/Accel ioctls (`DRM_IOCTL_VERSION` & `DRM_IOCTL_IVPU_GET_PARAM` for PCI device/revision, max DPU clock rate, firmware version, zero-wakeup active context tracking via `DRM_IVPU_PARAM_CONTEXT_ID`, and engine heartbeat) and `/sys/class/accel/accel0/device/` counters.
 * **Live battery wattage (`W = V × I`), USB-C PD profiler & drain tracker:**
   * Computes signed real-time power flow in Watts from `EXTRA_VOLTAGE` and `BATTERY_PROPERTY_CURRENT_NOW` / `BATTERY_PROPERTY_CURRENT_AVERAGE` (auto-normalizing microamps vs. milliamps across fuel-gauge drivers), displaying e.g. **`+46.6 W (USB-C PD / AC)`** or **`-8.4 W (Discharging — Est. 6h 15m remaining)`**.
   * Reports battery health, cycle count (`EXTRA_CYCLE_COUNT`), voltage (`mV`), current (`mA`), capacity (`%`), energy counter (`Wh`), and a 60-second session power curve.
 * **"Caffeine" Keep-Awake controller (`Ctrl+K`) & Quick Settings Tile:**
   * One-click toggle in the caption bar and in the system Quick Settings tray (`CaffeineTileService`) to prevent the Googlebook from dimming or sleeping during compilations, large file transfers, or docked presentations.
   * Configurable timer modes (**30m**, **1h**, **Indefinitely**) plus smart auto-triggers (*Keep awake while charging on AC* and *Keep awake while an external display is connected*) with an automatic **`< 15%` low-battery safety cutoff**.
-* **External display & refresh rate auditor:**
-  * Queries `DisplayManager.getDisplays()` to inspect the built-in laptop panel and every connected external monitor (`HDMI` / `USB-C DP Alt Mode`), showing negotiated resolution, refresh rate (`Hz`), physical vs. logical DPI, HDR capabilities (`Dolby Vision`, `HDR10`, `HDR10+`, `HLG`), all supported `Display.Mode` configurations, and a **30Hz Dock Bottleneck Warning** whenever a `>= 1440p` external monitor is negotiated below `50Hz`.
+* **Variable Refresh Rate (VRR) & external display auditor:**
+  * Queries `DisplayManager.getDisplays()` and unprivileged `/dev/dri/card0` KMS properties (`DRM_IOCTL_MODE_GETCONNECTOR` & `DRM_IOCTL_MODE_OBJ_GETPROPERTIES`) to inspect the built-in eDP panel (`BOE NB140B91-ML1`, `12 bpc`) and every connected external monitor (`HDMI` / `USB-C DP Alt Mode`).
+  * Reports **Variable Refresh Rate (VRR) & Cadence** telemetry: hardware `vrr_capable` and CRTC `VRR_ENABLED` states, Android Adaptive Refresh Rate (`hasArrSupport`), dynamic refresh range & discrete steps (e.g. **`20–120 Hz (20, 24, 30, 40, 60, 120 Hz)`**), live SurfaceFlinger render frame rate vs. physical panel VSync cadence (`Render 60 Hz · VSync 120 Hz`), HDR capabilities (`Dolby Vision`, `HDR10`, `HDR10+`, `HLG`), and a **30Hz Dock Bottleneck Warning** whenever a `>= 1440p` external monitor is negotiated below `50Hz`.
 * **Memory + `zram` swap pressure & 1-click Markdown diagnostic copy (`Ctrl+Shift+C`):**
   * Parses `/proc/meminfo` (`MemTotal`, `MemAvailable`, `Cached`, `Buffers`, `SwapTotal`, `SwapFree`, `Dirty`) and `ActivityManager.MemoryInfo` alongside live network throughput (`TrafficStats` RX/TX `Mbps`) and internal storage capacity.
   * Generates a clean, anonymized Markdown hardware & thermal diagnostic table on the clipboard for pasting directly into community forum threads or bug reports.
@@ -72,14 +73,14 @@
 
 Corewatch transitions seamlessly between a multi-column desktop workbench and a translucent Always-On-Top Picture-in-Picture (PiP) Mini-HUD:
 
-* **Translucent Always-On-Top Mini-HUD (`Ctrl+M`):** Toggling Mini-HUD (`Ctrl+M` or the title-bar Mini-HUD button) spawns a floating, Always-On-Top `340dp × 384dp` overlay (`TYPE_APPLICATION_OVERLAY` when "Display over other apps" is granted, or a translucent compact freeform window otherwise) with **clickable opacity cycling (`88%` → `75%` → `100%`)**, drag-anywhere positioning, and four stacked 60-second sparkline cards (**CPU**, **Thermal**, **Battery Wattage**, and **RAM & `zram` Swap**). Clicking **`↗ Full`** immediately restores the Full Workbench window.
+* **Translucent Always-On-Top Mini-HUD (`Ctrl+M`):** Toggling Mini-HUD (`Ctrl+M` or the title-bar Mini-HUD button) spawns a floating, Always-On-Top `340dp × 398dp` overlay (`TYPE_APPLICATION_OVERLAY` when "Display over other apps" is granted, or a translucent compact freeform window otherwise) with **clickable opacity cycling (`88%` → `75%` → `100%`)**, drag-anywhere positioning, and five stacked 60-second sparkline cards (**CPU**, **GPU & NPU**, **Thermal**, **Battery Wattage**, and **RAM & `zram` Swap**) that fit cleanly without scrolling. Clicking **`↗ Full`** immediately restores the Full Workbench window.
 * **Zero-allocation ring buffers:** Time-series histories use fixed-capacity primitive circular buffers (`FloatRingBuffer`), rendering 60-second `Canvas` line and area sparklines at 1Hz without allocating `Path` objects on the UI thread.
 * **Jitter-free tabular typography:** Every numeric metric uses OpenType tabular numerals (`tnum`) so live MHz frequencies, wattages, and throughput counters never shift horizontally as values update.
 
 <p align="center">
-  <img src="docs/images/mini_hud.png" width="900" alt="Corewatch Translucent Always-On-Top Mini-HUD PiP overlay in Dark Mode and Light Mode at 88% opacity showing 4 stacked sparkline cards over the desktop" />
+  <img src="docs/images/mini_hud.png" width="900" alt="Corewatch Translucent Always-On-Top Mini-HUD PiP overlay in Dark Mode and Light Mode at 88% opacity showing all 5 stacked sparkline cards (CPU, GPU & NPU, Thermal, Battery, RAM & zram Swap) over the desktop" />
   <br>
-  <sub>Translucent Always-On-Top Mini-HUD PiP overlay (<code>88%</code> opacity, toggleable <code>88% / 75% / 100%</code>) in Dark Mode (left) and Light Mode (right).</sub>
+  <sub>Translucent Always-On-Top Mini-HUD PiP overlay (<code>88%</code> opacity, toggleable <code>88% / 75% / 100%</code>) in Dark Mode (left) and Light Mode (right) fitting all 5 telemetry tiles without scrolling.</sub>
 </p>
 
 <p align="center">
@@ -109,9 +110,15 @@ Mobile system monitor apps were designed for narrow portrait phone screens with 
 * **Expressive Dark, Light & System themes:** High-contrast Carbon Slate Dark theme by default for low glare in a corner HUD, plus crisp Alabaster Light and automatic System theme modes.
 
 <p align="center">
-  <img src="docs/images/workbench_overview.png" width="900" alt="Corewatch Full Workbench in Carbon Slate Dark Theme showing live thermal/wattage pills in the desktop caption bar, thermal headroom sparkline, and per-core P/E CPU frequency bars" />
+  <img src="docs/images/workbench_overview.png" width="900" alt="Corewatch Full Workbench in Carbon Slate Dark Theme showing the Thermals & Compute tab under live CPU, GPU (2500 MHz turbo), and NPU (1944 / 2000 MHz turbo) compute load" />
   <br>
-  <sub>Carbon Slate Dark theme with live thermal headroom, 60-second CPU frequency scaling sparkline, and per-core P/E cluster frequency bars.</sub>
+  <sub>Carbon Slate Dark theme on the <b>Thermals &amp; Compute</b> tab with live thermal headroom, per-core P/E CPU clusters, and 60-second GPU &amp; NPU accelerator telemetry under active compute load.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/workbench_displays.png" width="900" alt="Corewatch Displays & Net tab showing Variable Refresh Rate (VRR) & Cadence telemetry (20-120 Hz range, discrete eDP steps, DRM vrr_capable=1, 12 bpc color depth, and BOE NB140B91-ML1 EDID model)" />
+  <br>
+  <sub><b>Displays &amp; Net</b> tab inspecting hardware <b>Variable Refresh Rate (VRR) &amp; Cadence</b> (<code>20–120 Hz</code> across <code>20, 24, 30, 40, 60, 120 Hz</code> eDP steps, DRM <code>vrr_capable: Yes (1)</code>, <code>12 bpc</code> color depth, and EDID panel identity).</sub>
 </p>
 
 ---
@@ -121,7 +128,7 @@ Mobile system monitor apps were designed for narrow portrait phone screens with 
 | Shortcut | Action |
 | :--- | :--- |
 | `Ctrl+M` | Toggle between **Full Workbench** and **Compact Mini-HUD** mode |
-| `Ctrl+1` .. `Ctrl+4` | Switch tabs: `1` Overview & Thermals, `2` Battery & Power, `3` Memory & Storage, `4` Displays & Network |
+| `Ctrl+1` .. `Ctrl+4` | Switch tabs: `1` Thermals & Compute, `2` Battery & Power, `3` Memory & Storage, `4` Displays & Network |
 | `Ctrl+K` | Toggle **Caffeine Keep-Awake** active state (`Off` ↔ `Indefinite`) |
 | `Space` | Pause / Resume live telemetry sampling and graph scrolling to inspect a spike |
 | `Ctrl+Shift+C` | Copy anonymized Markdown System & Thermal Diagnostic Snapshot to clipboard |
@@ -168,17 +175,18 @@ Corewatch is written in 100% modern Kotlin with Jetpack Compose:
 
 ```mermaid
 flowchart LR
-    subgraph Sources["Unprivileged Android 15/16 & Linux Sysfs Telemetry"]
+    subgraph Sources["Unprivileged Android 15/16, Sysfs & DRM/Accel Telemetry"]
         PowerMgr["PowerManager\n(Thermal Headroom & Status)"]
         BattMgr["BatteryManager\n(Current uA, Voltage mV,\nTemp, Cycle Count, Health)"]
-        Sysfs["Sysfs / Procfs Readers\n(/sys/devices/system/cpu/cpufreq,\n/proc/meminfo, zram, thermal_zone)"]
+        Sysfs["Sysfs / Procfs Readers\n(cpufreq, cpuidle C-states,\nxe/i915 GPU, /proc/meminfo, zram)"]
+        AccelIoctl["DRM / Accel Ioctl Bridge\n(/dev/dri/renderD128, /dev/accel0,\nDRM_IOCTL_IVPU_GET_PARAM)"]
         DispMgr["DisplayManager & TrafficStats\n(Connected Monitors, Hz, HDR,\nNetwork RX/TX Mbps)"]
     end
 
     subgraph Corewatch["Corewatch Desktop App (Kotlin + Jetpack Compose)"]
         Sampler["Low-Overhead Coroutine Sampler\n(1Hz FloatRingBuffer History,\nZero Allocations on UI Thread)"]
-        FullUI["Full Workbench Window\n(Thermals/CPU, Battery/USB-C W,\nMemory/Swap, Displays/Net)"]
-        MiniHUD["Compact Mini-HUD Mode\n(320x420dp Dense Sparkline Panel)"]
+        FullUI["Full Workbench Window\n(Thermals & Compute, Battery/USB-C W,\nMemory/Swap, Displays/Net)"]
+        MiniHUD["Translucent Mini-HUD PiP\n(340x398dp 5-Tile Sparkline Overlay)"]
         Caffeine["Caffeine Keep-Awake Controller\n(WakeLock + Quick Settings Tile +\nAC/External Display Auto-Triggers)"]
         Export["Diagnostic Snapshot Exporter\n(1-Click Anonymized Markdown Table)"]
     end
@@ -186,6 +194,7 @@ flowchart LR
     PowerMgr --> Sampler
     BattMgr --> Sampler
     Sysfs --> Sampler
+    AccelIoctl --> Sampler
     DispMgr --> Sampler
     Sampler --> FullUI
     Sampler --> MiniHUD
@@ -196,9 +205,10 @@ flowchart LR
 
 * **Language & Tooling:** Kotlin 2.3, Jetpack Compose BOM `2026.03.01`, Material 3, Gradle 9.1, Android SDK 36 (Android 15+ Desktop Windowing).
 * **Pure Data & Telemetry Architecture (`com.droid.corewatch.data`):**
-  * `SysfsParsers`: Defensive, bounds-checked parsers for `/proc/meminfo`, `/sys/devices/system/cpu/cpu*/cpufreq/`, `/sys/class/thermal/`, and `/sys/class/hwmon/`.
+  * `SysfsParsers`: Defensive, bounds-checked parsers for `/proc/meminfo`, `/sys/devices/system/cpu/cpu*/cpufreq/`, `/sys/devices/system/cpu/cpu*/cpuidle/state*/time`, `/sys/class/drm/card0/device/tile0/gt0/` (`xe` / `i915` GPU), `/sys/class/accel/accel0/`, `/sys/class/thermal/`, and `/sys/class/hwmon/`.
+  * `AccelIoctlBridge`: Lightweight 16KB page-aligned JNI bridge (`libcorewatch_accel.so` for `x86_64` and `arm64-v8a`) querying `DRM_IOCTL_VERSION` on `/dev/dri/renderD128` and `/dev/accel0`, KMS connector/CRTC VRR properties (`vrr_capable`, `VRR_ENABLED`, `max bpc`) on `/dev/dri/card0`, and zero-wakeup `DRM_IOCTL_IVPU_GET_PARAM` (`DRM_IVPU_PARAM_CONTEXT_ID`, `CORE_CLOCK_RATE`, `FW_API_VERSION`, `DEVICE_ID`) on Intel Lunar Lake / Meteor Lake NPUs.
   * `BatteryPowerCalculator`: Signed wattage (`W = V × I`), unit normalization (`µA`/`mA`, `mV`/`V`), charger profiling, and remaining charge/discharge time estimation.
-  * `DisplayAuditor`: External monitor refresh rate, resolution, DPI scale, HDR format mapping, and `< 50Hz` dock bottleneck detection.
+  * `DisplayAuditor`: Variable Refresh Rate (VRR / eDP Adaptive-Sync / Android ARR) range and live cadence auditing, EDID panel model & color depth (`bpc`), DPI scale, HDR format mapping, and `< 50Hz` dock bottleneck detection.
   * `CaffeinePolicy`: Pure state evaluator for timed keep-awake modes, AC/external-display auto-triggers, and the `< 15%` low-battery safety cutoff.
   * `DiagnosticReportBuilder`: Anonymized, Markdown-injection-safe hardware and thermal snapshot formatter.
 
@@ -217,8 +227,8 @@ cd corewatch
 Corewatch was created, built, and tested directly on a Googlebook:
 
 * **Developed in the Linux Terminal:** Kotlin sources, Gradle builds, unit/UI/fuzz test suites, and APK packaging were executed inside the Googlebook's built-in Linux environment.
-* **Tested headlessly and live on-device:** Verified both on-device in freeform desktop windowing and headlessly via Robolectric Compose UI tests across full workbench (`1120×760dp`) and minimal Mini-HUD (`320×420dp`) window geometries.
-* **Pure JVM portability:** Zero native C/C++ `.so` libraries, allowing a single lightweight APK to run natively on both Intel `x86_64` and Qualcomm Snapdragon `arm64-v8a` Googlebooks.
+* **Tested headlessly and live on-device:** Verified both on-device in freeform desktop windowing and headlessly via Robolectric Compose UI tests across full workbench (`1120×760dp`) and compact Mini-HUD (`340×398dp`) window geometries.
+* **Universal multi-architecture APK:** Ships with 16KB page-aligned `x86_64` and `arm64-v8a` JNI ioctl bridges (`< 6 KB` each) alongside pure Kotlin fallbacks so a single lightweight APK runs natively on both Intel Core Ultra and Qualcomm Snapdragon Googlebooks.
 
 ---
 

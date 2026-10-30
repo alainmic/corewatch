@@ -1771,7 +1771,7 @@ private fun DisplayCard(disp: DisplaySpec) {
         color = cs.surfaceContainer,
         modifier = Modifier.fillMaxWidth().testTag("display_card_${disp.displayId}"),
     ) {
-        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1780,7 +1780,8 @@ private fun DisplayCard(disp: DisplaySpec) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Outlined.DesktopWindows, contentDescription = null, tint = cs.primary, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("${disp.name} (#${disp.displayId})", style = MaterialTheme.typography.titleMedium)
+                    val modelSuffix = if (disp.panelModel.isNotEmpty()) " · ${disp.panelModel}" else ""
+                    Text("${disp.name} (#${disp.displayId}$modelSuffix)", style = MaterialTheme.typography.titleMedium)
                 }
                 Text(
                     text = "${disp.activeResolutionLabel} @ ${disp.activeRefreshLabel}",
@@ -1792,17 +1793,66 @@ private fun DisplayCard(disp: DisplaySpec) {
             Text(
                 text = String.format(
                     Locale.US,
-                    "%s · Logical DPI: %d (%d%% scale) · Physical DPI: %.0f×%.0f · HDR: %s",
+                    "%s · Logical DPI: %d (%d%% scale) · Physical DPI: %.0f×%.0f · Color: %d bpc · HDR: %s",
                     disp.connectionLabel,
                     disp.logicalDpi,
                     disp.scalePercent,
                     disp.physicalXDpi,
                     disp.physicalYDpi,
+                    disp.maxBpc,
                     if (disp.hdrFormats.isEmpty()) "SDR only" else disp.hdrFormats.joinToString(", "),
                 ),
                 style = CorewatchMonoTypography.hudSmall,
                 color = cs.onSurfaceVariant,
             )
+
+            // Variable Refresh Rate (VRR) & Cadence Telemetry Sub-Card
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = cs.surfaceContainerHigh,
+                modifier = Modifier.fillMaxWidth().testTag("display_vrr_section_${disp.displayId}"),
+            ) {
+                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Variable Refresh Rate (VRR) & Cadence",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = cs.onSurface,
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (disp.isVrrSupported) cs.primaryContainer else cs.surfaceVariant,
+                        ) {
+                            Text(
+                                text = disp.vrrStatusBadge,
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = if (disp.isVrrSupported) cs.onPrimaryContainer else cs.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
+                    Text(
+                        text = "Live Cadence: ${disp.liveCadenceSummary} · Range: ${disp.vrrRangeSummary}",
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurfaceVariant,
+                    )
+                    Text(
+                        text = String.format(
+                            Locale.US,
+                            "DRM vrr_capable: %s · CRTC VRR_ENABLED: %s · Android ARR: %s",
+                            if (disp.vrrCapable) "Yes (1)" else "No (0)",
+                            if (disp.vrrKernelEnabled) "Active (1)" else "Idle (0)",
+                            if (disp.hasAndroidArr) "Supported" else "eDP Dynamic Steps",
+                        ),
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurfaceVariant,
+                    )
+                }
+            }
 
             disp.bottleneckWarning?.let { warning ->
                 Row(

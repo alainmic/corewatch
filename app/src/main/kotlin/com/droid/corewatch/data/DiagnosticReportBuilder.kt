@@ -112,7 +112,7 @@ object DiagnosticReportBuilder {
         } else {
             snapshot.displays.joinToString("; ") { d ->
                 val warn = if (d.bottleneckWarning != null) " ⚠️ 30Hz Bottleneck" else ""
-                "${d.name} (${d.activeResolutionLabel} @ ${d.activeRefreshLabel}, ${d.scalePercent}% scale$warn)"
+                "${d.name} (${d.activeResolutionLabel} @ ${d.activeRefreshLabel}, ${d.vrrStatusBadge} [${d.vrrRangeSummary}], ${d.scalePercent}% scale$warn)"
             }
         }
 

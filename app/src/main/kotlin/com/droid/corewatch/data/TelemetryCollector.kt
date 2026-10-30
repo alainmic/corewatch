@@ -345,8 +345,10 @@ class TelemetryCollector(
 
     @Suppress("DEPRECATION")
     private fun readDisplays(dm: DisplayManager?): List<DisplaySpec> {
+        val drmConnectors = runCatching { AccelIoctlBridge.queryDrmConnectors("/dev/dri/card0") }.getOrDefault(emptyList())
         val displays = runCatching { dm?.displays }.getOrNull().orEmpty()
         if (displays.isEmpty()) {
+            val eDpConn = drmConnectors.firstOrNull()
             return listOf(
                 DisplayAuditor.auditDisplay(
                     displayId = 0,
@@ -363,17 +365,63 @@ class TelemetryCollector(
                         DisplayModeSpec(1, 2560, 1600, 120f, isActive = true),
                         DisplayModeSpec(2, 2560, 1600, 60f, isActive = false),
                     ),
+                    renderFrameRateHz = 120f,
+                    vsyncRateHz = 120f,
+                    supportedRefreshRatesHz = floatArrayOf(20f, 24f, 30f, 40f, 60f, 120f),
+                    vrrCapable = eDpConn?.vrrCapable ?: true,
+                    vrrKernelEnabled = eDpConn?.vrrKernelEnabled ?: false,
+                    hasAndroidArr = false,
+                    maxBpc = eDpConn?.maxBpc ?: 10,
+                    drmConnectorName = eDpConn?.connectorName ?: "eDP-1",
                 ),
             )
         }
-        return displays.map { d ->
+        return displays.mapIndexed { idx, d ->
             val metrics = DisplayMetrics()
             runCatching { d.getRealMetrics(metrics) }
             val activeMode = runCatching { d.mode }.getOrNull()
             val activeId = activeMode?.modeId ?: 1
             val w = activeMode?.physicalWidth?.takeIf { it > 0 } ?: metrics.widthPixels.takeIf { it > 0 } ?: 1920
             val h = activeMode?.physicalHeight?.takeIf { it > 0 } ?: metrics.heightPixels.takeIf { it > 0 } ?: 1080
-            val hz = activeMode?.refreshRate?.takeIf { it > 0f } ?: d.refreshRate.takeIf { it > 0f } ?: 60f
+            val modeHz = activeMode?.refreshRate?.takeIf { it > 0f } ?: d.refreshRate.takeIf { it > 0f } ?: 60f
+            val renderHz = runCatching { d.refreshRate.takeIf { it > 0f } }.getOrNull() ?: modeHz
+            val vsyncHz = runCatching {
+                if (activeMode != null) {
+                    val m = activeMode.javaClass.getMethod("getVsyncRate")
+                    (m.invoke(activeMode) as? Float)?.takeIf { it > 0f }
+                } else {
+                    null
+                }
+            }.getOrNull() ?: modeHz
+            val supportedRefreshSteps = runCatching { d.supportedRefreshRates ?: FloatArray(0) }.getOrDefault(FloatArray(0))
+            val hasArr = runCatching {
+                val method = d.javaClass.getMethod("hasArrSupport")
+                (method.invoke(d) as? Boolean) ?: false
+            }.getOrDefault(false)
+            val panelModel = runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    val info = d.deviceProductInfo
+                    if (info != null) {
+                        listOfNotNull(
+                            info.manufacturerPnpId?.takeIf { it.isNotBlank() },
+                            info.productId?.takeIf { it.isNotBlank() },
+                            info.name?.takeIf { it.isNotBlank() },
+                        ).joinToString(" ").trim()
+                    } else {
+                        ""
+                    }
+                } else {
+                    ""
+                }
+            }.getOrDefault("")
+            val drmConn = if (d.displayId == 0) {
+                drmConnectors.firstOrNull { it.connectorName.startsWith("eDP", ignoreCase = true) }
+                    ?: drmConnectors.getOrNull(idx)
+            } else {
+                drmConnectors.filterNot { it.connectorName.startsWith("eDP", ignoreCase = true) }
+                    .getOrNull((idx - 1).coerceAtLeast(0))
+                    ?: drmConnectors.getOrNull(idx)
+            }
             val supportedModes = runCatching {
                 d.supportedModes?.map { m ->
                     DisplayModeSpec(
@@ -392,12 +440,21 @@ class TelemetryCollector(
                 activeModeId = activeId,
                 activeWidth = w,
                 activeHeight = h,
-                activeRefreshHz = hz,
+                activeRefreshHz = modeHz,
                 logicalDpi = metrics.densityDpi.takeIf { it > 0 } ?: 160,
                 physicalXDpi = metrics.xdpi,
                 physicalYDpi = metrics.ydpi,
                 hdrTypeIds = hdrTypes,
                 modes = supportedModes,
+                renderFrameRateHz = renderHz,
+                vsyncRateHz = vsyncHz,
+                supportedRefreshRatesHz = supportedRefreshSteps,
+                vrrCapable = drmConn?.vrrCapable ?: false,
+                vrrKernelEnabled = drmConn?.vrrKernelEnabled ?: false,
+                hasAndroidArr = hasArr,
+                maxBpc = drmConn?.maxBpc ?: 8,
+                panelModel = panelModel,
+                drmConnectorName = drmConn?.connectorName,
             )
         }
     }

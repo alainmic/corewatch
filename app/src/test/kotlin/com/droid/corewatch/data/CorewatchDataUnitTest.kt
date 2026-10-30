@@ -393,5 +393,43 @@ class CorewatchDataUnitTest {
         assertEquals("turbo", activeNpu.scalingStateLabel)
         assertEquals(1650, activeNpu.currentFreqMhz)
         assertEquals(0.75f, activeNpu.utilizationFraction, 0.01f)
+
+        val drmConnectors = AccelIoctlBridge.parseDrmConnectorString("eDP-1|1|0|12|300x190;DP-1|1|1|10|600x340")
+        assertEquals(2, drmConnectors.size)
+        assertEquals("eDP-1", drmConnectors[0].connectorName)
+        assertTrue(drmConnectors[0].vrrCapable)
+        assertFalse(drmConnectors[0].vrrKernelEnabled)
+        assertEquals(12, drmConnectors[0].maxBpc)
+        assertEquals("300x190", drmConnectors[0].physicalSizeMm)
+        assertTrue(drmConnectors[1].vrrKernelEnabled)
+
+        val vrrDisplay = DisplayAuditor.auditDisplay(
+            displayId = 0,
+            rawName = "Built-in Screen",
+            activeModeId = 1,
+            activeWidth = 2880,
+            activeHeight = 1800,
+            activeRefreshHz = 120f,
+            logicalDpi = 240,
+            physicalXDpi = 242f,
+            physicalYDpi = 240f,
+            hdrTypeIds = intArrayOf(2),
+            modes = listOf(DisplayModeSpec(1, 2880, 1800, 120f, isActive = true)),
+            renderFrameRateHz = 60f,
+            vsyncRateHz = 120f,
+            supportedRefreshRatesHz = floatArrayOf(120f, 60f, 40f, 30f, 24f, 20f),
+            vrrCapable = true,
+            vrrKernelEnabled = false,
+            hasAndroidArr = false,
+            maxBpc = 12,
+            panelModel = "BOE NB140B91-ML1",
+            drmConnectorName = "eDP-1",
+        )
+        assertTrue(vrrDisplay.isVrrSupported)
+        assertEquals("Dynamic Cadence (60/120 Hz)", vrrDisplay.vrrStatusBadge)
+        assertEquals("20–120 Hz (20, 24, 30, 40, 60, 120 Hz)", vrrDisplay.vrrRangeSummary)
+        assertEquals("Render 60 Hz · VSync 120 Hz", vrrDisplay.liveCadenceSummary)
+        assertEquals(12, vrrDisplay.maxBpc)
+        assertEquals("BOE NB140B91-ML1", vrrDisplay.panelModel)
     }
 }
