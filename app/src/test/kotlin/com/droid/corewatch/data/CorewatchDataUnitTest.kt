@@ -540,5 +540,50 @@ class CorewatchDataUnitTest {
         assertEquals("Joint Stereo", parsedLogCodec.channelModeLabel)
         assertEquals("243 kbps (MTU 663 B)", parsedLogCodec.bitrateOrQualityLabel)
         assertEquals("SBC, AAC", parsedLogCodec.selectableCodecsSummary)
+
+        val dumpsysDropStats = WirelessTelemetryParsers.parseBluetoothAudioDropStats(
+            dumpsysText = """
+                Profile: HeadsetService
+                  mCurrentState: Connected
+                  AudioManager.isBluetoothScoOn(): false
+                  EVENT_TYPE_WBS[17], valInt=1
+                  Trigger dropped counts : 2
+                  Packet dropped counts : 3
+                Profile: LeAudioService
+                  LE AudioHalClient:
+                    Stream state: DISABLED
+                    Counts (underflow) : 1
+                    Bytes (underflow) : 480
+                    Credits underflow (count) : 2
+                  ISO Manager:
+                    Available credits: 8
+                    Controller buffer size: 248
+                Profile: A2dpService
+                  A2DP State:
+                    Counts (enqueue/dequeue/readbuf) : 42570 / 42548 / 84906
+                    Counts (flushed/dropped/dropouts) : 0 / 22 / 1
+                    Counts (max dropped) : 22
+                    Counts (underflow) : 0
+                    Bytes (underflow) : 0
+                    Packet counts (expected/dropped) : 42570 / 0
+                    Frames counts (expected/dropped) : 293334 / 4
+                    Delay Reporting: 2800 (in 1/10 milliseconds)
+            """.trimIndent(),
+            logcatText = "",
+            isScoOn = false,
+            isLeAudioActive = false,
+        )
+        assertEquals("BT STACK DUMPSYS (LIVE)", dumpsysDropStats.sourceLabel)
+        assertEquals(293_334L, dumpsysDropStats.a2dpExpectedFrames)
+        assertEquals(4L, dumpsysDropStats.a2dpDroppedFrames)
+        assertEquals(22L, dumpsysDropStats.a2dpTxDropped)
+        assertEquals(1L, dumpsysDropStats.a2dpTxDropouts)
+        assertEquals(280.0f, dumpsysDropStats.a2dpSinkDelayMs, 0.01f)
+        assertEquals("Connected (SCO Standby)", dumpsysDropStats.hfpStateLabel)
+        assertEquals("WBS (mSBC 16 kHz)", dumpsysDropStats.hfpSpeechCodecLabel)
+        assertEquals("5 pkt drops · 0 underflows", dumpsysDropStats.hfpPrimaryCounterLabel)
+        assertEquals("3 underflows · 0 ISO drops", dumpsysDropStats.leAudioPrimaryCounterLabel)
+        assertEquals(8, dumpsysDropStats.leIsoAvailableCredits)
+        assertEquals(248, dumpsysDropStats.leIsoBufferSizeBytes)
     }
 }

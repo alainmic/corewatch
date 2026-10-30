@@ -2136,7 +2136,7 @@ private fun NetworkBluetoothTab(state: CorewatchUiState) {
                         lineColor = cs.primary,
                         gridColor = cs.outlineVariant.copy(alpha = 0.4f),
                         minFloor = 0f,
-                        modifier = Modifier.fillMaxWidth().height(92.dp),
+                        modifier = Modifier.fillMaxWidth().height(56.dp),
                     )
                 }
             }
@@ -2221,6 +2221,104 @@ private fun NetworkBluetoothTab(state: CorewatchUiState) {
                             style = CorewatchMonoTypography.hudSmall,
                             color = cs.primary,
                         )
+                    }
+                }
+
+                // Bluetooth Audio Dropped Frames & Underflow Counters (A2DP · HFP/SCO · LE Audio)
+                val drops = bt.audioDrops
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "BLUETOOTH AUDIO DROPPED FRAMES & BUFFER UNDERFLOWS",
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurfaceVariant,
+                    )
+                    Text(
+                        text = drops.sourceLabel,
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = if (drops.hasStackCounters) cs.primary else cs.onSurfaceVariant,
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().testTag("bluetooth_audio_drops_section"),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    // 1. A2DP Media
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = cs.surfaceContainerHigh,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(
+                                text = "A2DP MEDIA STREAM",
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSurfaceVariant,
+                            )
+                            Text(
+                                text = drops.a2dpPrimaryCounterLabel,
+                                style = CorewatchMonoTypography.hudValue,
+                                color = if (drops.a2dpDroppedFrames > 0L || drops.a2dpUnderflows > 0L) cs.error else cs.onSurface,
+                            )
+                            Text(
+                                text = drops.a2dpDetailSummary,
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSurfaceVariant,
+                            )
+                        }
+                    }
+
+                    // 2. HFP / SCO Hands-Free Voice
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = cs.surfaceContainerHigh,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(
+                                text = "HFP / SCO VOICE",
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSurfaceVariant,
+                            )
+                            Text(
+                                text = drops.hfpPrimaryCounterLabel,
+                                style = CorewatchMonoTypography.hudValue,
+                                color = if (drops.hfpDroppedPackets > 0L || drops.hfpUnderflows > 0L) cs.error else cs.onSurface,
+                            )
+                            Text(
+                                text = drops.hfpDetailSummary,
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSurfaceVariant,
+                            )
+                        }
+                    }
+
+                    // 3. LE Audio (CIS / BIS Isochronous)
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = cs.surfaceContainerHigh,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(
+                                text = "LE AUDIO (CIS / BIS)",
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSurfaceVariant,
+                            )
+                            Text(
+                                text = drops.leAudioPrimaryCounterLabel,
+                                style = CorewatchMonoTypography.hudValue,
+                                color = if (drops.leAudioUnderflows > 0L || drops.leIsoDroppedPackets > 0L) cs.error else cs.onSurface,
+                            )
+                            Text(
+                                text = drops.leAudioDetailSummary,
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
 

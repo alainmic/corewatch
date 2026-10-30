@@ -72,6 +72,110 @@ data class BluetoothAudioCodecSnapshot(
 )
 
 /**
+ * Per-profile Bluetooth audio frame/packet drop, TxQueue dropout, and buffer underflow counters
+ * across A2DP (Media), HFP / SCO (Hands-Free Voice), and LE Audio (CIS / BIS Isochronous).
+ */
+data class BluetoothAudioDropStats(
+    val sourceLabel: String = "STANDARD API (GRANT DUMP/LOGS FOR STACK COUNTERS)",
+    val hasStackCounters: Boolean = false,
+    // A2DP (Advanced Audio Distribution Profile)
+    val a2dpExpectedFrames: Long = 0L,
+    val a2dpDroppedFrames: Long = 0L,
+    val a2dpExpectedPackets: Long = 0L,
+    val a2dpDroppedPackets: Long = 0L,
+    val a2dpTxEnqueued: Long = 0L,
+    val a2dpTxFlushed: Long = 0L,
+    val a2dpTxDropped: Long = 0L,
+    val a2dpTxDropouts: Long = 0L,
+    val a2dpMaxDropped: Long = 0L,
+    val a2dpUnderflows: Long = 0L,
+    val a2dpUnderflowBytes: Long = 0L,
+    val a2dpSinkDelayMs: Float = 0f,
+    // HFP / SCO (Hands-Free Profile Synchronous Connection-Oriented)
+    val hfpStateLabel: String = "Standby",
+    val hfpSpeechCodecLabel: String = "mSBC / CVSD",
+    val hfpScoActive: Boolean = false,
+    val hfpDroppedPackets: Long = 0L,
+    val hfpTriggerDrops: Long = 0L,
+    val hfpUnderflows: Long = 0L,
+    // LE Audio (Low Energy Isochronous Channels - CIS / BIS)
+    val leAudioStreamState: String = "Standby",
+    val leAudioUnderflows: Long = 0L,
+    val leAudioUnderflowBytes: Long = 0L,
+    val leIsoCreditsUnderflows: Long = 0L,
+    val leIsoDroppedPackets: Long = 0L,
+    val leIsoAvailableCredits: Int = 0,
+    val leIsoBufferSizeBytes: Int = 0,
+) {
+    /** Total A2DP encoder dropped frames + TxQueue dropped packets + encoder dropped packets. */
+    val a2dpTotalDrops: Long
+        get() = a2dpDroppedFrames + a2dpTxDropped + a2dpDroppedPackets
+
+    val a2dpDropRatePercent: Double
+        get() {
+            val denom = if (a2dpExpectedFrames > 0L) a2dpExpectedFrames else a2dpTxEnqueued
+            return if (denom <= 0L) 0.0 else (a2dpTotalDrops * 100.0) / denom.toDouble()
+        }
+
+    val a2dpPrimaryCounterLabel: String
+        get() = if (a2dpExpectedFrames > 0L || a2dpTxEnqueued > 0L || hasStackCounters) {
+            String.format(
+                Locale.US,
+                "%,d enc drops · %,d TxQ drops (%.3f%%)",
+                a2dpDroppedFrames,
+                a2dpTxDropped,
+                a2dpDropRatePercent,
+            )
+        } else {
+            "0 dropped frames (Idle)"
+        }
+
+    val a2dpDetailSummary: String
+        get() {
+            val delayPart = if (a2dpSinkDelayMs > 0f) {
+                String.format(Locale.US, " · Sink Delay %.0f ms", a2dpSinkDelayMs)
+            } else {
+                ""
+            }
+            return String.format(
+                Locale.US,
+                "Frames %,d · Pkts %,d · Dropouts %,d · Underflows %,d%s",
+                a2dpExpectedFrames,
+                a2dpTxEnqueued,
+                a2dpTxDropouts,
+                a2dpUnderflows,
+                delayPart,
+            )
+        }
+
+    val hfpPrimaryCounterLabel: String
+        get() = String.format(
+            Locale.US,
+            "%,d pkt drops · %,d underflows",
+            hfpDroppedPackets + hfpTriggerDrops,
+            hfpUnderflows,
+        )
+
+    val hfpDetailSummary: String
+        get() = "State: $hfpStateLabel · Codec: $hfpSpeechCodecLabel"
+
+    val leAudioPrimaryCounterLabel: String
+        get() = String.format(
+            Locale.US,
+            "%,d underflows · %,d ISO drops",
+            leAudioUnderflows + leIsoCreditsUnderflows,
+            leIsoDroppedPackets,
+        )
+
+    val leAudioDetailSummary: String
+        get() = if (leIsoAvailableCredits > 0 && leIsoBufferSizeBytes > 0) {
+            "State: $leAudioStreamState · ISO Credits: $leIsoAvailableCredits × ${leIsoBufferSizeBytes} B"
+        } else {
+            "State: $leAudioStreamState · Underflow Bytes: $leAudioUnderflowBytes B"
+        }
+}
+
+/**
  * Connected or paired Bluetooth peripheral (HID Mouse/Keyboard, A2DP/LE Audio Headphones, etc.).
  */
 data class BluetoothPeripheralReading(
@@ -101,6 +205,7 @@ data class BluetoothTelemetrySnapshot(
     val leAudioBroadcastSupported: Boolean = false,
     val maxConnectedAudioDevices: Int = 1,
     val audioCodec: BluetoothAudioCodecSnapshot = BluetoothAudioCodecSnapshot(),
+    val audioDrops: BluetoothAudioDropStats = BluetoothAudioDropStats(),
     val peripherals: List<BluetoothPeripheralReading> = emptyList(),
 ) {
     val controllerCapabilitiesSummary: String
@@ -230,14 +335,42 @@ object WirelessTelemetryParsers {
         "CodecConfiguration\\{codecType:\\s*([A-Za-z0-9_]+),\\s*encodedAudioBitrate:\\s*(\\d+),\\s*peerMtu:\\s*(\\d+).*?sampleRateHz:\\s*(\\d+),\\s*channelMode:\\s*([A-Za-z0-9_]+).*?bitsPerSample:\\s*(\\d+)",
     )
     private val STATE_MACHINE_CODEC_REGEX = Regex(
-        "mCodecConfig:\\{codecName:([A-Za-z0-9_\\-]+),mCodecType:(\\d+),mCodecPriority:\\d+,mSampleRate:0x[0-9a-fA-F]+\\((\\d+)\\),mBitsPerSample:0x[0-9a-fA-F]+\\((\\d+)\\),mChannelMode:0x[0-9a-fA-F]+\\(([A-Za-z0-9_|]+)\\),mCodecSpecific1:(-?\\d+)",
+        "mCodecConfig:\\s*\\{codecName:([A-Za-z0-9_\\-]+),mCodecType:(\\d+),mCodecPriority:\\d+,mSampleRate:0x[0-9a-fA-F]+\\((\\d+)\\),mBitsPerSample:0x[0-9a-fA-F]+\\((\\d+)\\),mChannelMode:0x[0-9a-fA-F]+\\(([A-Za-z0-9_|]+)\\),mCodecSpecific1:(-?\\d+)",
     )
-    private val SELECTABLE_CAP_REGEX = Regex("mCodecsSelectableCapabilities:\\[(.*?)\\]")
+    private val SELECTABLE_CAP_REGEX = Regex("mCodecsSelectableCapabilities:\\s*\\[(.*?)\\]", RegexOption.DOT_MATCHES_ALL)
     private val CODEC_NAME_FIELD_REGEX = Regex("codecName:([A-Za-z0-9_\\-]+)")
+    private val EFFECTIVE_MTU_REGEX = Regex("Effective MTU:\\s*(\\d+)")
+    private val SBC_BITPOOL_REGEX = Regex("SBC Bitpool \\(min/max\\)\\s*:\\s*(\\d+)\\s*/\\s*(\\d+)")
+
+    // Dumpsys bluetooth_manager A2DP / HFP / LE Audio counter regexes
+    private val ENQUEUE_DEQUEUE_REGEX = Regex("Counts \\(enqueue/dequeue/readbuf\\)\\s*:\\s*(\\d+)\\s*/\\s*(\\d+)\\s*/\\s*(\\d+)")
+    private val FLUSH_DROP_DROPOUT_REGEX = Regex("Counts \\(flushed/dropped/dropouts\\)\\s*:\\s*(\\d+)\\s*/\\s*(\\d+)\\s*/\\s*(\\d+)")
+    private val MAX_DROPPED_REGEX = Regex("Counts \\(max dropped\\)\\s*:\\s*(\\d+)")
+    private val UNDERFLOW_COUNTS_REGEX = Regex("Counts \\(underflow\\)\\s*:\\s*(\\d+)")
+    private val UNDERFLOW_BYTES_REGEX = Regex("Bytes \\(underflow\\)\\s*:\\s*(\\d+)")
+    private val CREDITS_UNDERFLOW_REGEX = Regex("Credits underflow \\(count\\)\\s*:\\s*(\\d+)")
+    private val PKT_EXPECTED_DROPPED_REGEX = Regex("Packet counts \\(expected/dropped\\)\\s*:\\s*(\\d+)\\s*/\\s*(\\d+)")
+    private val FRAMES_EXPECTED_DROPPED_REGEX = Regex("Frames counts \\(expected/dropped\\)\\s*:\\s*(\\d+)\\s*/\\s*(\\d+)")
+    private val DELAY_REPORTING_REGEX = Regex("Delay Reporting:\\s*(\\d+)\\s*\\(in 1/10 milliseconds\\)")
+    private val AUDIO_DELAY_EVENT_REGEX = Regex("AUDIO_DELAY_REPORTED:\\s*arg1=(\\d+)")
+    private val HFP_STATE_REGEX = Regex("mCurrentState:\\s*([A-Za-z0-9_]+)")
+    private val HFP_SCO_ON_REGEX = Regex("AudioManager\\.isBluetoothScoOn\\(\\):\\s*(true|false)")
+    private val HFP_WBS_EVENT_REGEX = Regex("EVENT_TYPE_WBS\\[\\d+\\],\\s*valInt=(\\d+)")
+    private val HFP_SWB_EVENT_REGEX = Regex("EVENT_TYPE_SWB\\[\\d+\\],\\s*valInt=(\\d+)")
+    private val HFP_TRIGGER_DROP_REGEX = Regex("Trigger dropped counts\\s*:\\s*(\\d+)")
+    private val HFP_PKT_DROP_REGEX = Regex("Packet dropped counts\\s*:\\s*(\\d+)")
+    private val LE_STREAM_STATE_REGEX = Regex("Stream state:\\s*([A-Za-z0-9_]+)")
+    private val ISO_CREDITS_REGEX = Regex("Available credits:\\s*(\\d+)")
+    private val ISO_BUFFER_SIZE_REGEX = Regex("Controller buffer size:\\s*(\\d+)")
+
+    // Logcat fallback counter regexes
+    private val LOG_A2DP_ENCODED_DROP_REGEX = Regex("num_dropped_encoded_frames=(\\d+)")
+    private val LOG_SCO_UNRECEIVED_REGEX = Regex("rx_unreceived_packets[:=]\\s*(\\d+)")
+    private val LOG_ISO_FLUSHED_REGEX = Regex("tx_flushed_packets[:=]\\s*(\\d+)")
 
     /**
-     * Parses `bluetooth-a2dp-aidl` and `A2dpService` logcat lines when `BluetoothA2dp.getCodecStatus`
-     * is gated by `BLUETOOTH_PRIVILEGED` on Android 15/16.
+     * Parses `bluetooth-a2dp-aidl`, `A2dpService`, and `dumpsys bluetooth_manager` lines when
+     * `BluetoothA2dp.getCodecStatus` is gated by `BLUETOOTH_PRIVILEGED` on Android 15/16.
      */
     fun parseA2dpLogcatCodec(
         logText: String,
@@ -251,6 +384,8 @@ object WirelessTelemetryParsers {
         var channelLabel = "Stereo"
         var bitrateLabel = "328 kbps (SBC)"
         var selectableSummary: String? = null
+        var effectiveMtu = 0
+        var sbcBitpoolMax = 0
 
         for (line in logText.lineSequence()) {
             AIDL_CODEC_REGEX.find(line)?.let { m ->
@@ -301,8 +436,34 @@ object WirelessTelemetryParsers {
                     selectableSummary = names.joinToString(", ")
                 }
             }
+            EFFECTIVE_MTU_REGEX.find(line)?.let { m ->
+                effectiveMtu = m.groupValues[1].toIntOrNull() ?: effectiveMtu
+            }
+            SBC_BITPOOL_REGEX.find(line)?.let { m ->
+                sbcBitpoolMax = m.groupValues[2].toIntOrNull() ?: sbcBitpoolMax
+            }
+        }
+        if (selectableSummary == null) {
+            SELECTABLE_CAP_REGEX.find(logText)?.let { m ->
+                val names = CODEC_NAME_FIELD_REGEX.findAll(m.groupValues[1])
+                    .map { it.groupValues[1] }
+                    .distinct()
+                    .toList()
+                if (names.isNotEmpty()) {
+                    selectableSummary = names.joinToString(", ")
+                }
+            }
         }
         val resolvedCodec = codecName ?: return null
+        if (!bitrateLabel.contains("MTU") && effectiveMtu > 0) {
+            bitrateLabel = if (resolvedCodec == "SBC" && sbcBitpoolMax > 0) {
+                // SBC 44.1 kHz Joint Stereo bitpool 37 = 243 kbps; bitpool 53 = 328 kbps
+                val kbps = if (sbcBitpoolMax <= 37) 243 else 328
+                "$kbps kbps (Bitpool $sbcBitpoolMax · MTU $effectiveMtu B)"
+            } else {
+                "$bitrateLabel (MTU $effectiveMtu B)"
+            }
+        }
         return BluetoothAudioCodecSnapshot(
             activeRouteLabel = activeRouteLabel,
             activeCodecName = resolvedCodec,
@@ -313,6 +474,272 @@ object WirelessTelemetryParsers {
             selectableCodecsSummary = selectableSummary ?: resolvedCodec,
             communicationModeLabel = communicationModeLabel,
             isBluetoothAudioActive = true,
+        )
+    }
+
+    /**
+     * Parses A2DP, HFP/SCO, and LE Audio frame/packet drop and underflow counters from
+     * `dumpsys bluetooth_manager` (when `DUMP` permission is granted) and/or `logcat`
+     * (when `READ_LOGS` permission is granted).
+     */
+    fun parseBluetoothAudioDropStats(
+        dumpsysText: String,
+        logcatText: String,
+        isScoOn: Boolean = false,
+        isLeAudioActive: Boolean = false,
+    ): BluetoothAudioDropStats {
+        var a2dpExpectedFrames = 0L
+        var a2dpDroppedFrames = 0L
+        var a2dpExpectedPackets = 0L
+        var a2dpDroppedPackets = 0L
+        var a2dpTxEnqueued = 0L
+        var a2dpTxFlushed = 0L
+        var a2dpTxDropped = 0L
+        var a2dpTxDropouts = 0L
+        var a2dpMaxDropped = 0L
+        var a2dpUnderflows = 0L
+        var a2dpUnderflowBytes = 0L
+        var a2dpSinkDelayMs = 0f
+
+        var hfpState = if (isScoOn) "SCO Active" else "Standby"
+        var hfpScoActive = isScoOn
+        var hfpWbs = false
+        var hfpSwb = false
+        var hfpDroppedPkts = 0L
+        var hfpTriggerDrops = 0L
+        var hfpUnderflows = 0L
+
+        var leStreamState = if (isLeAudioActive) "Streaming" else "Standby"
+        var leUnderflows = 0L
+        var leUnderflowBytes = 0L
+        var leCreditsUnderflows = 0L
+        var leIsoDrops = 0L
+        var leCredits = 0
+        var leBufferBytes = 0
+
+        var hasDumpsys = false
+        if (dumpsysText.isNotBlank() && !dumpsysText.contains("Permission Denial", ignoreCase = true)) {
+            var section = "NONE"
+            for (rawLine in dumpsysText.lineSequence()) {
+                val line = rawLine.trim()
+                when {
+                    line.startsWith("Profile: HeadsetService") ||
+                        line.startsWith("Bluetooth Handsfree Service") ||
+                        line.startsWith("Bluetooth HF Client BTA Statistics") -> {
+                        section = "HFP"
+                        hasDumpsys = true
+                    }
+                    line.startsWith("Profile: LeAudioService") ||
+                        line.startsWith("LeAudio Manager:") ||
+                        line.startsWith("LE AudioHalClient:") ||
+                        line.startsWith("ISO Manager:") -> {
+                        section = "LE_AUDIO"
+                        hasDumpsys = true
+                    }
+                    line.startsWith("Profile: A2dpService") ||
+                        line.startsWith("A2DP State:") ||
+                        line.startsWith("A2dpStateMachine:") -> {
+                        section = "A2DP"
+                        hasDumpsys = true
+                    }
+                    line.startsWith("Profile: ") -> {
+                        section = "OTHER"
+                    }
+                }
+
+                when (section) {
+                    "A2DP" -> {
+                        ENQUEUE_DEQUEUE_REGEX.find(line)?.let { m ->
+                            a2dpTxEnqueued = m.groupValues[1].toLongOrNull() ?: a2dpTxEnqueued
+                        }
+                        FLUSH_DROP_DROPOUT_REGEX.find(line)?.let { m ->
+                            a2dpTxFlushed = m.groupValues[1].toLongOrNull() ?: a2dpTxFlushed
+                            a2dpTxDropped = m.groupValues[2].toLongOrNull() ?: a2dpTxDropped
+                            a2dpTxDropouts = m.groupValues[3].toLongOrNull() ?: a2dpTxDropouts
+                        }
+                        MAX_DROPPED_REGEX.find(line)?.let { m ->
+                            a2dpMaxDropped = m.groupValues[1].toLongOrNull() ?: a2dpMaxDropped
+                        }
+                        UNDERFLOW_COUNTS_REGEX.find(line)?.let { m ->
+                            a2dpUnderflows = m.groupValues[1].toLongOrNull() ?: a2dpUnderflows
+                        }
+                        UNDERFLOW_BYTES_REGEX.find(line)?.let { m ->
+                            a2dpUnderflowBytes = m.groupValues[1].toLongOrNull() ?: a2dpUnderflowBytes
+                        }
+                        PKT_EXPECTED_DROPPED_REGEX.find(line)?.let { m ->
+                            a2dpExpectedPackets = m.groupValues[1].toLongOrNull() ?: a2dpExpectedPackets
+                            a2dpDroppedPackets = m.groupValues[2].toLongOrNull() ?: a2dpDroppedPackets
+                        }
+                        FRAMES_EXPECTED_DROPPED_REGEX.find(line)?.let { m ->
+                            a2dpExpectedFrames = m.groupValues[1].toLongOrNull() ?: a2dpExpectedFrames
+                            a2dpDroppedFrames = m.groupValues[2].toLongOrNull() ?: a2dpDroppedFrames
+                        }
+                        DELAY_REPORTING_REGEX.find(line)?.let { m ->
+                            val tenthsMs = m.groupValues[1].toFloatOrNull() ?: 0f
+                            if (tenthsMs > 0f) a2dpSinkDelayMs = tenthsMs / 10f
+                        }
+                        AUDIO_DELAY_EVENT_REGEX.find(line)?.let { m ->
+                            val tenthsMs = m.groupValues[1].toFloatOrNull() ?: 0f
+                            if (tenthsMs > 0f && a2dpSinkDelayMs == 0f) a2dpSinkDelayMs = tenthsMs / 10f
+                        }
+                    }
+                    "HFP" -> {
+                        HFP_STATE_REGEX.find(line)?.let { m ->
+                            val st = m.groupValues[1]
+                            if (st.equals("AudioOn", ignoreCase = true)) {
+                                hfpState = "SCO Audio Active"
+                                hfpScoActive = true
+                            } else if (st.equals("Connected", ignoreCase = true) && !hfpScoActive) {
+                                hfpState = "Connected (SCO Standby)"
+                            }
+                        }
+                        HFP_SCO_ON_REGEX.find(line)?.let { m ->
+                            if (m.groupValues[1].equals("true", ignoreCase = true)) {
+                                hfpScoActive = true
+                                hfpState = "SCO Audio Active"
+                            }
+                        }
+                        HFP_WBS_EVENT_REGEX.find(line)?.let { m ->
+                            if ((m.groupValues[1].toIntOrNull() ?: 0) > 0) hfpWbs = true
+                        }
+                        HFP_SWB_EVENT_REGEX.find(line)?.let { m ->
+                            if ((m.groupValues[1].toIntOrNull() ?: 0) > 0) hfpSwb = true
+                        }
+                        HFP_TRIGGER_DROP_REGEX.find(line)?.let { m ->
+                            hfpTriggerDrops = m.groupValues[1].toLongOrNull() ?: hfpTriggerDrops
+                        }
+                        HFP_PKT_DROP_REGEX.find(line)?.let { m ->
+                            hfpDroppedPkts = m.groupValues[1].toLongOrNull() ?: hfpDroppedPkts
+                        }
+                        UNDERFLOW_COUNTS_REGEX.find(line)?.let { m ->
+                            hfpUnderflows = m.groupValues[1].toLongOrNull() ?: hfpUnderflows
+                        }
+                    }
+                    "LE_AUDIO" -> {
+                        LE_STREAM_STATE_REGEX.find(line)?.let { m ->
+                            val rawSt = m.groupValues[1]
+                            leStreamState = when (rawSt.uppercase(Locale.US)) {
+                                "DISABLED" -> if (isLeAudioActive) "Streaming" else "Standby"
+                                "STREAMING", "ENABLED", "STARTING" -> "Streaming (CIS/BIS)"
+                                else -> rawSt
+                            }
+                        }
+                        UNDERFLOW_COUNTS_REGEX.find(line)?.let { m ->
+                            leUnderflows += m.groupValues[1].toLongOrNull() ?: 0L
+                        }
+                        UNDERFLOW_BYTES_REGEX.find(line)?.let { m ->
+                            leUnderflowBytes += m.groupValues[1].toLongOrNull() ?: 0L
+                        }
+                        CREDITS_UNDERFLOW_REGEX.find(line)?.let { m ->
+                            leCreditsUnderflows += m.groupValues[1].toLongOrNull() ?: 0L
+                        }
+                        ISO_CREDITS_REGEX.find(line)?.let { m ->
+                            leCredits = m.groupValues[1].toIntOrNull() ?: leCredits
+                        }
+                        ISO_BUFFER_SIZE_REGEX.find(line)?.let { m ->
+                            leBufferBytes = m.groupValues[1].toIntOrNull() ?: leBufferBytes
+                        }
+                    }
+                }
+            }
+        }
+
+        // Parse logcat fallback events when logcatText is provided
+        var hasLogcat = false
+        if (logcatText.isNotBlank()) {
+            hasLogcat = true
+            var logA2dpPktDrops = 0L
+            var logA2dpEncDrops = 0L
+            var logA2dpUnderflows = 0L
+            var logHfpDrops = 0L
+            var logLeUnderflows = 0L
+            var logLeIsoDrops = 0L
+            for (line in logcatText.lineSequence()) {
+                if (line.contains("Dropped media packet", ignoreCase = true) ||
+                    line.contains("Dropped oldest frame", ignoreCase = true)
+                ) {
+                    logA2dpPktDrops++
+                }
+                LOG_A2DP_ENCODED_DROP_REGEX.find(line)?.let { m ->
+                    val n = m.groupValues[1].toLongOrNull() ?: 0L
+                    if (n > logA2dpEncDrops) logA2dpEncDrops = n
+                }
+                if (line.contains("btif_a2dp_source", ignoreCase = true) &&
+                    line.contains("underflow", ignoreCase = true)
+                ) {
+                    logA2dpUnderflows++
+                }
+                LOG_SCO_UNRECEIVED_REGEX.find(line)?.let { m ->
+                    val n = m.groupValues[1].toLongOrNull() ?: 0L
+                    if (n > logHfpDrops) logHfpDrops = n
+                }
+                if ((line.contains("bta_ag_sco", ignoreCase = true) || line.contains("bt_sco", ignoreCase = true)) &&
+                    line.contains("drop", ignoreCase = true)
+                ) {
+                    logHfpDrops++
+                }
+                if ((line.contains("le_audio", ignoreCase = true) || line.contains("AudioHalClient", ignoreCase = true)) &&
+                    line.contains("underflow", ignoreCase = true)
+                ) {
+                    logLeUnderflows++
+                }
+                LOG_ISO_FLUSHED_REGEX.find(line)?.let { m ->
+                    val n = m.groupValues[1].toLongOrNull() ?: 0L
+                    if (n > logLeIsoDrops) logLeIsoDrops = n
+                }
+            }
+            if (!hasDumpsys) {
+                a2dpTxDropped = logA2dpPktDrops
+                a2dpDroppedFrames = logA2dpEncDrops
+                a2dpUnderflows = logA2dpUnderflows
+                hfpDroppedPkts = logHfpDrops
+                leUnderflows = logLeUnderflows
+                leIsoDrops = logLeIsoDrops
+            } else {
+                if (logLeIsoDrops > leIsoDrops) leIsoDrops = logLeIsoDrops
+            }
+        }
+
+        val hfpCodec = when {
+            hfpSwb -> "SWB (LC3 32 kHz)"
+            hfpWbs -> "WBS (mSBC 16 kHz)"
+            else -> "CVSD / mSBC"
+        }
+
+        val sourceLabel = when {
+            hasDumpsys -> "BT STACK DUMPSYS (LIVE)"
+            hasLogcat -> "BT LOGCAT MONITOR"
+            else -> "STANDARD API (GRANT DUMP/LOGS FOR STACK COUNTERS)"
+        }
+
+        return BluetoothAudioDropStats(
+            sourceLabel = sourceLabel,
+            hasStackCounters = hasDumpsys || hasLogcat,
+            a2dpExpectedFrames = a2dpExpectedFrames,
+            a2dpDroppedFrames = a2dpDroppedFrames,
+            a2dpExpectedPackets = a2dpExpectedPackets,
+            a2dpDroppedPackets = a2dpDroppedPackets,
+            a2dpTxEnqueued = a2dpTxEnqueued,
+            a2dpTxFlushed = a2dpTxFlushed,
+            a2dpTxDropped = a2dpTxDropped,
+            a2dpTxDropouts = a2dpTxDropouts,
+            a2dpMaxDropped = a2dpMaxDropped,
+            a2dpUnderflows = a2dpUnderflows,
+            a2dpUnderflowBytes = a2dpUnderflowBytes,
+            a2dpSinkDelayMs = a2dpSinkDelayMs,
+            hfpStateLabel = hfpState,
+            hfpSpeechCodecLabel = hfpCodec,
+            hfpScoActive = hfpScoActive,
+            hfpDroppedPackets = hfpDroppedPkts,
+            hfpTriggerDrops = hfpTriggerDrops,
+            hfpUnderflows = hfpUnderflows,
+            leAudioStreamState = leStreamState,
+            leAudioUnderflows = leUnderflows,
+            leAudioUnderflowBytes = leUnderflowBytes,
+            leIsoCreditsUnderflows = leCreditsUnderflows,
+            leIsoDroppedPackets = leIsoDrops,
+            leIsoAvailableCredits = leCredits,
+            leIsoBufferSizeBytes = leBufferBytes,
         )
     }
 

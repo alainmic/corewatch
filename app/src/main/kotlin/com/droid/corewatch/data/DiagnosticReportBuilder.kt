@@ -206,13 +206,16 @@ object DiagnosticReportBuilder {
             appendLine(
                 String.format(
                     Locale.US,
-                    "| **Bluetooth & Codec** | `%s` — Route: `%s` · Codec: `%s` (`%s`, `%s`, `%s`) · Connected: `%d` (`%d` paired) |",
+                    "| **Bluetooth & Codec** | `%s` — Route: `%s` · Codec: `%s` (`%s`, `%s`, `%s`) · Drops (A2DP `%s`, HFP `%s`, LE Audio `%s`) · Connected: `%d` (`%d` paired) |",
                     SysfsParsers.sanitizeSensorName(snapshot.bluetooth.connectionStateLabel, "Off"),
                     SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioCodec.activeRouteLabel, "Speaker"),
                     SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioCodec.activeCodecName, "None"),
                     SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioCodec.sampleRateLabel, "48.0 kHz"),
                     SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioCodec.bitsPerSampleLabel, "24-bit"),
                     SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioCodec.bitrateOrQualityLabel, "Standard"),
+                    SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioDrops.a2dpPrimaryCounterLabel, "0"),
+                    SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioDrops.hfpPrimaryCounterLabel, "0"),
+                    SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioDrops.leAudioPrimaryCounterLabel, "0"),
                     snapshot.bluetooth.connectedCount,
                     snapshot.bluetooth.bondedCount,
                 ),

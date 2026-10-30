@@ -18,6 +18,7 @@ import com.droid.corewatch.data.SystemTelemetrySnapshot
 import com.droid.corewatch.data.TelemetryCollector
 import com.droid.corewatch.service.CaffeineController
 import com.droid.corewatch.ui.theme.ThemeMode
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -25,6 +26,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
 enum class CorewatchTab(
@@ -124,12 +126,15 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
             while (isActive) {
                 delay(_state.value.samplingInterval.delayMs)
                 if (!_state.value.isPaused) {
-                    sampleNow()
+                    withContext(Dispatchers.Default) {
+                        sampleNow()
+                    }
                 }
             }
         }
     }
 
+    @Synchronized
     fun sampleNow(nowElapsedMs: Long = SystemClock.elapsedRealtime()) {
         val ctx = getApplication<Application>().applicationContext
         val cfg = CaffeineController.config.value

@@ -59,6 +59,19 @@ class TelemetryCollector(
     @Volatile
     private var a2dpProxy: BluetoothA2dp? = null
     private var a2dpProxyRequested: Boolean = false
+    @Volatile
+    private var lastBtStackSampleElapsedMs: Long = 0L
+    @Volatile
+    private var btStackRefreshInFlight: Boolean = false
+    @Volatile
+    private var cachedBtDumpsysText: String = ""
+    @Volatile
+    private var cachedBtLogcatText: String = ""
+    @Volatile
+    private var cachedAudioDropStats: BluetoothAudioDropStats = BluetoothAudioDropStats()
+    private val btStackExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "corewatch-bt-stack").apply { isDaemon = true }
+    }
     private var cachedLogcatCodecKey: String = ""
     private var cachedLogcatCodecSnapshot: BluetoothAudioCodecSnapshot? = null
     private var lastCpuSampleElapsedMs: Long = 0L
@@ -112,7 +125,7 @@ class TelemetryCollector(
         val lmkd = readLmkd(am)
         val network = readNetwork(nowElapsedMs)
         val wifi = readWifi()
-        val bluetooth = readBluetooth()
+        val bluetooth = readBluetooth(nowElapsedMs)
 
         val caffeineEval = CaffeinePolicy.evaluate(
             config = caffeineConfig,
@@ -717,7 +730,7 @@ class TelemetryCollector(
     }
 
     @Suppress("MissingPermission")
-    private fun readBluetooth(): BluetoothTelemetrySnapshot {
+    private fun readBluetooth(nowElapsedMs: Long): BluetoothTelemetrySnapshot {
         val audioMgr = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
         val btMgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         val adapter: BluetoothAdapter? = btMgr?.adapter
@@ -947,31 +960,93 @@ class TelemetryCollector(
             )
         }.sortedWith(compareByDescending<BluetoothPeripheralReading> { it.isConnected }.thenBy { it.name })
 
-        // Fallback: if A2DP is active and getCodecStatus is gated by BLUETOOTH_PRIVILEGED, inspect cached A2dpService logcat
-        if (btOutput?.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP && codecName == "A2DP Audio Stream") {
-            val cacheKey = "$routeName|$audioModeLabel"
-            val logCodec = if (cacheKey == cachedLogcatCodecKey) {
-                cachedLogcatCodecSnapshot
-            } else {
-                val hasReadLogs = ContextCompat.checkSelfPermission(
-                    context,
-                    "android.permission.READ_LOGS",
-                ) == PackageManager.PERMISSION_GRANTED
-                val parsed = if (!hasReadLogs) {
-                    null
-                } else {
-                    runCatching {
-                        val proc = ProcessBuilder("logcat", "-d", "-s", "A2dpService:D", "bluetooth-a2dp-aidl:I", "A2dpStateMachine:D")
-                            .redirectErrorStream(true)
-                            .start()
-                        val text = proc.inputStream.bufferedReader().use { it.readText() }
-                        proc.waitFor()
-                        WirelessTelemetryParsers.parseA2dpLogcatCodec(text, routeName, audioModeLabel)
-                    }.getOrNull()
+        // Refresh stack-level A2DP / HFP / LE Audio frame drop & underflow counters asynchronously off the UI thread
+        val isScoOn = isVoiceMode && scoOutput != null
+        val isLeAudioActive = bleOutput != null && (btOutput == bleOutput)
+        val hasDumpPerm = ContextCompat.checkSelfPermission(
+            context,
+            "android.permission.DUMP",
+        ) == PackageManager.PERMISSION_GRANTED
+        val hasReadLogs = ContextCompat.checkSelfPermission(
+            context,
+            "android.permission.READ_LOGS",
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (hasDumpPerm || hasReadLogs) {
+            val elapsedSinceLast = nowElapsedMs - lastBtStackSampleElapsedMs
+            if (!btStackRefreshInFlight && (lastBtStackSampleElapsedMs == 0L || elapsedSinceLast >= 3_000L || elapsedSinceLast < 0L)) {
+                btStackRefreshInFlight = true
+                lastBtStackSampleElapsedMs = nowElapsedMs
+                btStackExecutor.execute {
+                    try {
+                        val dumpOut = if (hasDumpPerm) {
+                            runCatching {
+                                val proc = ProcessBuilder("dumpsys", "bluetooth_manager")
+                                    .redirectErrorStream(true)
+                                    .start()
+                                val text = proc.inputStream.bufferedReader().use { it.readText() }
+                                proc.waitFor()
+                                text
+                            }.getOrDefault("")
+                        } else {
+                            ""
+                        }
+                        val logOut = if (!hasDumpPerm && hasReadLogs) {
+                            runCatching {
+                                val proc = ProcessBuilder(
+                                    "logcat",
+                                    "-d",
+                                    "-s",
+                                    "A2dpService:D",
+                                    "bluetooth-a2dp-aidl:I",
+                                    "A2dpStateMachine:D",
+                                    "btif_a2dp_source:V",
+                                    "bta_ag_sco:V",
+                                    "le_audio:V",
+                                )
+                                    .redirectErrorStream(true)
+                                    .start()
+                                val text = proc.inputStream.bufferedReader().use { it.readText() }
+                                proc.waitFor()
+                                text
+                            }.getOrDefault("")
+                        } else {
+                            ""
+                        }
+                        cachedBtDumpsysText = dumpOut
+                        cachedBtLogcatText = logOut
+                        cachedAudioDropStats = WirelessTelemetryParsers.parseBluetoothAudioDropStats(
+                            dumpsysText = dumpOut,
+                            logcatText = logOut,
+                            isScoOn = isScoOn,
+                            isLeAudioActive = isLeAudioActive,
+                        )
+                    } finally {
+                        btStackRefreshInFlight = false
+                    }
                 }
+            }
+        } else {
+            cachedAudioDropStats = BluetoothAudioDropStats()
+        }
+
+        // Fallback: if A2DP is active and getCodecStatus is gated by BLUETOOTH_PRIVILEGED, inspect dumpsys + logcat
+        if (btOutput?.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP && codecName == "A2DP Audio Stream") {
+            val combinedSource = if (cachedBtDumpsysText.isNotEmpty() || cachedBtLogcatText.isNotEmpty()) {
+                "$cachedBtDumpsysText\n$cachedBtLogcatText"
+            } else {
+                ""
+            }
+            val cacheKey = "$routeName|$audioModeLabel|${combinedSource.length}"
+            val logCodec = if (cacheKey == cachedLogcatCodecKey && cachedLogcatCodecSnapshot != null) {
+                cachedLogcatCodecSnapshot
+            } else if (combinedSource.isNotBlank()) {
+                val parsed = WirelessTelemetryParsers.parseA2dpLogcatCodec(combinedSource, routeName, audioModeLabel)
                 cachedLogcatCodecKey = cacheKey
                 cachedLogcatCodecSnapshot = parsed
                 parsed
+            } else {
+                null
             }
             if (logCodec != null) {
                 codecName = logCodec.activeCodecName
@@ -1033,6 +1108,7 @@ class TelemetryCollector(
                 communicationModeLabel = audioModeLabel,
                 isBluetoothAudioActive = btOutput != null,
             ),
+            audioDrops = cachedAudioDropStats,
             peripherals = peripherals,
         )
     }
