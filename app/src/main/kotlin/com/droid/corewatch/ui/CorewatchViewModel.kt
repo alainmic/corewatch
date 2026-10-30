@@ -143,7 +143,12 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
         wattsRing.push(abs(snap.battery.watts))
         memRing.push(snap.memory.usedFraction * 100f)
         netRing.push(snap.network.rxMbps + snap.network.txMbps)
-        wifiSignalRing.push(snap.wifi.signalQualityPercent.toFloat())
+        val normalizedRssiPct = if (snap.wifi.rssiDbm > -120) {
+            ((snap.wifi.rssiDbm.coerceIn(-90, -25) - (-90)).toFloat() / 65f) * 100f
+        } else {
+            0f
+        }
+        wifiSignalRing.push(normalizedRssiPct)
         jankRing.push(snap.frameJank.latestIntervalJankPercent)
 
         val hist = TelemetryHistoryStats(

@@ -17,7 +17,7 @@ android {
     targetSdk = 35
     versionCode = 1
     versionName = "1.0"
-    // Pure Kotlin/JVM app: no native libs, so the single APK runs on x86_64 and arm64-v8a.
+    // Universal APK bundling 16KB-aligned x86_64 and arm64-v8a JNI bridges with pure-Kotlin fallbacks.
   }
 
   buildTypes {

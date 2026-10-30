@@ -479,6 +479,21 @@ class CorewatchDataUnitTest {
         assertEquals(1, frameSnap.droppedFrames5m)
         assertEquals(1, frameSnap.longCpuJank5m)
         assertEquals("[60, 120] Hz", frameSnap.deadlineRangeLabel)
+
+        // Isolated 1Hz telemetry wakeup frame (1,000ms after previous frame, 12.5ms RC6/PSR wakeup, 0ms VSync slip)
+        // should NOT be flagged as jank.
+        tracker.recordFrameMetric(
+            nowElapsedMs = 3_200L,
+            totalDurationNs = 12_500_000L,
+            deadlineNs = 8_333_333L,
+            gpuDurationNs = 8_000_000L,
+            intendedVsyncNs = 1_140_000_000L,
+            vsyncNs = 1_140_000_000L,
+            cpuStagesDurationNs = 4_500_000L,
+        )
+        val afterIdleWakeup = tracker.snapshotFrames(3_500L, defaultHz = 120)
+        assertEquals(3, afterIdleWakeup.evaluatedFrames5m)
+        assertEquals(1, afterIdleWakeup.jankyFrames5m)
     }
 
     @Test

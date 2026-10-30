@@ -88,9 +88,9 @@ Corewatch transitions seamlessly between a multi-column desktop workbench and a 
 </p>
 
 <p align="center">
-  <img src="docs/images/workbench_memory.png" width="900" alt="Corewatch Battery and Power Workbench tab showing live USB-C PD wattage flow and the Caffeine Keep-Awake controller" />
+  <img src="docs/images/workbench_memory.png" width="900" alt="Corewatch Memory & Swap Workbench tab showing Physical RAM (/proc/meminfo), zram / Swap Pressure, Internal User Storage, and LMKD Invocations & PSI Pressure" />
   <br>
-  <sub>Battery &amp; Power tab showing live signed USB-C PD wattage (<code>+46.6 W</code>) alongside the Caffeine Keep-Awake controller and auto-trigger rules.</sub>
+  <sub><b>Memory &amp; Swap</b> tab showing physical RAM breakdown (<code>/proc/meminfo</code>), <code>zram</code> swap pressure, internal storage capacity, and rolling 5-minute <b>LMKD Invocations &amp; PSI Pressure</b>.</sub>
 </p>
 
 ---
@@ -126,9 +126,9 @@ Mobile system monitor apps were designed for narrow portrait phone screens with 
 </p>
 
 <p align="center">
-  <img src="docs/images/workbench_network_bt.png" width="900" alt="Corewatch Network & Bluetooth tab showing Wi-Fi 7 (802.11be) link state, RSSI -39 dBm, TX/RX PHY speeds, MAC frame retry/drop counters, Network Throughput, and Bluetooth Audio Codec & Peripherals with battery level" />
+  <img src="docs/images/workbench_network_bt.png" width="900" alt="Corewatch Network & Bluetooth tab showing Wi-Fi 7 (802.11be) link state, RSSI -40 dBm, TX/RX PHY speeds, MAC frame retry/drop counters, Network Throughput, and Bluetooth Audio Codec (SBC 44.1 kHz 16-bit Joint Stereo) & Peripherals with battery level" />
   <br>
-  <sub><b>Network &amp; Bluetooth</b> tab showing live <b>Wi-Fi 7 (802.11be)</b> link state (RSSI <code>-39 dBm</code>, <code>5 GHz · Ch 149</code>, <code>WPA3-SAE</code>, TX/RX PHY link speeds, MAC frame retry/drop counters), <b>TrafficStats RX/TX</b> packet rates, and <b>Bluetooth Audio Codec &amp; Peripherals</b>.</sub>
+  <sub><b>Network &amp; Bluetooth</b> tab showing live <b>Wi-Fi 7 (802.11be)</b> link state (RSSI <code>-40 dBm</code>, <code>5 GHz · Ch 149</code>, <code>WPA3-SAE</code>, TX/RX PHY link speeds, MAC frame retry/drop counters), <b>TrafficStats RX/TX</b> packet rates, and <b>Bluetooth Audio Codec (<code>SBC</code>) &amp; Peripherals</b>.</sub>
 </p>
 
 ---

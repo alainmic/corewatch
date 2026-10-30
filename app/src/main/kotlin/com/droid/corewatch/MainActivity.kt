@@ -324,6 +324,17 @@ class MainActivity : ComponentActivity() {
         vm.onTrimMemoryLevel(level)
     }
 
+    @Deprecated("Deprecated in ComponentActivity")
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        grantResults: IntArray,
+    ) {
+        @Suppress("DEPRECATION")
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        vm.sampleNow()
+    }
+
     override fun onDestroy() {
         runCatching { window.removeOnFrameMetricsAvailableListener(frameMetricsListener) }
         runCatching { frameMetricsThread?.quitSafely() }

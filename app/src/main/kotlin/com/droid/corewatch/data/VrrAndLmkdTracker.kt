@@ -128,6 +128,7 @@ class VrrAndFrameWindowTracker(
 
     private val frameBuckets = ArrayDeque<FrameBucket>()
     private var firstFrameElapsedMs: Long = -1L
+    private var lastFrameVsyncNs: Long = -1L
 
     fun reset() {
         synchronized(lock) {
@@ -136,6 +137,7 @@ class VrrAndFrameWindowTracker(
             lastObservedHz = -1
             frameBuckets.clear()
             firstFrameElapsedMs = -1L
+            lastFrameVsyncNs = -1L
         }
     }
 
@@ -208,10 +210,24 @@ class VrrAndFrameWindowTracker(
         } else {
             totalDurationNs
         }
-        val isJanky = totalDurationNs > safeDeadlineNs && activeRenderNs > safeDeadlineNs
-        val isDropped = isJanky && (vsyncSlipNs > safeDeadlineNs || activeRenderNs > (safeDeadlineNs * 2L))
-        val isLongCpu = isJanky && cpuNs > (safeDeadlineNs * 65L / 100L)
-        val isLongGpu = isJanky && safeGpuNs > (safeDeadlineNs * 50L / 100L)
+        val isIdleWakeupFrame = synchronized(lock) {
+            val prevVsync = lastFrameVsyncNs
+            if (vsyncNs > 0L) {
+                lastFrameVsyncNs = vsyncNs
+            }
+            (prevVsync <= 0L || (vsyncNs - prevVsync) >= 250_000_000L) && vsyncSlipNs < safeDeadlineNs
+        }
+        // Isolated 1Hz telemetry ticks (>= 250 ms after the previous frame with no VSync slip)
+        // wake the CPU from powersave, GPU from RC6, and eDP panel from PSR low-refresh (30 Hz / 33.3 ms).
+        val evalDeadlineNs = if (isIdleWakeupFrame) {
+            maxOf(safeDeadlineNs, 33_333_333L)
+        } else {
+            safeDeadlineNs
+        }
+        val isJanky = totalDurationNs > evalDeadlineNs && activeRenderNs > evalDeadlineNs
+        val isDropped = isJanky && (vsyncSlipNs > safeDeadlineNs || activeRenderNs > (evalDeadlineNs * 2L))
+        val isLongCpu = isJanky && cpuNs > (evalDeadlineNs * 65L / 100L)
+        val isLongGpu = isJanky && safeGpuNs > (evalDeadlineNs * 50L / 100L)
         val isStuffing = isJanky && !isLongCpu && !isLongGpu
 
         val bucketKeyMs = (nowElapsedMs / 1_000L) * 1_000L

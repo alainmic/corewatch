@@ -950,21 +950,27 @@ class TelemetryCollector(
         // Fallback: if A2DP is active and getCodecStatus is gated by BLUETOOTH_PRIVILEGED, inspect cached A2dpService logcat
         if (btOutput?.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP && codecName == "A2DP Audio Stream") {
             val cacheKey = "$routeName|$audioModeLabel"
-            val logCodec = if (cacheKey == cachedLogcatCodecKey && cachedLogcatCodecSnapshot != null) {
+            val logCodec = if (cacheKey == cachedLogcatCodecKey) {
                 cachedLogcatCodecSnapshot
             } else {
-                val parsed = runCatching {
-                    val proc = ProcessBuilder("logcat", "-d", "-t", "120", "-s", "A2dpService:D", "bluetooth-a2dp-aidl:I", "A2dpStateMachine:D")
-                        .redirectErrorStream(true)
-                        .start()
-                    val text = proc.inputStream.bufferedReader().use { it.readText() }
-                    proc.waitFor()
-                    WirelessTelemetryParsers.parseA2dpLogcatCodec(text, routeName, audioModeLabel)
-                }.getOrNull()
-                if (parsed != null) {
-                    cachedLogcatCodecKey = cacheKey
-                    cachedLogcatCodecSnapshot = parsed
+                val hasReadLogs = ContextCompat.checkSelfPermission(
+                    context,
+                    "android.permission.READ_LOGS",
+                ) == PackageManager.PERMISSION_GRANTED
+                val parsed = if (!hasReadLogs) {
+                    null
+                } else {
+                    runCatching {
+                        val proc = ProcessBuilder("logcat", "-d", "-s", "A2dpService:D", "bluetooth-a2dp-aidl:I", "A2dpStateMachine:D")
+                            .redirectErrorStream(true)
+                            .start()
+                        val text = proc.inputStream.bufferedReader().use { it.readText() }
+                        proc.waitFor()
+                        WirelessTelemetryParsers.parseA2dpLogcatCodec(text, routeName, audioModeLabel)
+                    }.getOrNull()
                 }
+                cachedLogcatCodecKey = cacheKey
+                cachedLogcatCodecSnapshot = parsed
                 parsed
             }
             if (logCodec != null) {
@@ -974,6 +980,17 @@ class TelemetryCollector(
                 channelStr = logCodec.channelModeLabel
                 qualityStr = logCodec.bitrateOrQualityLabel
                 selectableSummary = logCodec.selectableCodecsSummary
+            } else {
+                val aacPrio = readSystemProperty("bluetooth.a2dp.source.aac_priority.config")
+                val ldacPrio = readSystemProperty("bluetooth.a2dp.source.ldac_priority.config")
+                val aptxPrio = readSystemProperty("bluetooth.a2dp.source.aptx_priority.config")
+                if (aacPrio == "-1" && ldacPrio == "-1" && aptxPrio == "-1") {
+                    codecName = "SBC"
+                    sampleRateStr = "44.1 kHz"
+                    bitsStr = "16-bit"
+                    channelStr = "Joint Stereo"
+                    qualityStr = "243–328 kbps (Bitpool 2–37)"
+                }
             }
         }
 
@@ -1165,6 +1182,14 @@ class TelemetryCollector(
             busyDeltaFraction = busyFraction,
             heartbeatActive = heartbeatActive,
         )
+    }
+
+    private fun readSystemProperty(key: String): String? {
+        return runCatching {
+            val cls = Class.forName("android.os.SystemProperties")
+            val getMethod = cls.getMethod("get", String::class.java)
+            (getMethod.invoke(null, key) as? String)?.trim()?.takeIf { it.isNotEmpty() }
+        }.getOrNull()
     }
 
     private fun readSmallFile(file: File, maxBytes: Int = 256): String? {

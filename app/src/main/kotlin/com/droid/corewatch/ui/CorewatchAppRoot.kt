@@ -2066,6 +2066,25 @@ private fun NetworkBluetoothTab(state: CorewatchUiState) {
                         color = if (wifi.txLostPktsPerSec > 1.0) cs.error else cs.onSurfaceVariant,
                     )
 
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "60s Signal Stability (RSSI -90 .. -25 dBm)",
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onSurfaceVariant,
+                        )
+                        if (wifi.rssiDbm > -120) {
+                            Text(
+                                text = "${wifi.rssiDbm} dBm",
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.secondary,
+                            )
+                        }
+                    }
+
                     SparklineCanvas(
                         samples = hist.wifiSignalSamples,
                         lineColor = cs.secondary,
@@ -2213,15 +2232,39 @@ private fun NetworkBluetoothTab(state: CorewatchUiState) {
                 )
 
                 if (bt.peripherals.isEmpty()) {
-                    Text(
-                        text = if (bt.hasConnectPermission) {
-                            "No paired Bluetooth peripherals reported by BluetoothAdapter."
-                        } else {
-                            "Grant BLUETOOTH_CONNECT permission to inspect paired Bluetooth peripherals and battery levels."
-                        },
-                        style = CorewatchMonoTypography.hudSmall,
-                        color = cs.onSurfaceVariant,
-                    )
+                    val viewCtx = LocalView.current.context
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = if (bt.hasConnectPermission) {
+                                "No paired Bluetooth peripherals reported by BluetoothAdapter."
+                            } else {
+                                "Grant BLUETOOTH_CONNECT permission to inspect paired Bluetooth peripherals and battery levels."
+                            },
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (!bt.hasConnectPermission) {
+                            Spacer(Modifier.width(8.dp))
+                            FilterChip(
+                                selected = false,
+                                onClick = {
+                                    runCatching {
+                                        val act = viewCtx as? android.app.Activity
+                                        if (act != null && Build.VERSION.SDK_INT >= 31) {
+                                            act.requestPermissions(arrayOf(android.Manifest.permission.BLUETOOTH_CONNECT), 1001)
+                                        }
+                                    }
+                                },
+                                label = { Text("Grant Bluetooth Permission") },
+                                modifier = Modifier.testTag("grant_bluetooth_permission_btn"),
+                            )
+                        }
+                    }
                 } else {
                     for (dev in bt.peripherals) {
                         Surface(
