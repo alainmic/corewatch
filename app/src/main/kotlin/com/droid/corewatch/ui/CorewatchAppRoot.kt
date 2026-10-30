@@ -46,9 +46,11 @@ import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PhotoSizeSelectSmall
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.SettingsEthernet
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Thermostat
 import androidx.compose.material.icons.outlined.WarningAmber
+import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
@@ -99,7 +101,9 @@ import com.droid.corewatch.data.CaffeineDuration
 import com.droid.corewatch.data.CoreCluster
 import com.droid.corewatch.data.DiagnosticReportBuilder
 import com.droid.corewatch.data.DisplaySpec
+import com.droid.corewatch.data.EthernetTelemetrySnapshot
 import com.droid.corewatch.data.ThermalLevel
+import com.droid.corewatch.data.WifiTelemetrySnapshot
 import com.droid.corewatch.ui.theme.CorewatchMonoTypography
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -1065,7 +1069,12 @@ internal fun MiniHudView(
                         cardAlpha = cardAlpha,
                     )
 
-                    // 5. Memory / zram Swap + Network Throughput Row
+                    // 5. Memory / zram Swap + Active Network Throughput Row
+                    val activeNetPrefix = when {
+                        snap.ethernet.isPrimaryDefaultRoute -> "Eth"
+                        snap.wifi.isPrimaryDefaultRoute -> "Wi-Fi"
+                        else -> "Net"
+                    }
                     MiniHudSparklineCard(
                         title = "RAM & zram SWAP",
                         primaryValue = String.format(
@@ -1077,8 +1086,9 @@ internal fun MiniHudView(
                         ),
                         subValue = String.format(
                             Locale.US,
-                            "Swap %d%% · Net ↓%.1f ↑%.1f Mbps",
+                            "Swap %d%% · %s ↓%.1f ↑%.1f Mbps",
                             (snap.memory.swapUsedFraction * 100f).roundToInt(),
+                            activeNetPrefix,
                             snap.network.rxMbps,
                             snap.network.txMbps,
                         ),
@@ -2032,179 +2042,133 @@ private fun NetworkBluetoothTab(state: CorewatchUiState, vm: CorewatchViewModel)
     val snap = state.snapshot
     val hist = state.history
     val wifi = snap.wifi
+    val eth = snap.ethernet
     val bt = snap.bluetooth
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val sideBySideLinks = maxWidth >= 760.dp
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // Wi-Fi & Network Link State Card
+            if (sideBySideLinks) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    WifiRadioLinkCard(
+                        wifi = wifi,
+                        rssiSamples = hist.wifiSignalSamples,
+                        modifier = Modifier.weight(1f),
+                    )
+                    WiredEthernetLinkCard(
+                        eth = eth,
+                        ethMbpsSamples = hist.ethernetMbpsSamples,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            } else {
+                WifiRadioLinkCard(
+                    wifi = wifi,
+                    rssiSamples = hist.wifiSignalSamples,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                WiredEthernetLinkCard(
+                    eth = eth,
+                    ethMbpsSamples = hist.ethernetMbpsSamples,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            // Aggregate Network Throughput (TrafficStats RX / TX) Card across all active interfaces + VPN
             Surface(
                 shape = RoundedCornerShape(14.dp),
                 color = cs.surfaceContainer,
-                modifier = Modifier.weight(1.15f).testTag("wifi_link_card"),
+                modifier = Modifier.fillMaxWidth().testTag("network_throughput_card"),
             ) {
-                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1.3f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        Text("Wi-Fi & Network Link State", style = MaterialTheme.typography.titleMedium)
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = if (wifi.isConnected) cs.primaryContainer else cs.surfaceContainerHigh,
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("Network Throughput (TrafficStats RX / TX)", style = MaterialTheme.typography.titleMedium)
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (snap.activeDefaultRouteSummary != "Disconnected") cs.secondaryContainer else cs.surfaceContainerHigh,
+                            ) {
+                                Text(
+                                    text = "Default Route: ${snap.activeDefaultRouteSummary}",
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = if (snap.activeDefaultRouteSummary != "Disconnected") cs.onSecondaryContainer else cs.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                )
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(
-                                text = wifi.wifiStandardLabel,
+                                text = String.format(Locale.US, "↓ %.2f Mbps · ↑ %.2f Mbps", snap.network.rxMbps, snap.network.txMbps),
+                                style = CorewatchMonoTypography.metricLarge,
+                                color = cs.primary,
+                            )
+                            Text(
+                                text = String.format(
+                                    Locale.US,
+                                    "Boot RX: %s · TX: %s",
+                                    DiagnosticReportBuilder.formatGiB(snap.network.totalRxBytes),
+                                    DiagnosticReportBuilder.formatGiB(snap.network.totalTxBytes),
+                                ),
                                 style = CorewatchMonoTypography.hudSmall,
-                                color = if (wifi.isConnected) cs.onPrimaryContainer else cs.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                color = cs.onSurfaceVariant,
                             )
                         }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
                         Text(
-                            text = if (wifi.rssiDbm > -120) {
-                                "RSSI: ${wifi.rssiDbm} dBm · ${wifi.signalQualityLabel} (${wifi.signalQualityPercent}%)"
-                            } else {
-                                "Signal: ${wifi.linkHealthBadge}"
-                            },
-                            style = CorewatchMonoTypography.hudValue,
-                            color = if (wifi.signalQualityPercent >= 60) cs.secondary else cs.primary,
-                        )
-                        Text(
-                            text = "PHY: ${wifi.phySpeedSummary}",
-                            style = CorewatchMonoTypography.hudValue,
-                            color = cs.primary,
-                        )
-                    }
-
-                    LinearProgressIndicator(
-                        progress = { wifi.signalFraction },
-                        modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
-                        color = if (wifi.signalQualityPercent >= 60) cs.secondary else cs.primary,
-                        trackColor = cs.surfaceContainerHighest,
-                    )
-
-                    Text(
-                        text = "Band: ${wifi.bandAndChannelLabel} · Security: ${wifi.securityLabel} · MLO: ${wifi.mloSummary}",
-                        style = CorewatchMonoTypography.hudSmall,
-                        color = cs.onSurfaceVariant,
-                    )
-                    Text(
-                        text = String.format(
-                            Locale.US,
-                            "Interface: %s (MTU %d) · Transport: %s · State: %s (%s)",
-                            wifi.interfaceName,
-                            wifi.mtu,
-                            wifi.transportLabel,
-                            if (wifi.isValidated) "Validated" else "Unvalidated",
-                            if (wifi.isMetered) "Metered" else "Unmetered",
-                        ),
-                        style = CorewatchMonoTypography.hudSmall,
-                        color = cs.onSurfaceVariant,
-                    )
-                    Text(
-                        text = String.format(
-                            Locale.US,
-                            "Wi-Fi MAC Frames: TX Good %.1f/s · RX Good %.1f/s · TX Retries %.1f/s · TX Dropped %.1f/s",
-                            wifi.txSuccessPktsPerSec,
-                            wifi.rxSuccessPktsPerSec,
-                            wifi.txRetriesPerSec,
-                            wifi.txLostPktsPerSec,
-                        ),
-                        style = CorewatchMonoTypography.hudSmall,
-                        color = if (wifi.txLostPktsPerSec > 1.0) cs.error else cs.onSurfaceVariant,
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "60s Signal Stability (RSSI -90 .. -25 dBm)",
+                            text = String.format(
+                                Locale.US,
+                                "Aggregate Packet Rate (All Interfaces): ↓ %.0f pkt/s · ↑ %.0f pkt/s (%,d RX / %,d TX pkts)",
+                                snap.network.rxPacketsPerSec,
+                                snap.network.txPacketsPerSec,
+                                snap.network.totalRxPackets,
+                                snap.network.totalTxPackets,
+                            ),
                             style = CorewatchMonoTypography.hudSmall,
                             color = cs.onSurfaceVariant,
                         )
-                        if (wifi.rssiDbm > -120) {
-                            Text(
-                                text = "${wifi.rssiDbm} dBm",
-                                style = CorewatchMonoTypography.hudSmall,
-                                color = cs.secondary,
-                            )
-                        }
                     }
-
-                    SparklineCanvas(
-                        samples = hist.wifiSignalSamples,
-                        lineColor = cs.secondary,
-                        gridColor = cs.outlineVariant.copy(alpha = 0.4f),
-                        minFloor = 0f,
-                        maxCeiling = 100f,
-                        modifier = Modifier.fillMaxWidth().height(56.dp),
-                    )
+                    Column(
+                        modifier = Modifier.weight(0.7f),
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        Text(
+                            text = "60s Total RX + TX (Mbps)",
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onSurfaceVariant,
+                        )
+                        SparklineCanvas(
+                            samples = hist.networkMbpsSamples,
+                            lineColor = cs.primary,
+                            gridColor = cs.outlineVariant.copy(alpha = 0.4f),
+                            minFloor = 0f,
+                            modifier = Modifier.fillMaxWidth().height(42.dp),
+                        )
+                    }
                 }
             }
-
-            // Network Throughput (TrafficStats RX / TX) Card
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = cs.surfaceContainer,
-                modifier = Modifier.weight(0.85f).testTag("network_throughput_card"),
-            ) {
-                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Network Throughput (TrafficStats RX / TX)", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        text = String.format(Locale.US, "↓ %.2f Mbps · ↑ %.2f Mbps", snap.network.rxMbps, snap.network.txMbps),
-                        style = CorewatchMonoTypography.metricLarge,
-                        color = cs.primary,
-                    )
-                    Text(
-                        text = String.format(
-                            Locale.US,
-                            "Packet Rate: ↓ %.0f pkt/s · ↑ %.0f pkt/s (Total: %d RX / %d TX pkts)",
-                            snap.network.rxPacketsPerSec,
-                            snap.network.txPacketsPerSec,
-                            snap.network.totalRxPackets,
-                            snap.network.totalTxPackets,
-                        ),
-                        style = CorewatchMonoTypography.hudSmall,
-                        color = cs.onSurfaceVariant,
-                    )
-                    Text(
-                        text = String.format(
-                            Locale.US,
-                            "Boot Cumulative RX: %s · Cumulative TX: %s",
-                            DiagnosticReportBuilder.formatGiB(snap.network.totalRxBytes),
-                            DiagnosticReportBuilder.formatGiB(snap.network.totalTxBytes),
-                        ),
-                        style = CorewatchMonoTypography.hudSmall,
-                        color = cs.onSurfaceVariant,
-                    )
-                    SparklineCanvas(
-                        samples = hist.networkMbpsSamples,
-                        lineColor = cs.primary,
-                        gridColor = cs.outlineVariant.copy(alpha = 0.4f),
-                        minFloor = 0f,
-                        modifier = Modifier.fillMaxWidth().height(56.dp),
-                    )
-                }
-            }
-        }
 
         // Bluetooth Audio Codec & Peripherals Card
         Surface(
@@ -2531,6 +2495,373 @@ private fun NetworkBluetoothTab(state: CorewatchUiState, vm: CorewatchViewModel)
                     }
                 }
             }
+        }
+        }
+    }
+}
+
+@Composable
+private fun WifiRadioLinkCard(
+    wifi: WifiTelemetrySnapshot,
+    rssiSamples: List<Float>,
+    modifier: Modifier = Modifier,
+) {
+    val cs = MaterialTheme.colorScheme
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = cs.surfaceContainer,
+        modifier = modifier.testTag("wifi_link_card"),
+    ) {
+        Column(modifier = Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Outlined.Wifi,
+                        contentDescription = null,
+                        tint = if (wifi.isConnected) cs.secondary else cs.onSurfaceVariant,
+                        modifier = Modifier.size(17.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Wi-Fi Radio & Link", style = MaterialTheme.typography.titleMedium)
+                }
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = if (wifi.isConnected) cs.primaryContainer else cs.surfaceContainerHigh,
+                ) {
+                    Text(
+                        text = wifi.wifiStandardLabel,
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = if (wifi.isConnected) cs.onPrimaryContainer else cs.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = if (wifi.rssiDbm > -120) {
+                        "RSSI: ${wifi.rssiDbm} dBm · ${wifi.signalQualityLabel} (${wifi.signalQualityPercent}%)"
+                    } else {
+                        "Signal: ${wifi.linkHealthBadge}"
+                    },
+                    style = CorewatchMonoTypography.hudValue,
+                    color = if (wifi.signalQualityPercent >= 60) cs.secondary else cs.primary,
+                )
+                Text(
+                    text = "PHY: ${wifi.phySpeedSummary}",
+                    style = CorewatchMonoTypography.hudValue,
+                    color = cs.primary,
+                )
+            }
+
+            LinearProgressIndicator(
+                progress = { wifi.signalFraction },
+                modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape),
+                color = if (wifi.signalQualityPercent >= 60) cs.secondary else cs.primary,
+                trackColor = cs.surfaceContainerHighest,
+            )
+
+            // Per-Interface Wi-Fi Throughput Strip (wlan*)
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = cs.surfaceContainerHigh,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Wi-Fi Throughput (${wifi.interfaceName})",
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onSurfaceVariant,
+                        )
+                        Text(
+                            text = String.format(
+                                Locale.US,
+                                "↓ %.2f Mbps · ↑ %.2f Mbps",
+                                wifi.throughput.rxMbps,
+                                wifi.throughput.txMbps,
+                            ),
+                            style = CorewatchMonoTypography.hudValue,
+                            color = if (wifi.isPrimaryDefaultRoute) cs.secondary else cs.onSurface,
+                        )
+                    }
+                    Text(
+                        text = String.format(
+                            Locale.US,
+                            "Pkts: ↓ %.0f · ↑ %.0f pkt/s · Boot: %s RX / %s TX",
+                            wifi.throughput.rxPacketsPerSec,
+                            wifi.throughput.txPacketsPerSec,
+                            DiagnosticReportBuilder.formatGiB(wifi.throughput.totalRxBytes),
+                            DiagnosticReportBuilder.formatGiB(wifi.throughput.totalTxBytes),
+                        ),
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurfaceVariant,
+                    )
+                }
+            }
+
+            Text(
+                text = "Band: ${wifi.bandAndChannelLabel} · Security: ${wifi.securityLabel} · MLO: ${wifi.mloSummary}",
+                style = CorewatchMonoTypography.hudSmall,
+                color = cs.onSurfaceVariant,
+            )
+            Text(
+                text = String.format(
+                    Locale.US,
+                    "Interface: %s (MTU %d) · %s · Role: %s",
+                    wifi.interfaceName,
+                    wifi.mtu,
+                    wifi.ipStackLabel,
+                    wifi.routeRoleLabel,
+                ),
+                style = CorewatchMonoTypography.hudSmall,
+                color = cs.onSurfaceVariant,
+            )
+            Text(
+                text = String.format(
+                    Locale.US,
+                    "Wi-Fi MAC Frames: TX Good %.1f/s · RX Good %.1f/s · Retries %.1f/s · Dropped %.1f/s",
+                    wifi.txSuccessPktsPerSec,
+                    wifi.rxSuccessPktsPerSec,
+                    wifi.txRetriesPerSec,
+                    wifi.txLostPktsPerSec,
+                ),
+                style = CorewatchMonoTypography.hudSmall,
+                color = if (wifi.txLostPktsPerSec > 1.0) cs.error else cs.onSurfaceVariant,
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "60s Signal Stability (RSSI -90 .. -25 dBm)",
+                    style = CorewatchMonoTypography.hudSmall,
+                    color = cs.onSurfaceVariant,
+                )
+                if (wifi.rssiDbm > -120) {
+                    Text(
+                        text = "${wifi.rssiDbm} dBm",
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.secondary,
+                    )
+                }
+            }
+
+            SparklineCanvas(
+                samples = rssiSamples,
+                lineColor = cs.secondary,
+                gridColor = cs.outlineVariant.copy(alpha = 0.4f),
+                minFloor = 0f,
+                maxCeiling = 100f,
+                modifier = Modifier.fillMaxWidth().height(42.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun WiredEthernetLinkCard(
+    eth: EthernetTelemetrySnapshot,
+    ethMbpsSamples: List<Float>,
+    modifier: Modifier = Modifier,
+) {
+    val cs = MaterialTheme.colorScheme
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = cs.surfaceContainer,
+        modifier = modifier.testTag("ethernet_link_card"),
+    ) {
+        Column(modifier = Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Outlined.SettingsEthernet,
+                        contentDescription = null,
+                        tint = if (eth.isConnected) cs.primary else cs.onSurfaceVariant,
+                        modifier = Modifier.size(17.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Wired Ethernet Link", style = MaterialTheme.typography.titleMedium)
+                }
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = if (eth.isConnected) cs.primaryContainer else cs.surfaceContainerHigh,
+                ) {
+                    Text(
+                        text = eth.linkSpeedTierLabel,
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = if (eth.isConnected) cs.onPrimaryContainer else cs.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Link: ${eth.negotiatedSpeedSummary}",
+                    style = CorewatchMonoTypography.hudValue,
+                    color = if (eth.isConnected) cs.primary else cs.onSurfaceVariant,
+                )
+                Text(
+                    text = "Role: ${eth.routeRoleLabel}",
+                    style = CorewatchMonoTypography.hudValue,
+                    color = if (eth.isPrimaryDefaultRoute) cs.secondary else cs.onSurfaceVariant,
+                )
+            }
+
+            LinearProgressIndicator(
+                progress = { eth.linkBarFraction },
+                modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape),
+                color = if (eth.dockBottleneckWarning != null) cs.tertiary else cs.primary,
+                trackColor = cs.surfaceContainerHighest,
+            )
+
+            // Per-Interface Wired Ethernet Throughput Strip (eth* / en*)
+            val ethIfaceDisplay = if (eth.isConnected) eth.interfaceName else "eth*"
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = cs.surfaceContainerHigh,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Ethernet Throughput ($ethIfaceDisplay)",
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onSurfaceVariant,
+                        )
+                        Text(
+                            text = String.format(
+                                Locale.US,
+                                "↓ %.2f Mbps · ↑ %.2f Mbps",
+                                eth.throughput.rxMbps,
+                                eth.throughput.txMbps,
+                            ),
+                            style = CorewatchMonoTypography.hudValue,
+                            color = if (eth.isConnected) cs.primary else cs.onSurfaceVariant,
+                        )
+                    }
+                    Text(
+                        text = String.format(
+                            Locale.US,
+                            "Pkts: ↓ %.0f · ↑ %.0f pkt/s · Boot: %s RX / %s TX",
+                            eth.throughput.rxPacketsPerSec,
+                            eth.throughput.txPacketsPerSec,
+                            DiagnosticReportBuilder.formatGiB(eth.throughput.totalRxBytes),
+                            DiagnosticReportBuilder.formatGiB(eth.throughput.totalTxBytes),
+                        ),
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurfaceVariant,
+                    )
+                }
+            }
+
+            Text(
+                text = if (eth.isConnected) {
+                    String.format(
+                        Locale.US,
+                        "Interface: %s (MTU %d) · %s · %s (%s)",
+                        eth.interfaceName,
+                        eth.mtu,
+                        eth.ipStackLabel,
+                        if (eth.isValidated) "Validated" else "Unvalidated",
+                        if (eth.isMetered) "Metered" else "Unmetered",
+                    )
+                } else {
+                    "Interface: None (No physical RJ45 / USB-C Ethernet dock detected)"
+                },
+                style = CorewatchMonoTypography.hudSmall,
+                color = cs.onSurfaceVariant,
+            )
+
+            Text(
+                text = if (eth.isConnected) {
+                    "DNS: ${eth.dnsSummaryLabel} · Wake-on-LAN: ${if (eth.wakeOnLanSupported) "Supported" else "Unsupported"}"
+                } else {
+                    "DNS: N/A · Virtual VM/VPN bridges (avf_tap*, veth*, tun*) excluded"
+                },
+                style = CorewatchMonoTypography.hudSmall,
+                color = cs.onSurfaceVariant,
+            )
+
+            val dockWarning = eth.dockBottleneckWarning
+            if (dockWarning != null) {
+                Text(
+                    text = "⚠ $dockWarning",
+                    style = CorewatchMonoTypography.hudSmall,
+                    color = cs.tertiary,
+                    modifier = Modifier.testTag("ethernet_bottleneck_warning"),
+                )
+            } else {
+                Text(
+                    text = if (eth.isConnected) {
+                        "Carrier: IEEE 802.3 Full-Duplex · Dedicated Wired Link"
+                    } else {
+                        "Carrier: Link Down · Connect USB-C / Thunderbolt Ethernet for wired telemetry"
+                    },
+                    style = CorewatchMonoTypography.hudSmall,
+                    color = cs.onSurfaceVariant,
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "60s Wired Ethernet RX + TX (Mbps)",
+                    style = CorewatchMonoTypography.hudSmall,
+                    color = cs.onSurfaceVariant,
+                )
+                if (eth.isConnected) {
+                    Text(
+                        text = String.format(Locale.US, "%.2f Mbps", eth.throughput.rxMbps + eth.throughput.txMbps),
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.primary,
+                    )
+                }
+            }
+
+            SparklineCanvas(
+                samples = ethMbpsSamples,
+                lineColor = cs.primary,
+                gridColor = cs.outlineVariant.copy(alpha = 0.4f),
+                minFloor = 0f,
+                modifier = Modifier.fillMaxWidth().height(42.dp),
+            )
         }
     }
 }

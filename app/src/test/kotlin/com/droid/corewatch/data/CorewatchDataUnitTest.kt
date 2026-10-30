@@ -586,4 +586,158 @@ class CorewatchDataUnitTest {
         assertEquals(8, dumpsysDropStats.leIsoAvailableCredits)
         assertEquals(248, dumpsysDropStats.leIsoBufferSizeBytes)
     }
+
+    @Test
+    fun ethernetSpeedTiersVirtualBridgeFilterRateTrackerAndSplitReportWorkCorrectly() {
+        // 1. Virtual VM / bridge / tunnel exclusion vs physical wired NIC acceptance
+        assertTrue(WirelessTelemetryParsers.isVirtualBridgeInterface(""))
+        assertTrue(WirelessTelemetryParsers.isVirtualBridgeInterface("None"))
+        assertTrue(WirelessTelemetryParsers.isVirtualBridgeInterface("lo"))
+        assertTrue(WirelessTelemetryParsers.isVirtualBridgeInterface("avf_tap_2052"))
+        assertTrue(WirelessTelemetryParsers.isVirtualBridgeInterface("veth42a"))
+        assertTrue(WirelessTelemetryParsers.isVirtualBridgeInterface("docker0"))
+        assertTrue(WirelessTelemetryParsers.isVirtualBridgeInterface("virbr0"))
+        assertTrue(WirelessTelemetryParsers.isVirtualBridgeInterface("tun0"))
+        assertTrue(WirelessTelemetryParsers.isVirtualBridgeInterface("wlan0"))
+        assertFalse(WirelessTelemetryParsers.isVirtualBridgeInterface("eth0"))
+        assertFalse(WirelessTelemetryParsers.isVirtualBridgeInterface("eth1"))
+        assertFalse(WirelessTelemetryParsers.isVirtualBridgeInterface("enx00e04c680001"))
+        assertFalse(WirelessTelemetryParsers.isVirtualBridgeInterface("usb0"))
+
+        // 2. Negotiated IEEE 802.3 speed tier badges
+        assertEquals(0 to "Undocked", WirelessTelemetryParsers.formatEthernetSpeedTier(2_500_000, 2_500_000, isConnected = false))
+        assertEquals(10_000 to "10 GbE (10GBASE-T)", WirelessTelemetryParsers.formatEthernetSpeedTier(10_000_000, 10_000_000))
+        assertEquals(5_000 to "5 GbE (5GBASE-T)", WirelessTelemetryParsers.formatEthernetSpeedTier(5_000_000, 5_000_000))
+        assertEquals(2_500 to "2.5 GbE (2500BASE-T)", WirelessTelemetryParsers.formatEthernetSpeedTier(2_500_000, 2_500_000))
+        assertEquals(1_000 to "1 GbE (1000BASE-T)", WirelessTelemetryParsers.formatEthernetSpeedTier(1_000_000, 1_000_000))
+        assertEquals(100 to "100 Mbps (100BASE-TX)", WirelessTelemetryParsers.formatEthernetSpeedTier(100_000, 100_000))
+        assertEquals(10 to "10 Mbps (10BASE-T)", WirelessTelemetryParsers.formatEthernetSpeedTier(10_000, 10_000))
+        assertEquals(0 to "Connected", WirelessTelemetryParsers.formatEthernetSpeedTier(0, 0, isConnected = true))
+
+        // 3. IP stack & DNS summaries (anonymized without raw IP addresses)
+        assertEquals("Dual-Stack (IPv4 + IPv6)", WirelessTelemetryParsers.formatIpStackSummary(true, true))
+        assertEquals("IPv4", WirelessTelemetryParsers.formatIpStackSummary(true, false))
+        assertEquals("IPv6", WirelessTelemetryParsers.formatIpStackSummary(false, true))
+        assertEquals("N/A", WirelessTelemetryParsers.formatIpStackSummary(false, false))
+        assertEquals("Private DNS (DoT) · 2 Servers", WirelessTelemetryParsers.formatDnsSummary(true, 2, isConnected = true))
+        assertEquals("Standard DNS · 1 Server", WirelessTelemetryParsers.formatDnsSummary(false, 1, isConnected = true))
+        assertEquals("N/A", WirelessTelemetryParsers.formatDnsSummary(true, 2, isConnected = false))
+
+        // 4. EthernetTelemetrySnapshot computed helpers & 100BASE-TX bottleneck detection
+        val dock25Gbe = EthernetTelemetrySnapshot(
+            isConnected = true,
+            interfaceName = "eth1",
+            isPrimaryDefaultRoute = true,
+            isValidated = true,
+            negotiatedSpeedMbps = 2_500,
+            linkSpeedTierLabel = "2.5 GbE (2500BASE-T)",
+            ipStackLabel = "Dual-Stack (IPv4 + IPv6)",
+            dnsSummaryLabel = "Private DNS (DoT) · 2 Servers",
+            throughput = NetworkThroughput(rxMbps = 185.4f, txMbps = 42.1f),
+        )
+        assertEquals("Primary Default Route", dock25Gbe.routeRoleLabel)
+        assertEquals("2.5 Gbps (2,500 Mbps)", dock25Gbe.negotiatedSpeedSummary)
+        assertNull(dock25Gbe.dockBottleneckWarning)
+        assertTrue(dock25Gbe.linkBarFraction > 0.8f)
+
+        val dock100M = dock25Gbe.copy(
+            negotiatedSpeedMbps = 100,
+            linkSpeedTierLabel = "100 Mbps (100BASE-TX)",
+            isEmulatorVirtualNic = false,
+        )
+        assertNotNull(dock100M.dockBottleneckWarning)
+        assertEquals("100 Mbps", dock100M.negotiatedSpeedSummary)
+        assertEquals(0.28f, dock100M.linkBarFraction, 0.01f)
+        assertNull(dock100M.copy(isEmulatorVirtualNic = true).dockBottleneckWarning)
+
+        val dock5Gbe = dock25Gbe.copy(negotiatedSpeedMbps = 5_000, isPrimaryDefaultRoute = false)
+        assertEquals("Secondary Link", dock5Gbe.routeRoleLabel)
+        assertEquals("5 Gbps (5,000 Mbps)", dock5Gbe.negotiatedSpeedSummary)
+        assertEquals(1.0f, dock5Gbe.linkBarFraction, 0.01f)
+
+        val dock1Gbe = dock25Gbe.copy(negotiatedSpeedMbps = 1_000)
+        assertEquals("1 Gbps (1,000 Mbps)", dock1Gbe.negotiatedSpeedSummary)
+        assertEquals(0.68f, dock1Gbe.linkBarFraction, 0.01f)
+
+        val dockUnknownSpeed = dock25Gbe.copy(negotiatedSpeedMbps = 0)
+        assertEquals("Link Up", dockUnknownSpeed.negotiatedSpeedSummary)
+        assertEquals(0.60f, dockUnknownSpeed.linkBarFraction, 0.01f)
+
+        val undocked = EthernetTelemetrySnapshot()
+        assertEquals("Undocked", undocked.routeRoleLabel)
+        assertEquals("No Cable / Dock", undocked.negotiatedSpeedSummary)
+        assertEquals(0f, undocked.linkBarFraction, 0.01f)
+
+        // Logcat fallback & peripheral category mappings
+        val logcatDrops = WirelessTelemetryParsers.parseBluetoothAudioDropStats(
+            dumpsysText = "",
+            logcatText = """
+                btif_a2dp_source: Dropped media packet
+                btif_a2dp_source: audio underflow
+                bta_ag_sco: packet drop detected
+                le_audio: AudioHalClient stream underflow
+            """.trimIndent(),
+            isScoOn = true,
+            isLeAudioActive = true,
+        )
+        assertEquals("BT LOGCAT MONITOR", logcatDrops.sourceLabel)
+        assertTrue(logcatDrops.hasStackCounters)
+        assertEquals(1L, logcatDrops.a2dpTxDropped)
+        assertEquals(1L, logcatDrops.a2dpUnderflows)
+        assertEquals(1L, logcatDrops.hfpDroppedPackets)
+        assertEquals(1L, logcatDrops.leAudioUnderflows)
+
+        assertEquals("Keyboard", WirelessTelemetryParsers.formatPeripheralCategory(0x0500, 0x0540, "Keychron K2"))
+        assertEquals("Combo Keyboard/Mouse", WirelessTelemetryParsers.formatPeripheralCategory(0x0500, 0x05C0, "Combo Receiver"))
+        assertEquals("Gamepad", WirelessTelemetryParsers.formatPeripheralCategory(0x0500, 0x0508, "Wireless Controller"))
+        assertEquals("HID Peripheral", WirelessTelemetryParsers.formatPeripheralCategory(0x0500, 0x0500, "Digitizer"))
+        assertEquals("Computer", WirelessTelemetryParsers.formatPeripheralCategory(0x0100, 0x010C, "Laptop"))
+        assertEquals("Phone", WirelessTelemetryParsers.formatPeripheralCategory(0x0200, 0x020C, "Handset"))
+        assertEquals("Wearable", WirelessTelemetryParsers.formatPeripheralCategory(0x0700, 0x0704, "Smart Watch"))
+        assertEquals("Peripheral", WirelessTelemetryParsers.formatPeripheralCategory(0x1F00, 0x1F00, "Generic Dongle"))
+
+        // 5. InterfaceRateTracker per-interface rate math, hotplug interface swap, and UNSUPPORTED (-1L)
+        val rateTracker = InterfaceRateTracker()
+        val firstSample = rateTracker.sample("eth1", 1_000_000L, 500_000L, 1_000L, 500L, nowElapsedMs = 1_000L)
+        assertEquals(0f, firstSample.rxMbps, 0.001f)
+        // +12,500,000 bytes in 1,000 ms = 100.0 Mbps; +1,000 pkts in 1,000 ms = 1,000 pkt/s
+        val secondSample = rateTracker.sample("eth1", 13_500_000L, 3_000_000L, 2_000L, 750L, nowElapsedMs = 2_000L)
+        assertEquals(100.0f, secondSample.rxMbps, 0.05f)
+        assertEquals(20.0f, secondSample.txMbps, 0.05f)
+        assertEquals(1_000f, secondSample.rxPacketsPerSec, 0.5f)
+        assertEquals(250f, secondSample.txPacketsPerSec, 0.5f)
+        // Hotplug interface switch (eth1 -> eth2) resets delta baseline without bogus spike
+        val swappedSample = rateTracker.sample("eth2", 50_000_000L, 10_000_000L, 5_000L, 900L, nowElapsedMs = 3_000L)
+        assertEquals(0f, swappedSample.rxMbps, 0.001f)
+        // TrafficStats.UNSUPPORTED (-1L) returns zeroed throughput
+        val unsupportedSample = rateTracker.sample("eth2", -1L, -1L, -1L, -1L, nowElapsedMs = 4_000L)
+        assertEquals(0L, unsupportedSample.totalRxBytes)
+
+        // 6. DiagnosticReportBuilder emits distinct Wi-Fi Radio & Link and Wired Ethernet rows
+        val dockedReport = DiagnosticReportBuilder.buildMarkdownReport(
+            SystemTelemetrySnapshot(
+                wifi = WifiTelemetrySnapshot(
+                    isConnected = true,
+                    transportLabel = "Wi-Fi",
+                    interfaceName = "wlan0",
+                    isPrimaryDefaultRoute = false,
+                    routeRoleLabel = "Standby (Ethernet Primary)",
+                    wifiStandardCode = 8,
+                    wifiStandardLabel = "Wi-Fi 7 (802.11be)",
+                    bandAndChannelLabel = "5 GHz · Ch 149 (5745 MHz)",
+                    rssiDbm = -35,
+                    signalQualityPercent = 100,
+                    signalQualityLabel = "Excellent",
+                    isValidated = true,
+                    txLinkSpeedMbps = 1296,
+                    rxLinkSpeedMbps = 1080,
+                ),
+                ethernet = dock25Gbe,
+                activeDefaultRouteSummary = "Ethernet (eth1)",
+            ),
+        )
+        assertTrue(dockedReport.contains("| **Wi-Fi Radio & Link** |"))
+        assertTrue(dockedReport.contains("Standby (Ethernet Primary)"))
+        assertTrue(dockedReport.contains("| **Wired Ethernet** | `eth1` — `2.5 GbE (2500BASE-T)`"))
+    }
 }

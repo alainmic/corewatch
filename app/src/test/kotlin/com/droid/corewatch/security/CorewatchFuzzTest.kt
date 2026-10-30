@@ -10,9 +10,11 @@ import com.droid.corewatch.data.CaffeinePolicy
 import com.droid.corewatch.data.DiagnosticReportBuilder
 import com.droid.corewatch.data.DisplayAuditor
 import com.droid.corewatch.data.DisplayModeSpec
+import com.droid.corewatch.data.EthernetTelemetrySnapshot
 import com.droid.corewatch.data.FloatRingBuffer
 import com.droid.corewatch.data.SysfsParsers
 import com.droid.corewatch.data.SystemTelemetrySnapshot
+import com.droid.corewatch.data.WifiTelemetrySnapshot
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -182,12 +184,31 @@ class CorewatchFuzzTest {
                 osVersion = randomStr(r, 30),
                 cpuAbi = randomStr(r, 20),
                 displays = listOf(disp),
+                wifi = WifiTelemetrySnapshot(
+                    isConnected = r.nextBoolean(),
+                    interfaceName = randomStr(r, 20),
+                    routeRoleLabel = randomStr(r, 24),
+                    wifiStandardLabel = randomStr(r, 24),
+                    bandAndChannelLabel = randomStr(r, 24),
+                    rssiDbm = r.nextInt(-130, 10),
+                ),
+                ethernet = EthernetTelemetrySnapshot(
+                    isConnected = r.nextBoolean(),
+                    interfaceName = randomStr(r, 20),
+                    isPrimaryDefaultRoute = r.nextBoolean(),
+                    mtu = r.nextInt(0, 10_000),
+                    negotiatedSpeedMbps = r.nextInt(0, 10_000),
+                    linkSpeedTierLabel = randomStr(r, 24),
+                    ipStackLabel = randomStr(r, 24),
+                    dnsSummaryLabel = randomStr(r, 24),
+                ),
+                activeDefaultRouteSummary = randomStr(r, 28),
             )
             val md = DiagnosticReportBuilder.buildMarkdownReport(snap)
             assertTrue(md.startsWith("### Corewatch Hardware & Thermal Diagnostic Snapshot"))
             // Every table row must have balanced pipe delimiters
             val tableLines = md.lines().filter { it.startsWith("|") }
-            assertEqualsCount(15, tableLines.size)
+            assertEqualsCount(16, tableLines.size)
             for (line in tableLines) {
                 assertEqualsCount(3, line.count { it == '|' })
             }

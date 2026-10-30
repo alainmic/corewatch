@@ -35,9 +35,12 @@ import com.droid.corewatch.data.CoreCluster
 import com.droid.corewatch.data.CpuCoreReading
 import com.droid.corewatch.data.DisplayAuditor
 import com.droid.corewatch.data.DisplayModeSpec
+import com.droid.corewatch.data.EthernetTelemetrySnapshot
+import com.droid.corewatch.data.NetworkThroughput
 import com.droid.corewatch.data.SystemTelemetrySnapshot
 import com.droid.corewatch.data.ThermalLevel
 import com.droid.corewatch.data.ThermalSensorReading
+import com.droid.corewatch.data.WifiTelemetrySnapshot
 import com.droid.corewatch.service.CaffeineController
 import com.droid.corewatch.service.CaffeineTileService
 import com.droid.corewatch.ui.theme.CorewatchTheme
@@ -104,6 +107,8 @@ class CorewatchUiTest {
         composeRule.onNodeWithTag("tab_4").performClick()
         assertEquals(CorewatchTab.NetworkBluetooth, vm.state.value.activeTab)
         composeRule.onNodeWithTag("wifi_link_card").assertIsDisplayed()
+        composeRule.onNodeWithTag("ethernet_link_card").assertIsDisplayed()
+        composeRule.onNodeWithTag("network_throughput_card").assertIsDisplayed()
         composeRule.onNodeWithTag("bluetooth_card").assertIsDisplayed()
         composeRule.onNodeWithText("Network Throughput (TrafficStats RX / TX)").assertIsDisplayed()
 
@@ -663,6 +668,55 @@ class CorewatchUiTest {
                 longArrayOf(0xB03EL, 7L, 2_000_000_000L, 64L, 0x00030025L, mockHeartbeat, 1L)
             }
 
+            // Populate ShadowConnectivityManager with physical 2.5 GbE (eth1), AVF VM bridge (avf_tap_2052), and Wi-Fi (wlan0)
+            val cm = app.getSystemService(android.net.ConnectivityManager::class.java)
+            val shadowCm = org.robolectric.Shadows.shadowOf(cm)
+            val ethNet = org.robolectric.shadows.ShadowNetwork.newInstance(106)
+            val ethCaps = org.robolectric.shadows.ShadowNetworkCapabilities.newInstance().also { caps ->
+                val sc = org.robolectric.Shadows.shadowOf(caps)
+                sc.addTransportType(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
+                sc.addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                sc.addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                sc.addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+            }
+            val ethLp = android.net.LinkProperties().apply {
+                interfaceName = "eth1"
+                mtu = 9000
+                setDnsServers(
+                    listOf(
+                        java.net.InetAddress.getByName("1.1.1.1"),
+                        java.net.InetAddress.getByName("2606:4700:4700::1111"),
+                    ),
+                )
+            }
+            shadowCm.addNetwork(ethNet, null)
+            shadowCm.setNetworkCapabilities(ethNet, ethCaps)
+            shadowCm.setLinkProperties(ethNet, ethLp)
+
+            val avfNet = org.robolectric.shadows.ShadowNetwork.newInstance(105)
+            val avfCaps = org.robolectric.shadows.ShadowNetworkCapabilities.newInstance().also { caps ->
+                org.robolectric.Shadows.shadowOf(caps).addTransportType(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
+            }
+            val avfLp = android.net.LinkProperties().apply { interfaceName = "avf_tap_2052" }
+            shadowCm.addNetwork(avfNet, null)
+            shadowCm.setNetworkCapabilities(avfNet, avfCaps)
+            shadowCm.setLinkProperties(avfNet, avfLp)
+
+            val wifiNet = org.robolectric.shadows.ShadowNetwork.newInstance(103)
+            val wifiCaps = org.robolectric.shadows.ShadowNetworkCapabilities.newInstance().also { caps ->
+                val sc = org.robolectric.Shadows.shadowOf(caps)
+                sc.addTransportType(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+                sc.addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                sc.addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            }
+            val wifiLp = android.net.LinkProperties().apply {
+                interfaceName = "wlan0"
+                mtu = 1500
+            }
+            shadowCm.addNetwork(wifiNet, null)
+            shadowCm.setNetworkCapabilities(wifiNet, wifiCaps)
+            shadowCm.setLinkProperties(wifiNet, wifiLp)
+
             val populatedCollector = com.droid.corewatch.data.TelemetryCollector(
                 context = app,
                 cpuSysfsRoot = cpuRoot,
@@ -690,6 +744,11 @@ class CorewatchUiTest {
             assertEquals(0.40f, snap2.npu.utilizationFraction, 0.01f)
             assertTrue(snap1.thermalSensors.any { it.celsius > 50f })
             assertTrue(snap2.memory.totalBytes > 0L)
+            assertTrue(snap2.ethernet.isConnected)
+            assertEquals("eth1", snap2.ethernet.interfaceName)
+            assertEquals(9000, snap2.ethernet.mtu)
+            assertTrue(snap2.wifi.isConnected)
+            assertEquals("wlan0", snap2.wifi.interfaceName)
 
             // Now test with missing directories so all fallback branches execute
             val missingDir = java.io.File(tempRoot, "nonexistent")
@@ -760,7 +819,55 @@ class CorewatchUiTest {
         composeRule.onNodeWithText("HFP / SCO VOICE").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("LE AUDIO (CIS / BIS)").performScrollTo().assertIsDisplayed()
 
-        // 3. Retail Mini-HUD without SYSTEM_ALERT_WINDOW shows "Pin Floating PiP" action chip
+        // 3. Docked simultaneous Wi-Fi 7 (Standby) + Wired 2.5 GbE Ethernet (Primary) & 100BASE-TX ceiling warning
+        vm.setSnapshotForTesting(
+            vm.state.value.snapshot.copy(
+                wifi = WifiTelemetrySnapshot(
+                    isConnected = true,
+                    transportLabel = "Wi-Fi",
+                    interfaceName = "wlan0",
+                    isPrimaryDefaultRoute = false,
+                    routeRoleLabel = "Standby (Ethernet Primary)",
+                    mtu = 1500,
+                    isValidated = true,
+                    ipStackLabel = "Dual-Stack (IPv4 + IPv6)",
+                    wifiStandardCode = 8,
+                    wifiStandardLabel = "Wi-Fi 7 (802.11be)",
+                    frequencyMhz = 5745,
+                    bandAndChannelLabel = "5 GHz · Ch 149 (5745 MHz)",
+                    rssiDbm = -36,
+                    signalQualityPercent = 100,
+                    signalQualityLabel = "Excellent",
+                    txLinkSpeedMbps = 1296,
+                    rxLinkSpeedMbps = 1080,
+                    securityLabel = "WPA3-SAE",
+                    throughput = NetworkThroughput(rxMbps = 0.05f, txMbps = 0.02f),
+                ),
+                ethernet = EthernetTelemetrySnapshot(
+                    isConnected = true,
+                    interfaceName = "eth1",
+                    isPrimaryDefaultRoute = true,
+                    isValidated = true,
+                    mtu = 1500,
+                    negotiatedSpeedMbps = 100,
+                    linkSpeedTierLabel = "100 Mbps (100BASE-TX)",
+                    ipStackLabel = "Dual-Stack (IPv4 + IPv6)",
+                    dnsSummaryLabel = "Private DNS (DoT) · 2 Servers",
+                    wakeOnLanSupported = false,
+                    isEmulatorVirtualNic = false,
+                    throughput = NetworkThroughput(rxMbps = 82.4f, txMbps = 14.2f),
+                ),
+                activeDefaultRouteSummary = "Ethernet (eth1)",
+            ),
+        )
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Wi-Fi Radio & Link").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("Wired Ethernet Link").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("100 Mbps (100BASE-TX)").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("ethernet_bottleneck_warning").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("Default Route: Ethernet (eth1)").performScrollTo().assertIsDisplayed()
+
+        // 4. Retail Mini-HUD without SYSTEM_ALERT_WINDOW shows "Pin Floating PiP" action chip
         composeRule.onNodeWithTag("btn_mini_hud").performClick()
         composeRule.onNodeWithTag("btn_grant_overlay_pip").assertIsDisplayed().performClick()
         assertEquals(1, overlayRequestedCount)

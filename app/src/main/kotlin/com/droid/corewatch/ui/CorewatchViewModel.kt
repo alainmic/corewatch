@@ -79,6 +79,8 @@ data class TelemetryHistoryStats(
     val batteryAvgWatts: Float = 0f,
     val memoryUsedPctSamples: List<Float> = emptyList(),
     val networkMbpsSamples: List<Float> = emptyList(),
+    val wifiMbpsSamples: List<Float> = emptyList(),
+    val ethernetMbpsSamples: List<Float> = emptyList(),
     val wifiSignalSamples: List<Float> = emptyList(),
     val jankPercentSamples: List<Float> = emptyList(),
 )
@@ -107,6 +109,8 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
     private val wattsRing = FloatRingBuffer(60)
     private val memRing = FloatRingBuffer(60)
     private val netRing = FloatRingBuffer(60)
+    private val wifiMbpsRing = FloatRingBuffer(60)
+    private val ethMbpsRing = FloatRingBuffer(60)
     private val wifiSignalRing = FloatRingBuffer(60)
     private val jankRing = FloatRingBuffer(60)
     private var lastWindowNarrow: Boolean = false
@@ -148,6 +152,8 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
         wattsRing.push(abs(snap.battery.watts))
         memRing.push(snap.memory.usedFraction * 100f)
         netRing.push(snap.network.rxMbps + snap.network.txMbps)
+        wifiMbpsRing.push(snap.wifi.throughput.rxMbps + snap.wifi.throughput.txMbps)
+        ethMbpsRing.push(snap.ethernet.throughput.rxMbps + snap.ethernet.throughput.txMbps)
         val normalizedRssiPct = if (snap.wifi.rssiDbm > -120) {
             ((snap.wifi.rssiDbm.coerceIn(-90, -25) - (-90)).toFloat() / 65f) * 100f
         } else {
@@ -173,6 +179,8 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
             batteryAvgWatts = wattsRing.average(),
             memoryUsedPctSamples = memRing.toList(),
             networkMbpsSamples = netRing.toList(),
+            wifiMbpsSamples = wifiMbpsRing.toList(),
+            ethernetMbpsSamples = ethMbpsRing.toList(),
             wifiSignalSamples = wifiSignalRing.toList(),
             jankPercentSamples = jankRing.toList(),
         )
@@ -321,6 +329,8 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
         wattsRing.clear()
         memRing.clear()
         netRing.clear()
+        wifiMbpsRing.clear()
+        ethMbpsRing.clear()
         wifiSignalRing.clear()
         jankRing.clear()
         collector.resetWindowCounters()

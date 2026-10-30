@@ -7,7 +7,7 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 /**
- * Live Wi-Fi radio, PHY link speed, and active network transport telemetry.
+ * Live Wi-Fi radio, PHY link speed, MAC frame counter, and per-interface (`wlan*`) throughput telemetry.
  * Collected using install-time `ACCESS_NETWORK_STATE` and `ACCESS_WIFI_STATE` permissions
  * without requiring `INTERNET` or `ACCESS_FINE_LOCATION`.
  */
@@ -15,11 +15,15 @@ data class WifiTelemetrySnapshot(
     val isConnected: Boolean = false,
     val transportLabel: String = "Disconnected",
     val interfaceName: String = "wlan0",
+    val isPrimaryDefaultRoute: Boolean = false,
+    val routeRoleLabel: String = "Disconnected",
     val mtu: Int = 1500,
     val isValidated: Boolean = false,
     val isMetered: Boolean = false,
+    val ipStackLabel: String = "N/A",
+    val dnsSummaryLabel: String = "N/A",
     val wifiStandardCode: Int = 0,
-    val wifiStandardLabel: String = "N/A",
+    val wifiStandardLabel: String = "Disconnected",
     val frequencyMhz: Int = 0,
     val bandAndChannelLabel: String = "N/A",
     val rssiDbm: Int = -127,
@@ -37,6 +41,7 @@ data class WifiTelemetrySnapshot(
     val txRetriesPerSec: Double = 0.0,
     val txSuccessPktsPerSec: Double = 0.0,
     val rxSuccessPktsPerSec: Double = 0.0,
+    val throughput: NetworkThroughput = NetworkThroughput(),
 ) {
     val signalFraction: Float
         get() = (signalQualityPercent / 100f).coerceIn(0f, 1f)
@@ -54,6 +59,141 @@ data class WifiTelemetrySnapshot(
             isValidated -> "$signalQualityLabel ($signalQualityPercent%)"
             else -> "Unvalidated Link"
         }
+}
+
+/**
+ * Physical Wired Ethernet (`eth*` / `en*` / USB-C RJ45 dock) link negotiation, routing role,
+ * IP/DNS stack, Wake-on-LAN capability, and per-interface `TrafficStats` throughput telemetry.
+ * Virtual VM/container bridges (such as `avf_tap*`, `veth*`, `docker*`, and `tun*`) are excluded.
+ */
+data class EthernetTelemetrySnapshot(
+    val isConnected: Boolean = false,
+    val interfaceName: String = "None",
+    val isPrimaryDefaultRoute: Boolean = false,
+    val isValidated: Boolean = false,
+    val isMetered: Boolean = false,
+    val mtu: Int = 1500,
+    val negotiatedSpeedMbps: Int = 0,
+    val downstreamBandwidthKbps: Int = 0,
+    val upstreamBandwidthKbps: Int = 0,
+    val linkSpeedTierLabel: String = "Undocked",
+    val ipStackLabel: String = "N/A",
+    val dnsSummaryLabel: String = "N/A",
+    val wakeOnLanSupported: Boolean = false,
+    val isEmulatorVirtualNic: Boolean = false,
+    val throughput: NetworkThroughput = NetworkThroughput(),
+) {
+    val routeRoleLabel: String
+        get() = when {
+            !isConnected -> "Undocked"
+            isPrimaryDefaultRoute -> "Primary Default Route"
+            else -> "Secondary Link"
+        }
+
+    val linkBarFraction: Float
+        get() = when {
+            !isConnected -> 0f
+            negotiatedSpeedMbps >= 5_000 -> 1.0f
+            negotiatedSpeedMbps >= 2_500 -> 0.86f
+            negotiatedSpeedMbps >= 1_000 -> 0.68f
+            negotiatedSpeedMbps > 0 -> 0.28f
+            else -> 0.60f
+        }
+
+    val negotiatedSpeedSummary: String
+        get() = when {
+            !isConnected -> "No Cable / Dock"
+            negotiatedSpeedMbps >= 1_000 && negotiatedSpeedMbps % 1_000 == 0 ->
+                "${negotiatedSpeedMbps / 1_000} Gbps (${String.format(Locale.US, "%,d", negotiatedSpeedMbps)} Mbps)"
+            negotiatedSpeedMbps >= 1_000 ->
+                String.format(Locale.US, "%.1f Gbps (%,d Mbps)", negotiatedSpeedMbps / 1_000.0, negotiatedSpeedMbps)
+            negotiatedSpeedMbps > 0 -> "$negotiatedSpeedMbps Mbps"
+            else -> "Link Up"
+        }
+
+    val dockBottleneckWarning: String?
+        get() = if (isConnected && !isEmulatorVirtualNic && negotiatedSpeedMbps in 1..100) {
+            "100 Mbps link ceiling (${negotiatedSpeedMbps} Mbps) — check USB 2.0 hub or cable if expecting 1 GbE / 2.5 GbE"
+        } else {
+            null
+        }
+}
+
+/**
+ * Stateful, hotplug-safe rate calculator for total or per-interface (`wlan0`, `eth1`)
+ * byte and packet counters read from `TrafficStats`.
+ */
+class InterfaceRateTracker {
+    private var lastIfaceKey: String = ""
+    private var lastSampleElapsedMs: Long = 0L
+    private var lastRxBytes: Long = -1L
+    private var lastTxBytes: Long = -1L
+    private var lastRxPackets: Long = -1L
+    private var lastTxPackets: Long = -1L
+
+    fun reset() {
+        lastIfaceKey = ""
+        lastSampleElapsedMs = 0L
+        lastRxBytes = -1L
+        lastTxBytes = -1L
+        lastRxPackets = -1L
+        lastTxPackets = -1L
+    }
+
+    fun sample(
+        ifaceKey: String,
+        rawRxBytes: Long,
+        rawTxBytes: Long,
+        rawRxPackets: Long,
+        rawTxPackets: Long,
+        nowElapsedMs: Long,
+    ): NetworkThroughput {
+        if (ifaceKey.isBlank() || rawRxBytes < 0L || rawTxBytes < 0L) {
+            reset()
+            return NetworkThroughput()
+        }
+        val cleanRxPkts = rawRxPackets.coerceAtLeast(0L)
+        val cleanTxPkts = rawTxPackets.coerceAtLeast(0L)
+        val dtMs = nowElapsedMs - lastSampleElapsedMs
+        val sameIface = ifaceKey == lastIfaceKey
+        val monotonicBytes = lastRxBytes >= 0L && lastTxBytes >= 0L &&
+            rawRxBytes >= lastRxBytes && rawTxBytes >= lastTxBytes
+
+        var rxMbps = 0f
+        var txMbps = 0f
+        var rxPps = 0f
+        var txPps = 0f
+        if (sameIface && monotonicBytes && dtMs in 100L..30_000L) {
+            val dRx = rawRxBytes - lastRxBytes
+            val dTx = rawTxBytes - lastTxBytes
+            rxMbps = ((dRx * 8.0) / (dtMs * 1_000.0)).toFloat().coerceIn(0f, 40_000f)
+            txMbps = ((dTx * 8.0) / (dtMs * 1_000.0)).toFloat().coerceIn(0f, 40_000f)
+            if (lastRxPackets >= 0L && lastTxPackets >= 0L &&
+                cleanRxPkts >= lastRxPackets && cleanTxPkts >= lastTxPackets
+            ) {
+                val dRxPkt = cleanRxPkts - lastRxPackets
+                val dTxPkt = cleanTxPkts - lastTxPackets
+                rxPps = ((dRxPkt * 1_000.0) / dtMs.toDouble()).toFloat().coerceIn(0f, 5_000_000f)
+                txPps = ((dTxPkt * 1_000.0) / dtMs.toDouble()).toFloat().coerceIn(0f, 5_000_000f)
+            }
+        }
+        lastIfaceKey = ifaceKey
+        lastSampleElapsedMs = nowElapsedMs
+        lastRxBytes = rawRxBytes
+        lastTxBytes = rawTxBytes
+        lastRxPackets = cleanRxPkts
+        lastTxPackets = cleanTxPkts
+        return NetworkThroughput(
+            rxMbps = rxMbps,
+            txMbps = txMbps,
+            totalRxBytes = rawRxBytes,
+            totalTxBytes = rawTxBytes,
+            rxPacketsPerSec = rxPps,
+            txPacketsPerSec = txPps,
+            totalRxPackets = cleanRxPkts,
+            totalTxPackets = cleanTxPkts,
+        )
+    }
 }
 
 /**
@@ -220,9 +360,88 @@ data class BluetoothTelemetrySnapshot(
 }
 
 /**
- * Pure, deterministic parsers and formatters for Wi-Fi 7/6E/5 PHY parameters and Bluetooth codecs.
+ * Pure, deterministic parsers and formatters for Wi-Fi 7/6E/5 PHY parameters, Wired Ethernet
+ * link speed tiers, IP/DNS summaries, and Bluetooth codecs.
  */
 object WirelessTelemetryParsers {
+
+    private val VIRTUAL_IFACE_PREFIXES = listOf(
+        "avf_",
+        "veth",
+        "docker",
+        "virbr",
+        "br-",
+        "tap",
+        "tun",
+        "wg",
+        "ipsec",
+        "clat",
+        "rmnet",
+        "ccmni",
+        "dummy",
+        "sit",
+        "p2p",
+        "aware",
+        "ap",
+        "wlan",
+        "swlan",
+    )
+
+    /**
+     * Returns true if [ifaceName] is a virtual bridge, Linux VM tap (`avf_tap*`), VPN tunnel,
+     * cellular, or Wi-Fi interface that must not be classified as physical Wired Ethernet.
+     */
+    fun isVirtualBridgeInterface(ifaceName: String): Boolean {
+        val clean = ifaceName.trim().lowercase(Locale.US)
+        if (clean.isEmpty() || clean == "lo" || clean == "none") return true
+        return VIRTUAL_IFACE_PREFIXES.any { clean.startsWith(it) }
+    }
+
+    /**
+     * Maps `NetworkCapabilities` link bandwidth (`Kbps`) reported by Android's `EthernetTracker`
+     * into negotiated `Mbps` and an IEEE 802.3 speed tier badge.
+     */
+    fun formatEthernetSpeedTier(
+        downKbps: Int,
+        upKbps: Int,
+        isConnected: Boolean = true,
+    ): Pair<Int, String> {
+        if (!isConnected) return 0 to "Undocked"
+        val maxKbps = maxOf(downKbps, upKbps).coerceAtLeast(0)
+        val mbps = maxKbps / 1_000
+        val label = when {
+            mbps >= 10_000 -> "10 GbE (10GBASE-T)"
+            mbps >= 5_000 -> "5 GbE (5GBASE-T)"
+            mbps >= 2_500 -> "2.5 GbE (2500BASE-T)"
+            mbps >= 1_000 -> "1 GbE (1000BASE-T)"
+            mbps >= 100 -> if (mbps == 100) "100 Mbps (100BASE-TX)" else "$mbps Mbps"
+            mbps >= 10 -> if (mbps == 10) "10 Mbps (10BASE-T)" else "$mbps Mbps"
+            mbps > 0 -> "$mbps Mbps"
+            else -> "Connected"
+        }
+        return mbps to label
+    }
+
+    fun formatIpStackSummary(hasIpv4: Boolean, hasIpv6: Boolean): String = when {
+        hasIpv4 && hasIpv6 -> "Dual-Stack (IPv4 + IPv6)"
+        hasIpv4 -> "IPv4"
+        hasIpv6 -> "IPv6"
+        else -> "N/A"
+    }
+
+    fun formatDnsSummary(
+        isPrivateDnsActive: Boolean,
+        dnsServerCount: Int,
+        isConnected: Boolean = true,
+    ): String {
+        if (!isConnected) return "N/A"
+        val mode = if (isPrivateDnsActive) "Private DNS (DoT)" else "Standard DNS"
+        return when {
+            dnsServerCount <= 0 -> mode
+            dnsServerCount == 1 -> "$mode · 1 Server"
+            else -> "$mode · $dnsServerCount Servers"
+        }
+    }
 
     fun formatWifiStandard(standardCode: Int): String = when (standardCode) {
         8 -> "Wi-Fi 7 (802.11be)"

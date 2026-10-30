@@ -64,6 +64,8 @@ data class SystemTelemetrySnapshot(
     val lmkd: LmkdTelemetrySnapshot = LmkdTelemetrySnapshot(),
     val network: NetworkThroughput = NetworkThroughput(),
     val wifi: WifiTelemetrySnapshot = WifiTelemetrySnapshot(),
+    val ethernet: EthernetTelemetrySnapshot = EthernetTelemetrySnapshot(),
+    val activeDefaultRouteSummary: String = "Disconnected",
     val bluetooth: BluetoothTelemetrySnapshot = BluetoothTelemetrySnapshot(),
     val caffeineEvaluation: CaffeineEvaluation = CaffeineEvaluation(false, "Off", null, false),
 ) {
@@ -192,17 +194,45 @@ object DiagnosticReportBuilder {
             appendLine(
                 String.format(
                     Locale.US,
-                    "| **Wi-Fi & Network** | `%s` (`%s` · `%s` · `%d dBm` `%s` · PHY `%s` · RX `%.2f` / TX `%.2f Mbps`) |",
-                    SysfsParsers.sanitizeSensorName(snapshot.wifi.transportLabel, "Disconnected"),
-                    SysfsParsers.sanitizeSensorName(snapshot.wifi.wifiStandardLabel, "N/A"),
+                    "| **Wi-Fi Radio & Link** | `%s` (`%s` · `%s` · `%s` · `%d dBm` `%s` · PHY `%s` · RX `%.2f` / TX `%.2f Mbps`) |",
+                    SysfsParsers.sanitizeSensorName(snapshot.wifi.interfaceName, "wlan0"),
+                    SysfsParsers.sanitizeSensorName(snapshot.wifi.wifiStandardLabel, "Disconnected"),
+                    SysfsParsers.sanitizeSensorName(snapshot.wifi.routeRoleLabel, "Disconnected"),
                     SysfsParsers.sanitizeSensorName(snapshot.wifi.bandAndChannelLabel, "N/A"),
                     snapshot.wifi.rssiDbm,
                     SysfsParsers.sanitizeSensorName(snapshot.wifi.linkHealthBadge, "N/A"),
                     SysfsParsers.sanitizeSensorName(snapshot.wifi.phySpeedSummary, "N/A"),
-                    snapshot.network.rxMbps,
-                    snapshot.network.txMbps,
+                    snapshot.wifi.throughput.rxMbps,
+                    snapshot.wifi.throughput.txMbps,
                 ),
             )
+            val ethSummary = if (snapshot.ethernet.isConnected) {
+                val warnSuffix = if (snapshot.ethernet.dockBottleneckWarning != null) " ⚠️ 100BASE-TX Ceiling" else ""
+                String.format(
+                    Locale.US,
+                    "`%s` — `%s` (`%s` · MTU `%d` · `%s` · `%s` · RX `%.2f` / TX `%.2f Mbps` · Total Net RX `%.2f` / TX `%.2f Mbps`)%s",
+                    SysfsParsers.sanitizeSensorName(snapshot.ethernet.interfaceName, "eth0"),
+                    SysfsParsers.sanitizeSensorName(snapshot.ethernet.linkSpeedTierLabel, "Connected"),
+                    SysfsParsers.sanitizeSensorName(snapshot.ethernet.routeRoleLabel, "Primary Default Route"),
+                    snapshot.ethernet.mtu,
+                    SysfsParsers.sanitizeSensorName(snapshot.ethernet.ipStackLabel, "N/A"),
+                    SysfsParsers.sanitizeSensorName(snapshot.ethernet.dnsSummaryLabel, "N/A"),
+                    snapshot.ethernet.throughput.rxMbps,
+                    snapshot.ethernet.throughput.txMbps,
+                    snapshot.network.rxMbps,
+                    snapshot.network.txMbps,
+                    warnSuffix,
+                )
+            } else {
+                String.format(
+                    Locale.US,
+                    "`Undocked / Disconnected` (Active Route: `%s` · Total Net RX `%.2f` / TX `%.2f Mbps`)",
+                    SysfsParsers.sanitizeSensorName(snapshot.activeDefaultRouteSummary, "Disconnected"),
+                    snapshot.network.rxMbps,
+                    snapshot.network.txMbps,
+                )
+            }
+            appendLine("| **Wired Ethernet** | $ethSummary |")
             val btDropsSummary = if (snapshot.bluetooth.audioDrops.hasStackCounters) {
                 String.format(
                     Locale.US,

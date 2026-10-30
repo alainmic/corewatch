@@ -19,6 +19,7 @@ import android.hardware.display.DisplayManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
@@ -34,6 +35,10 @@ import android.os.StatFs
 import android.util.DisplayMetrics
 import androidx.core.content.ContextCompat
 import java.io.File
+import java.net.Inet4Address
+import java.net.Inet6Address
+import java.net.NetworkInterface
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Unprivileged hardware telemetry collector reading Android system services (`PowerManager`,
@@ -53,16 +58,23 @@ class TelemetryCollector(
     private val procPsiMemoryFile: File = File("/proc/pressure/memory"),
     val vrrAndFrameTracker: VrrAndFrameWindowTracker = VrrAndFrameWindowTracker(),
 ) {
-    private var lastNetSampleElapsedMs: Long = 0L
-    private var lastRxBytes: Long = -1L
-    private var lastTxBytes: Long = -1L
-    private var lastRxPackets: Long = -1L
-    private var lastTxPackets: Long = -1L
+    private val totalNetRateTracker = InterfaceRateTracker()
+    private val wifiRateTracker = InterfaceRateTracker()
+    private val ethernetRateTracker = InterfaceRateTracker()
     @Volatile
     private var latestWifiNetwork: Network? = null
     @Volatile
     private var latestWifiTransportInfo: WifiInfo? = null
-    private var wifiCallbackRegistered: Boolean = false
+    private val latestEthernetNetworks: MutableSet<Network> = ConcurrentHashMap.newKeySet()
+    private var networkCallbacksRegistered: Boolean = false
+    private var networkInterfaceAccessible: Boolean? = null
+    private val isEmulatorBuild: Boolean by lazy {
+        val hw = (Build.HARDWARE ?: "").lowercase(java.util.Locale.US)
+        val fp = (Build.FINGERPRINT ?: "").lowercase(java.util.Locale.US)
+        val prod = (Build.PRODUCT ?: "").lowercase(java.util.Locale.US)
+        hw.contains("ranchu") || hw.contains("goldfish") || hw.contains("cuttlefish") ||
+            fp.contains("generic") || prod.contains("sdk_gphone") || prod.contains("emulator")
+    }
     private var lastLegacyWifiPollElapsedMs: Long = 0L
     private var cachedLegacyWifiInfo: WifiInfo? = null
     @Volatile
@@ -132,8 +144,7 @@ class TelemetryCollector(
         val primaryHz = displays.firstOrNull()?.activeRefreshHz?.toInt()?.coerceIn(30, 480) ?: 120
         val frameJank = vrrAndFrameTracker.snapshotFrames(nowElapsedMs, defaultHz = primaryHz)
         val lmkd = readLmkd(am)
-        val network = readNetwork(nowElapsedMs)
-        val wifi = readWifi(nowElapsedMs)
+        val netBundle = readConnectivityBundle(nowElapsedMs)
         val bluetooth = readBluetooth(nowElapsedMs)
 
         val caffeineEval = CaffeinePolicy.evaluate(
@@ -162,8 +173,10 @@ class TelemetryCollector(
             displays = displays,
             frameJank = frameJank,
             lmkd = lmkd,
-            network = network,
-            wifi = wifi,
+            network = netBundle.totalThroughput,
+            wifi = netBundle.wifi,
+            ethernet = netBundle.ethernet,
+            activeDefaultRouteSummary = netBundle.activeDefaultRouteSummary,
             bluetooth = bluetooth,
             caffeineEvaluation = caffeineEval,
         )
@@ -590,54 +603,36 @@ class TelemetryCollector(
         }
     }
 
-    private fun readNetwork(nowElapsedMs: Long): NetworkThroughput {
-        val rx = runCatching { TrafficStats.getTotalRxBytes() }.getOrDefault(0L).coerceAtLeast(0L)
-        val tx = runCatching { TrafficStats.getTotalTxBytes() }.getOrDefault(0L).coerceAtLeast(0L)
-        val rxPkts = runCatching { TrafficStats.getTotalRxPackets() }.getOrDefault(0L).coerceAtLeast(0L)
-        val txPkts = runCatching { TrafficStats.getTotalTxPackets() }.getOrDefault(0L).coerceAtLeast(0L)
-        val dtMs = nowElapsedMs - lastNetSampleElapsedMs
-        var rxMbps = 0f
-        var txMbps = 0f
-        var rxPps = 0f
-        var txPps = 0f
-        if (lastRxBytes >= 0L && lastTxBytes >= 0L && dtMs in 100L..30_000L) {
-            val dRx = (rx - lastRxBytes).coerceAtLeast(0L)
-            val dTx = (tx - lastTxBytes).coerceAtLeast(0L)
-            rxMbps = ((dRx * 8.0) / (dtMs * 1_000.0)).toFloat().coerceIn(0f, 10_000f)
-            txMbps = ((dTx * 8.0) / (dtMs * 1_000.0)).toFloat().coerceIn(0f, 10_000f)
-            if (lastRxPackets >= 0L && lastTxPackets >= 0L) {
-                val dRxPkt = (rxPkts - lastRxPackets).coerceAtLeast(0L)
-                val dTxPkt = (txPkts - lastTxPackets).coerceAtLeast(0L)
-                rxPps = ((dRxPkt * 1_000.0) / dtMs.toDouble()).toFloat().coerceIn(0f, 1_000_000f)
-                txPps = ((dTxPkt * 1_000.0) / dtMs.toDouble()).toFloat().coerceIn(0f, 1_000_000f)
-            }
-        }
-        lastNetSampleElapsedMs = nowElapsedMs
-        lastRxBytes = rx
-        lastTxBytes = tx
-        lastRxPackets = rxPkts
-        lastTxPackets = txPkts
-        return NetworkThroughput(
-            rxMbps = rxMbps,
-            txMbps = txMbps,
-            totalRxBytes = rx,
-            totalTxBytes = tx,
-            rxPacketsPerSec = rxPps,
-            txPacketsPerSec = txPps,
-            totalRxPackets = rxPkts,
-            totalTxPackets = txPkts,
-        )
-    }
+    private data class ConnectivityBundle(
+        val totalThroughput: NetworkThroughput,
+        val wifi: WifiTelemetrySnapshot,
+        val ethernet: EthernetTelemetrySnapshot,
+        val activeDefaultRouteSummary: String,
+    )
 
-    private fun ensureWifiCallbackRegistered(cm: ConnectivityManager?) {
-        if (wifiCallbackRegistered || cm == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
-        wifiCallbackRegistered = true
+    private data class LinkMetadata(
+        val interfaceName: String,
+        val mtu: Int,
+        val ipStackLabel: String,
+        val dnsSummaryLabel: String,
+        val wakeOnLanSupported: Boolean,
+    )
+
+    private data class EvaluatedNetwork(
+        val network: Network,
+        val caps: NetworkCapabilities,
+        val linkProps: LinkProperties?,
+    )
+
+    private fun ensureNetworkCallbacksRegistered(cm: ConnectivityManager?) {
+        if (networkCallbacksRegistered || cm == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        networkCallbacksRegistered = true
         runCatching {
-            val req = NetworkRequest.Builder()
+            val wifiReq = NetworkRequest.Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
                 .build()
             cm.registerNetworkCallback(
-                req,
+                wifiReq,
                 object : ConnectivityManager.NetworkCallback() {
                     override fun onAvailable(network: Network) {
                         latestWifiNetwork = network
@@ -657,43 +652,249 @@ class TelemetryCollector(
                 },
             )
         }
+        runCatching {
+            val ethReq = NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
+                .build()
+            cm.registerNetworkCallback(
+                ethReq,
+                object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: Network) {
+                        latestEthernetNetworks.add(network)
+                    }
+
+                    override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                        latestEthernetNetworks.add(network)
+                    }
+
+                    override fun onLost(network: Network) {
+                        latestEthernetNetworks.remove(network)
+                    }
+                },
+            )
+        }
+    }
+
+    private fun sampleInterfaceThroughput(
+        tracker: InterfaceRateTracker,
+        iface: String,
+        isConnected: Boolean,
+        nowElapsedMs: Long,
+    ): NetworkThroughput {
+        if (!isConnected || iface.isBlank() || iface == "None" || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            tracker.reset()
+            return NetworkThroughput()
+        }
+        val rx = runCatching { TrafficStats.getRxBytes(iface) }.getOrDefault(-1L)
+        val tx = runCatching { TrafficStats.getTxBytes(iface) }.getOrDefault(-1L)
+        val rxPkts = runCatching { TrafficStats.getRxPackets(iface) }.getOrDefault(-1L)
+        val txPkts = runCatching { TrafficStats.getTxPackets(iface) }.getOrDefault(-1L)
+        return tracker.sample(
+            ifaceKey = iface,
+            rawRxBytes = rx,
+            rawTxBytes = tx,
+            rawRxPackets = rxPkts,
+            rawTxPackets = txPkts,
+            nowElapsedMs = nowElapsedMs,
+        )
+    }
+
+    private fun inspectLinkMetadata(
+        lp: LinkProperties?,
+        fallbackIface: String,
+        isConnected: Boolean,
+    ): LinkMetadata {
+        val iface = lp?.interfaceName?.takeIf { it.isNotBlank() } ?: fallbackIface
+        val lpMtu = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching { lp?.mtu ?: 0 }.getOrDefault(0)
+        } else {
+            0
+        }
+        val mtu = when {
+            lpMtu > 0 -> lpMtu
+            isConnected && iface.isNotBlank() && iface != "None" && networkInterfaceAccessible != false -> {
+                val niMtu = try {
+                    val m = NetworkInterface.getByName(iface)?.mtu ?: 0
+                    networkInterfaceAccessible = true
+                    m
+                } catch (_: Throwable) {
+                    networkInterfaceAccessible = false
+                    0
+                }
+                if (niMtu > 0) niMtu else 1500
+            }
+            else -> 1500
+        }
+        val addrs = runCatching { lp?.linkAddresses.orEmpty() }.getOrDefault(emptyList())
+        val hasIpv4 = addrs.any { it?.address is Inet4Address }
+        val hasIpv6 = addrs.any { it?.address is Inet6Address }
+        val isPrivateDns = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            runCatching { lp?.isPrivateDnsActive == true }.getOrDefault(false)
+        } else {
+            false
+        }
+        val dnsCount = runCatching { lp?.dnsServers?.size ?: 0 }.getOrDefault(0)
+        val wolSupported = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching { lp?.isWakeOnLanSupported == true }.getOrDefault(false)
+        } else {
+            false
+        }
+        return LinkMetadata(
+            interfaceName = iface,
+            mtu = mtu,
+            ipStackLabel = if (isConnected) WirelessTelemetryParsers.formatIpStackSummary(hasIpv4, hasIpv6) else "N/A",
+            dnsSummaryLabel = WirelessTelemetryParsers.formatDnsSummary(isPrivateDns, dnsCount, isConnected),
+            wakeOnLanSupported = wolSupported,
+        )
+    }
+
+    private fun readWifiDoubleField(wifiInfo: WifiInfo?, getterName: String): Double {
+        if (wifiInfo == null) return 0.0
+        return runCatching {
+            val method = wifiInfo.javaClass.getMethod(getterName)
+            ((method.invoke(wifiInfo) as? Number)?.toDouble() ?: 0.0).coerceAtLeast(0.0)
+        }.getOrDefault(0.0)
     }
 
     @Suppress("DEPRECATION")
-    private fun readWifi(nowElapsedMs: Long): WifiTelemetrySnapshot {
+    private fun readConnectivityBundle(nowElapsedMs: Long): ConnectivityBundle {
+        val totalRx = runCatching { TrafficStats.getTotalRxBytes() }.getOrDefault(0L).coerceAtLeast(0L)
+        val totalTx = runCatching { TrafficStats.getTotalTxBytes() }.getOrDefault(0L).coerceAtLeast(0L)
+        val totalRxPkts = runCatching { TrafficStats.getTotalRxPackets() }.getOrDefault(0L).coerceAtLeast(0L)
+        val totalTxPkts = runCatching { TrafficStats.getTotalTxPackets() }.getOrDefault(0L).coerceAtLeast(0L)
+        val totalThroughput = totalNetRateTracker.sample(
+            ifaceKey = "__total__",
+            rawRxBytes = totalRx,
+            rawTxBytes = totalTx,
+            rawRxPackets = totalRxPkts,
+            rawTxPackets = totalTxPkts,
+            nowElapsedMs = nowElapsedMs,
+        )
+
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-        ensureWifiCallbackRegistered(cm)
+        ensureNetworkCallbacksRegistered(cm)
         val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
         val activeNet = runCatching { cm?.activeNetwork }.getOrNull()
-        val caps = runCatching { if (activeNet != null) cm?.getNetworkCapabilities(activeNet) else null }.getOrNull()
-        val linkProps = runCatching { if (activeNet != null) cm?.getLinkProperties(activeNet) else null }.getOrNull()
+        val activeCaps = runCatching { if (activeNet != null) cm?.getNetworkCapabilities(activeNet) else null }.getOrNull()
+        val activeLp = runCatching { if (activeNet != null) cm?.getLinkProperties(activeNet) else null }.getOrNull()
 
-        val transports = ArrayList<String>(3)
-        if (caps != null) {
-            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) transports += "Wi-Fi"
-            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) transports += "Ethernet"
-            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) transports += "VPN"
-            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) transports += "Cellular"
+        val candidateNetworks = LinkedHashSet<Network>().apply {
+            if (activeNet != null) add(activeNet)
+            latestWifiNetwork?.let { add(it) }
+            addAll(latestEthernetNetworks)
+            runCatching {
+                cm?.allNetworks?.forEach { net ->
+                    if (net != null) add(net)
+                }
+            }
         }
-        val iface = linkProps?.interfaceName?.takeIf { it.isNotBlank() } ?: "wlan0"
-        val mtu = runCatching { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) linkProps?.mtu ?: 1500 else 1500 }
-            .getOrDefault(1500).let { if (it > 0) it else 1500 }
-        val isValidated = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
-        val isMetered = caps != null && !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
-        val downKbps = caps?.linkDownstreamBandwidthKbps?.coerceAtLeast(0) ?: 0
-        val upKbps = caps?.linkUpstreamBandwidthKbps?.coerceAtLeast(0) ?: 0
 
+        val evaluated = ArrayList<EvaluatedNetwork>(candidateNetworks.size)
+        for (net in candidateNetworks) {
+            val c = runCatching { cm?.getNetworkCapabilities(net) }.getOrNull() ?: continue
+            val lp = runCatching { cm?.getLinkProperties(net) }.getOrNull()
+            evaluated += EvaluatedNetwork(net, c, lp)
+        }
+
+        val anyVpnActive = activeCaps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true ||
+            evaluated.any { it.caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) }
+
+        // 1. Discover physical Wired Ethernet network (excluding AVF Linux VM tap / container / VPN bridges)
+        val ethEval = evaluated
+            .filter { item ->
+                if (!item.caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) return@filter false
+                if (item.caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return@filter false
+                val iface = item.linkProps?.interfaceName?.trim().orEmpty()
+                if (iface.isNotEmpty() && WirelessTelemetryParsers.isVirtualBridgeInterface(iface)) return@filter false
+                val hasInternet = item.caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                val hasAddresses = !item.linkProps?.linkAddresses.isNullOrEmpty()
+                hasInternet || (iface.isNotEmpty() && hasAddresses)
+            }
+            .sortedWith(
+                compareByDescending<EvaluatedNetwork> { it.network == activeNet }
+                    .thenByDescending { it.caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) }
+                    .thenByDescending { it.caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) }
+                    .thenByDescending {
+                        maxOf(it.caps.linkDownstreamBandwidthKbps, it.caps.linkUpstreamBandwidthKbps)
+                    },
+            )
+            .firstOrNull()
+
+        // 2. Discover Wi-Fi network (even when secondary behind docked Ethernet)
+        val wifiEval = evaluated
+            .filter { item ->
+                item.caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+                    !item.caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+            }
+            .sortedWith(
+                compareByDescending<EvaluatedNetwork> { it.network == activeNet }
+                    .thenByDescending { it.caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) }
+                    .thenByDescending { it.caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) },
+            )
+            .firstOrNull()
+
+        // 3. Build Wired Ethernet Telemetry Snapshot
+        val isEthConnected = ethEval != null
+        val isEthPrimary = isEthConnected && (
+            ethEval.network == activeNet ||
+                (activeCaps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true &&
+                    !WirelessTelemetryParsers.isVirtualBridgeInterface(activeLp?.interfaceName.orEmpty()))
+            )
+        val ethCaps = ethEval?.caps
+        val ethMeta = inspectLinkMetadata(
+            lp = ethEval?.linkProps,
+            fallbackIface = if (isEthConnected) "eth0" else "None",
+            isConnected = isEthConnected,
+        )
+        val ethDownKbps = ethCaps?.linkDownstreamBandwidthKbps?.coerceAtLeast(0) ?: 0
+        val ethUpKbps = ethCaps?.linkUpstreamBandwidthKbps?.coerceAtLeast(0) ?: 0
+        val (ethSpeedMbps, ethTierLabel) = WirelessTelemetryParsers.formatEthernetSpeedTier(
+            downKbps = ethDownKbps,
+            upKbps = ethUpKbps,
+            isConnected = isEthConnected,
+        )
+        val ethThroughput = sampleInterfaceThroughput(
+            tracker = ethernetRateTracker,
+            iface = ethMeta.interfaceName,
+            isConnected = isEthConnected,
+            nowElapsedMs = nowElapsedMs,
+        )
+        val ethernetSnapshot = EthernetTelemetrySnapshot(
+            isConnected = isEthConnected,
+            interfaceName = if (isEthConnected) ethMeta.interfaceName else "None",
+            isPrimaryDefaultRoute = isEthPrimary,
+            isValidated = ethCaps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true,
+            isMetered = ethCaps != null && !ethCaps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED),
+            mtu = ethMeta.mtu,
+            negotiatedSpeedMbps = ethSpeedMbps,
+            downstreamBandwidthKbps = ethDownKbps,
+            upstreamBandwidthKbps = ethUpKbps,
+            linkSpeedTierLabel = ethTierLabel,
+            ipStackLabel = ethMeta.ipStackLabel,
+            dnsSummaryLabel = ethMeta.dnsSummaryLabel,
+            wakeOnLanSupported = ethMeta.wakeOnLanSupported,
+            isEmulatorVirtualNic = isEmulatorBuild,
+            throughput = ethThroughput,
+        )
+
+        // 4. Build Wi-Fi Radio & Link Telemetry Snapshot
+        val wifiCaps = wifiEval?.caps
         val wifiInfo: WifiInfo? = runCatching {
-            val fromActive = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) caps?.transportInfo as? WifiInfo else null)
+            val fromWifiEval = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) wifiCaps?.transportInfo as? WifiInfo else null)
                 ?.takeIf { it.rssi > -120 }
-            val fromTrackedNet = if (fromActive == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val fromActive = if (fromWifiEval == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                (activeCaps?.transportInfo as? WifiInfo)?.takeIf { it.rssi > -120 }
+            } else {
+                null
+            }
+            val fromTrackedNet = if (fromWifiEval == null && fromActive == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val tracked = latestWifiNetwork
                 ((if (tracked != null) cm?.getNetworkCapabilities(tracked)?.transportInfo as? WifiInfo else null)
                     ?: latestWifiTransportInfo)?.takeIf { it.rssi > -120 }
             } else {
                 null
             }
-            fromActive ?: fromTrackedNet ?: run {
+            fromWifiEval ?: fromActive ?: fromTrackedNet ?: run {
                 val elapsed = nowElapsedMs - lastLegacyWifiPollElapsedMs
                 if (cachedLegacyWifiInfo == null || lastLegacyWifiPollElapsedMs == 0L || elapsed >= 2_500L || elapsed < 0L) {
                     lastLegacyWifiPollElapsedMs = nowElapsedMs
@@ -726,61 +927,95 @@ class TelemetryCollector(
             }
         }.getOrDefault(0)
 
-        fun readWifiDoubleField(getterName: String): Double {
-            if (wifiInfo == null) return 0.0
-            return runCatching {
-                val m = wifiInfo.javaClass.getMethod(getterName)
-                ((m.invoke(wifiInfo) as? Number)?.toDouble() ?: 0.0).coerceAtLeast(0.0)
-            }.getOrDefault(0.0)
-        }
+        val txLost = readWifiDoubleField(wifiInfo, "getLostTxPacketsPerSecond")
+        val txRetry = readWifiDoubleField(wifiInfo, "getRetriedTxPacketsPerSecond")
+        val txGood = readWifiDoubleField(wifiInfo, "getSuccessfulTxPacketsPerSecond")
+        val rxGood = readWifiDoubleField(wifiInfo, "getSuccessfulRxPacketsPerSecond")
 
-        val txLost = readWifiDoubleField("getLostTxPacketsPerSecond")
-        val txRetry = readWifiDoubleField("getRetriedTxPacketsPerSecond")
-        val txGood = readWifiDoubleField("getSuccessfulTxPacketsPerSecond")
-        val rxGood = readWifiDoubleField("getSuccessfulRxPacketsPerSecond")
-
-        val isWifiConnected = (rssi > -120 && freq > 0) || transports.contains("Wi-Fi")
-        if (isWifiConnected && !transports.contains("Wi-Fi")) {
-            transports.add(0, "Wi-Fi")
-        }
-        val effectiveIface = if (isWifiConnected && iface != "wlan0" && !iface.startsWith("wlan")) {
-            "wlan0 + $iface"
+        val isWifiConnected = wifiEval != null || (rssi > -120 && freq > 0) ||
+            (activeCaps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true)
+        val wifiMeta = inspectLinkMetadata(
+            lp = wifiEval?.linkProps ?: if (activeCaps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) activeLp else null,
+            fallbackIface = "wlan0",
+            isConnected = isWifiConnected,
+        )
+        val cleanWifiIface = if (wifiMeta.interfaceName.startsWith("wlan") || wifiMeta.interfaceName.startsWith("wl")) {
+            wifiMeta.interfaceName
         } else {
-            iface
+            "wlan0"
         }
-        val isAnyConnected = isWifiConnected || transports.isNotEmpty()
-        val transportLabel = when {
-            transports.isNotEmpty() -> transports.joinToString(" + ")
-            isWifiConnected -> "Wi-Fi"
+        val isWifiPrimary = isWifiConnected && !isEthPrimary && (
+            (wifiEval != null && wifiEval.network == activeNet) ||
+                activeCaps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+            )
+        val wifiRouteRole = when {
+            !isWifiConnected -> "Disconnected"
+            isWifiPrimary -> "Primary Default Route"
+            isEthPrimary -> "Standby (Ethernet Primary)"
+            else -> "Secondary Link"
+        }
+        val wifiValidated = (wifiCaps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true) ||
+            (isWifiPrimary && activeCaps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true) ||
+            (isWifiConnected && wifiCaps == null)
+        val wifiMetered = wifiCaps != null && !wifiCaps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+        val wifiDownKbps = wifiCaps?.linkDownstreamBandwidthKbps?.coerceAtLeast(0) ?: 0
+        val wifiUpKbps = wifiCaps?.linkUpstreamBandwidthKbps?.coerceAtLeast(0) ?: 0
+        val wifiThroughput = sampleInterfaceThroughput(
+            tracker = wifiRateTracker,
+            iface = cleanWifiIface,
+            isConnected = isWifiConnected,
+            nowElapsedMs = nowElapsedMs,
+        )
+
+        val wifiSnapshot = WifiTelemetrySnapshot(
+            isConnected = isWifiConnected,
+            transportLabel = if (isWifiConnected) "Wi-Fi" else "Disconnected",
+            interfaceName = if (isWifiConnected) cleanWifiIface else "wlan0",
+            isPrimaryDefaultRoute = isWifiPrimary,
+            routeRoleLabel = wifiRouteRole,
+            mtu = wifiMeta.mtu,
+            isValidated = wifiValidated,
+            isMetered = wifiMetered,
+            ipStackLabel = wifiMeta.ipStackLabel,
+            dnsSummaryLabel = wifiMeta.dnsSummaryLabel,
+            wifiStandardCode = stdCode,
+            wifiStandardLabel = if (isWifiConnected) WirelessTelemetryParsers.formatWifiStandard(stdCode) else "Disconnected",
+            frequencyMhz = freq,
+            bandAndChannelLabel = if (isWifiConnected) WirelessTelemetryParsers.formatBandAndChannel(freq) else "N/A",
+            rssiDbm = if (isWifiConnected) rssi else -127,
+            signalQualityPercent = if (isWifiConnected) WirelessTelemetryParsers.computeRssiQualityPercent(rssi) else 0,
+            signalQualityLabel = if (isWifiConnected) WirelessTelemetryParsers.formatRssiQualityLabel(rssi) else "No Signal",
+            txLinkSpeedMbps = if (isWifiConnected) txMbps else 0,
+            rxLinkSpeedMbps = if (isWifiConnected) rxMbps else 0,
+            linkSpeedMbps = if (isWifiConnected) linkMbps else 0,
+            downstreamBandwidthKbps = wifiDownKbps,
+            upstreamBandwidthKbps = wifiUpKbps,
+            securityLabel = if (isWifiConnected) WirelessTelemetryParsers.formatWifiSecurityType(secType) else "N/A",
+            mloLinkCount = if (isWifiConnected) mloLinks else 0,
+            mloSummary = if (isWifiConnected && mloLinks > 1) "MLO Active ($mloLinks Links)" else "Single-Link",
+            txLostPktsPerSec = if (isWifiConnected) txLost else 0.0,
+            txRetriesPerSec = if (isWifiConnected) txRetry else 0.0,
+            txSuccessPktsPerSec = if (isWifiConnected) txGood else 0.0,
+            rxSuccessPktsPerSec = if (isWifiConnected) rxGood else 0.0,
+            throughput = wifiThroughput,
+        )
+
+        val vpnSuffix = if (anyVpnActive) " + VPN" else ""
+        val activeDefaultRouteSummary = when {
+            isEthPrimary -> "Ethernet (${ethernetSnapshot.interfaceName})$vpnSuffix"
+            isWifiPrimary -> "Wi-Fi (${wifiSnapshot.interfaceName})$vpnSuffix"
+            activeCaps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "Cellular$vpnSuffix"
+            isEthConnected -> "Ethernet (${ethernetSnapshot.interfaceName})$vpnSuffix"
+            isWifiConnected -> "Wi-Fi (${wifiSnapshot.interfaceName})$vpnSuffix"
+            anyVpnActive -> "VPN"
             else -> "Disconnected"
         }
 
-        return WifiTelemetrySnapshot(
-            isConnected = isAnyConnected,
-            transportLabel = transportLabel,
-            interfaceName = effectiveIface,
-            mtu = mtu,
-            isValidated = isValidated || isWifiConnected,
-            isMetered = isMetered,
-            wifiStandardCode = stdCode,
-            wifiStandardLabel = if (isWifiConnected) WirelessTelemetryParsers.formatWifiStandard(stdCode) else transportLabel,
-            frequencyMhz = freq,
-            bandAndChannelLabel = WirelessTelemetryParsers.formatBandAndChannel(freq),
-            rssiDbm = rssi,
-            signalQualityPercent = WirelessTelemetryParsers.computeRssiQualityPercent(rssi),
-            signalQualityLabel = WirelessTelemetryParsers.formatRssiQualityLabel(rssi),
-            txLinkSpeedMbps = txMbps,
-            rxLinkSpeedMbps = rxMbps,
-            linkSpeedMbps = linkMbps,
-            downstreamBandwidthKbps = downKbps,
-            upstreamBandwidthKbps = upKbps,
-            securityLabel = if (isWifiConnected) WirelessTelemetryParsers.formatWifiSecurityType(secType) else "N/A",
-            mloLinkCount = mloLinks,
-            mloSummary = if (mloLinks > 1) "MLO Active ($mloLinks Links)" else "Single-Link",
-            txLostPktsPerSec = txLost,
-            txRetriesPerSec = txRetry,
-            txSuccessPktsPerSec = txGood,
-            rxSuccessPktsPerSec = rxGood,
+        return ConnectivityBundle(
+            totalThroughput = totalThroughput,
+            wifi = wifiSnapshot,
+            ethernet = ethernetSnapshot,
+            activeDefaultRouteSummary = activeDefaultRouteSummary,
         )
     }
 
