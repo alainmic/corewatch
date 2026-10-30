@@ -328,14 +328,22 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(statusBanner = "Session min/max/average & 5-minute VRR/Jank counters reset") }
     }
 
-    fun copyDiagnosticMarkdown(): String {
-        val report = DiagnosticReportBuilder.buildMarkdownReport(_state.value.snapshot)
+    fun copyTextToClipboard(label: String, text: String, bannerMessage: String) {
         runCatching {
             val ctx = getApplication<Application>().applicationContext
             val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-            cm?.setPrimaryClip(ClipData.newPlainText("Corewatch Hardware & Thermal Snapshot", report))
+            cm?.setPrimaryClip(ClipData.newPlainText(label, text))
         }
-        _state.update { it.copy(statusBanner = "Copied Markdown Hardware & Thermal Snapshot to clipboard") }
+        _state.update { it.copy(statusBanner = bannerMessage) }
+    }
+
+    fun copyDiagnosticMarkdown(): String {
+        val report = DiagnosticReportBuilder.buildMarkdownReport(_state.value.snapshot)
+        copyTextToClipboard(
+            label = "Corewatch Hardware & Thermal Snapshot",
+            text = report,
+            bannerMessage = "Copied Markdown Hardware & Thermal Snapshot to clipboard",
+        )
         return report
     }
 

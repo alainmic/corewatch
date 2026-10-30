@@ -181,6 +181,8 @@ private fun rememberCaptionMetrics(): CaptionMetrics {
 @Composable
 fun CorewatchAppRoot(
     vm: CorewatchViewModel,
+    canDrawOverlays: Boolean = true,
+    onRequestOverlayPermission: (() -> Unit)? = null,
     onResizeWindowForMode: (Boolean) -> Unit = {},
 ) {
     val state by vm.state.collectAsState()
@@ -268,6 +270,8 @@ fun CorewatchAppRoot(
                     vm = vm,
                     cap = cap,
                     showTitleInCaption = cap.start == 0.dp || maxWidth >= 420.dp,
+                    canDrawOverlays = canDrawOverlays,
+                    onRequestOverlayPermission = onRequestOverlayPermission,
                 )
             } else {
                 Column(modifier = Modifier.fillMaxSize()) {
@@ -278,7 +282,7 @@ fun CorewatchAppRoot(
                             CorewatchTab.BatteryPower -> BatteryPowerTab(state = state, vm = vm)
                             CorewatchTab.MemoryStorage -> MemoryStorageTab(state = state)
                             CorewatchTab.Displays -> DisplaysTab(state = state)
-                            CorewatchTab.NetworkBluetooth -> NetworkBluetoothTab(state = state)
+                            CorewatchTab.NetworkBluetooth -> NetworkBluetoothTab(state = state, vm = vm)
                         }
                     }
                 }
@@ -766,6 +770,8 @@ internal fun MiniHudView(
     vm: CorewatchViewModel,
     cap: CaptionMetrics = CaptionMetrics(0.dp, 0.dp, 0.dp),
     showTitleInCaption: Boolean = true,
+    canDrawOverlays: Boolean = true,
+    onRequestOverlayPermission: (() -> Unit)? = null,
     onExpandToFull: () -> Unit = { vm.setMiniHud(false) },
     onDragOverlay: ((Float, Float) -> Unit)? = null,
 ) {
@@ -774,8 +780,9 @@ internal fun MiniHudView(
     val hist = state.history
     val caffeineActive = snap.caffeineEvaluation.isActive
     val density = LocalDensity.current
+    val isFloatingPip = onDragOverlay != null
     val hasDesktopCaption = cap.start > 0.dp || cap.end > 0.dp
-    val statusTopDp = if (!hasDesktopCaption && onDragOverlay == null) {
+    val statusTopDp = if (!hasDesktopCaption && !isFloatingPip) {
         with(density) { WindowInsets.statusBars.getTop(density).toDp() }
     } else {
         0.dp
@@ -816,215 +823,272 @@ internal fun MiniHudView(
             }
         }
 
-        // Interactive Mini-HUD Control Bar (below OS caption when in freeform window; draggable when in PiP overlay)
-        val dragModifier = if (onDragOverlay != null) {
-            Modifier.pointerInput(Unit) {
-                detectDragGestures { change, dragAmount ->
-                    change.consume()
-                    onDragOverlay(dragAmount.x, dragAmount.y)
-                }
-            }
-        } else {
-            Modifier
-        }
-
-        Row(
+        val containerAlignment = if (isFloatingPip) Alignment.TopCenter else Alignment.Center
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .background(cs.surfaceContainerLow.copy(alpha = cardAlpha))
-                .then(dragModifier)
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                .fillMaxSize()
+                .padding(if (isFloatingPip) 0.dp else 12.dp),
+            contentAlignment = containerAlignment,
         ) {
-            if (!hasDesktopCaption && showTitleInCaption) {
-                Row(
-                    modifier = Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(Icons.Outlined.Speed, contentDescription = null, tint = cs.primary, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        text = "Corewatch Mini-HUD",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
+            val hudColumnModifier = if (isFloatingPip) {
+                Modifier.fillMaxSize()
             } else {
-                Text(
-                    text = "PiP HUD",
-                    style = CorewatchMonoTypography.hudSmall,
-                    color = cs.primary,
-                    modifier = Modifier.weight(1f),
-                )
+                Modifier
+                    .widthIn(max = 440.dp)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(cs.surfaceContainerLow.copy(alpha = cardAlpha))
+                    .border(1.dp, cs.primary.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
             }
 
-            Surface(
-                onClick = vm::cycleMiniHudOpacity,
-                shape = RoundedCornerShape(6.dp),
-                color = cs.surfaceContainerHigh,
-                modifier = Modifier.testTag("mini_hud_opacity"),
-            ) {
-                Text(
-                    text = "${(state.miniHudAlpha * 100f).roundToInt()}%",
-                    style = CorewatchMonoTypography.hudSmall,
-                    color = cs.onSurfaceVariant,
-                    maxLines = 1,
-                    softWrap = false,
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
-                )
-            }
+            Column(modifier = hudColumnModifier) {
+                // Interactive Mini-HUD Control Bar (draggable when in floating PiP overlay)
+                val dragModifier = if (onDragOverlay != null) {
+                    Modifier.pointerInput(Unit) {
+                        detectDragGestures { change, dragAmount ->
+                            change.consume()
+                            onDragOverlay(dragAmount.x, dragAmount.y)
+                        }
+                    }
+                } else {
+                    Modifier
+                }
 
-            Surface(
-                onClick = vm::toggleCaffeineQuick,
-                shape = RoundedCornerShape(6.dp),
-                color = if (caffeineActive) cs.secondaryContainer else cs.surfaceContainerHigh,
-                modifier = Modifier.testTag("mini_hud_caffeine"),
-            ) {
-                Text(
-                    text = if (caffeineActive) "☕ Awake" else "☕ Off",
-                    style = CorewatchMonoTypography.hudSmall,
-                    color = if (caffeineActive) cs.onSecondaryContainer else cs.onSurfaceVariant,
-                    maxLines = 1,
-                    softWrap = false,
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
-                )
-            }
-
-            IconButton(
-                onClick = { vm.copyDiagnosticMarkdown() },
-                modifier = Modifier.size(24.dp).testTag("mini_hud_copy"),
-            ) {
-                Icon(
-                    Icons.Outlined.ContentCopy,
-                    contentDescription = "Copy Markdown Snapshot (Ctrl+Shift+C)",
-                    modifier = Modifier.size(14.dp),
-                )
-            }
-
-            Surface(
-                onClick = onExpandToFull,
-                shape = RoundedCornerShape(6.dp),
-                color = cs.primaryContainer,
-                modifier = Modifier
-                    .testTag("btn_expand_workbench")
-                    .semantics { contentDescription = "Expand to Full Workbench (Ctrl+M)" },
-            ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(cs.surfaceContainerLow.copy(alpha = cardAlpha))
+                        .then(dragModifier)
+                        .padding(horizontal = 8.dp, vertical = 5.dp),
                     verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Icon(
-                        Icons.Outlined.OpenInFull,
-                        contentDescription = null,
-                        tint = cs.onPrimaryContainer,
-                        modifier = Modifier.size(13.dp),
+                    if (!hasDesktopCaption && showTitleInCaption) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Outlined.Speed, contentDescription = null, tint = cs.primary, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                text = "Corewatch Mini-HUD",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    } else {
+                        Text(
+                            text = if (isFloatingPip) "PiP HUD" else "Compact HUD",
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.primary,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+
+                    Surface(
+                        onClick = vm::cycleMiniHudOpacity,
+                        shape = RoundedCornerShape(6.dp),
+                        color = cs.surfaceContainerHigh,
+                        modifier = Modifier.testTag("mini_hud_opacity"),
+                    ) {
+                        Text(
+                            text = "${(state.miniHudAlpha * 100f).roundToInt()}%",
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onSurfaceVariant,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                        )
+                    }
+
+                    Surface(
+                        onClick = vm::toggleCaffeineQuick,
+                        shape = RoundedCornerShape(6.dp),
+                        color = if (caffeineActive) cs.secondaryContainer else cs.surfaceContainerHigh,
+                        modifier = Modifier.testTag("mini_hud_caffeine"),
+                    ) {
+                        Text(
+                            text = if (caffeineActive) "☕ Awake" else "☕ Off",
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = if (caffeineActive) cs.onSecondaryContainer else cs.onSurfaceVariant,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                        )
+                    }
+
+                    IconButton(
+                        onClick = { vm.copyDiagnosticMarkdown() },
+                        modifier = Modifier.size(24.dp).testTag("mini_hud_copy"),
+                    ) {
+                        Icon(
+                            Icons.Outlined.ContentCopy,
+                            contentDescription = "Copy Markdown Snapshot (Ctrl+Shift+C)",
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
+
+                    Surface(
+                        onClick = onExpandToFull,
+                        shape = RoundedCornerShape(6.dp),
+                        color = cs.primaryContainer,
+                        modifier = Modifier
+                            .testTag("btn_expand_workbench")
+                            .semantics { contentDescription = "Expand to Full Workbench (Ctrl+M)" },
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                Icons.Outlined.OpenInFull,
+                                contentDescription = null,
+                                tint = cs.onPrimaryContainer,
+                                modifier = Modifier.size(13.dp),
+                            )
+                            Spacer(Modifier.width(3.dp))
+                            Text(
+                                text = "Full",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = cs.onPrimaryContainer,
+                                maxLines = 1,
+                                softWrap = false,
+                            )
+                        }
+                    }
+                }
+
+                if (!isFloatingPip && !canDrawOverlays && onRequestOverlayPermission != null) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = cs.surfaceContainerHigh,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = "Enable 'Display over other apps' to detach Mini-HUD as an Always-On-Top PiP overlay.",
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Surface(
+                                onClick = onRequestOverlayPermission,
+                                shape = RoundedCornerShape(6.dp),
+                                color = cs.secondaryContainer,
+                                modifier = Modifier.testTag("btn_grant_overlay_pip"),
+                            ) {
+                                Text(
+                                    text = "Pin Floating PiP",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = cs.onSecondaryContainer,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    // 1. CPU Load & Peak Frequency Sparkline Row
+                    MiniHudSparklineCard(
+                        title = "CPU (${snap.cpuCores.size} cores)",
+                        primaryValue = String.format(Locale.US, "%d%% · %d MHz", (snap.avgCpuUtilizationFraction * 100f).roundToInt(), snap.maxCpuFreqMhz),
+                        subValue = String.format(Locale.US, "Avg %.0f%% · Peak %.0f%%", hist.cpuLoadAvg, hist.cpuLoadPeak),
+                        samples = hist.cpuLoadSamples,
+                        lineColor = cs.primary,
+                        maxCeiling = 100f,
+                        cardAlpha = cardAlpha,
                     )
-                    Spacer(Modifier.width(3.dp))
-                    Text(
-                        text = "Full",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = cs.onPrimaryContainer,
-                        maxLines = 1,
-                        softWrap = false,
+
+                    // 2. GPU & NPU Hardware Accelerators Sparkline Row
+                    MiniHudSparklineCard(
+                        title = "GPU & NPU",
+                        primaryValue = String.format(
+                            Locale.US,
+                            "GPU %d%% (%d MHz) · NPU %d%%",
+                            (snap.gpu.utilizationFraction * 100f).roundToInt(),
+                            snap.gpu.displayFreqMhz,
+                            (snap.npu.utilizationFraction * 100f).roundToInt(),
+                        ),
+                        subValue = String.format(
+                            Locale.US,
+                            "GPU %s · NPU %s (%d/%d MHz)",
+                            snap.gpu.scalingStateLabel,
+                            snap.npu.scalingStateLabel,
+                            snap.npu.currentFreqMhz,
+                            snap.npu.maxFreqMhz,
+                        ),
+                        samples = hist.gpuLoadSamples,
+                        lineColor = cs.tertiary,
+                        maxCeiling = 100f,
+                        cardAlpha = cardAlpha,
+                    )
+
+                    // 3. Thermal Status & Headroom Sparkline Row
+                    MiniHudSparklineCard(
+                        title = "THERMAL (${snap.thermalLevel.label})",
+                        primaryValue = formatTemp(snap.primaryCpuTempCelsius, state.useFahrenheit),
+                        subValue = String.format(Locale.US, "Headroom %.2f · Peak %s", snap.thermalHeadroom, formatTemp(hist.thermalPeakCelsius, state.useFahrenheit)),
+                        samples = hist.thermalCelsiusSamples,
+                        lineColor = thermalColor(snap.thermalLevel),
+                        minFloor = 20f,
+                        maxCeiling = 100f,
+                        cardAlpha = cardAlpha,
+                    )
+
+                    // 4. Battery Wattage & Time Remaining Sparkline Row
+                    MiniHudSparklineCard(
+                        title = "BATTERY (${snap.battery.levelPercent}% · ${snap.battery.powerSource.label})",
+                        primaryValue = String.format(Locale.US, "%+.1f W", snap.battery.watts),
+                        subValue = String.format(Locale.US, "%d mV · Peak %.1f W", snap.battery.voltageMv, hist.batteryPeakWatts),
+                        samples = hist.batteryWattsSamples,
+                        lineColor = if (snap.battery.isCharging) cs.secondary else cs.tertiary,
+                        maxCeiling = 65f,
+                        cardAlpha = cardAlpha,
+                    )
+
+                    // 5. Memory / zram Swap + Network Throughput Row
+                    MiniHudSparklineCard(
+                        title = "RAM & zram SWAP",
+                        primaryValue = String.format(
+                            Locale.US,
+                            "%s / %s (%d%%)",
+                            DiagnosticReportBuilder.formatGiB(snap.memory.usedBytes),
+                            DiagnosticReportBuilder.formatGiB(snap.memory.totalBytes),
+                            (snap.memory.usedFraction * 100f).roundToInt(),
+                        ),
+                        subValue = String.format(
+                            Locale.US,
+                            "Swap %d%% · Net ↓%.1f ↑%.1f Mbps",
+                            (snap.memory.swapUsedFraction * 100f).roundToInt(),
+                            snap.network.rxMbps,
+                            snap.network.txMbps,
+                        ),
+                        samples = hist.memoryUsedPctSamples,
+                        lineColor = cs.secondary,
+                        maxCeiling = 100f,
+                        cardAlpha = cardAlpha,
                     )
                 }
             }
-        }
-
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f, fill = false)
-                .verticalScroll(rememberScrollState())
-                .widthIn(max = 460.dp)
-                .align(Alignment.CenterHorizontally)
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            // 1. CPU Load & Peak Frequency Sparkline Row
-            MiniHudSparklineCard(
-                title = "CPU (${snap.cpuCores.size} cores)",
-                primaryValue = String.format(Locale.US, "%d%% · %d MHz", (snap.avgCpuUtilizationFraction * 100f).roundToInt(), snap.maxCpuFreqMhz),
-                subValue = String.format(Locale.US, "Avg %.0f%% · Peak %.0f%%", hist.cpuLoadAvg, hist.cpuLoadPeak),
-                samples = hist.cpuLoadSamples,
-                lineColor = cs.primary,
-                maxCeiling = 100f,
-                cardAlpha = cardAlpha,
-            )
-
-            // 2. GPU & NPU Hardware Accelerators Sparkline Row
-            MiniHudSparklineCard(
-                title = "GPU & NPU",
-                primaryValue = String.format(
-                    Locale.US,
-                    "GPU %d%% (%d MHz) · NPU %d%%",
-                    (snap.gpu.utilizationFraction * 100f).roundToInt(),
-                    snap.gpu.displayFreqMhz,
-                    (snap.npu.utilizationFraction * 100f).roundToInt(),
-                ),
-                subValue = String.format(
-                    Locale.US,
-                    "GPU %s · NPU %s (%d/%d MHz)",
-                    snap.gpu.scalingStateLabel,
-                    snap.npu.scalingStateLabel,
-                    snap.npu.currentFreqMhz,
-                    snap.npu.maxFreqMhz,
-                ),
-                samples = hist.gpuLoadSamples,
-                lineColor = cs.tertiary,
-                maxCeiling = 100f,
-                cardAlpha = cardAlpha,
-            )
-
-            // 3. Thermal Status & Headroom Sparkline Row
-            MiniHudSparklineCard(
-                title = "THERMAL (${snap.thermalLevel.label})",
-                primaryValue = formatTemp(snap.primaryCpuTempCelsius, state.useFahrenheit),
-                subValue = String.format(Locale.US, "Headroom %.2f · Peak %s", snap.thermalHeadroom, formatTemp(hist.thermalPeakCelsius, state.useFahrenheit)),
-                samples = hist.thermalCelsiusSamples,
-                lineColor = thermalColor(snap.thermalLevel),
-                minFloor = 20f,
-                maxCeiling = 100f,
-                cardAlpha = cardAlpha,
-            )
-
-            // 3. Battery Wattage & Time Remaining Sparkline Row
-            MiniHudSparklineCard(
-                title = "BATTERY (${snap.battery.levelPercent}% · ${snap.battery.powerSource.label})",
-                primaryValue = String.format(Locale.US, "%+.1f W", snap.battery.watts),
-                subValue = String.format(Locale.US, "%d mV · Peak %.1f W", snap.battery.voltageMv, hist.batteryPeakWatts),
-                samples = hist.batteryWattsSamples,
-                lineColor = if (snap.battery.isCharging) cs.secondary else cs.tertiary,
-                maxCeiling = 65f,
-                cardAlpha = cardAlpha,
-            )
-
-            // 4. Memory / zram Swap + Network Throughput Row
-            MiniHudSparklineCard(
-                title = "RAM & zram SWAP",
-                primaryValue = String.format(
-                    Locale.US,
-                    "%s / %s (%d%%)",
-                    DiagnosticReportBuilder.formatGiB(snap.memory.usedBytes),
-                    DiagnosticReportBuilder.formatGiB(snap.memory.totalBytes),
-                    (snap.memory.usedFraction * 100f).roundToInt(),
-                ),
-                subValue = String.format(
-                    Locale.US,
-                    "Swap %d%% · Net ↓%.1f ↑%.1f Mbps",
-                    (snap.memory.swapUsedFraction * 100f).roundToInt(),
-                    snap.network.rxMbps,
-                    snap.network.txMbps,
-                ),
-                samples = hist.memoryUsedPctSamples,
-                lineColor = cs.secondary,
-                maxCeiling = 100f,
-                cardAlpha = cardAlpha,
-            )
         }
     }
 }
@@ -1963,7 +2027,7 @@ private fun DisplaysTab(state: CorewatchUiState) {
 // ------------------------------------------------------------------------ Tab 5: Network & Bluetooth
 
 @Composable
-private fun NetworkBluetoothTab(state: CorewatchUiState) {
+private fun NetworkBluetoothTab(state: CorewatchUiState, vm: CorewatchViewModel) {
     val cs = MaterialTheme.colorScheme
     val snap = state.snapshot
     val hist = state.history
@@ -2242,81 +2306,136 @@ private fun NetworkBluetoothTab(state: CorewatchUiState) {
                         color = if (drops.hasStackCounters) cs.primary else cs.onSurfaceVariant,
                     )
                 }
-                Row(
-                    modifier = Modifier.fillMaxWidth().testTag("bluetooth_audio_drops_section"),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    // 1. A2DP Media
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = cs.surfaceContainerHigh,
-                        modifier = Modifier.weight(1f),
+                if (drops.hasStackCounters) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().testTag("bluetooth_audio_drops_section"),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Text(
-                                text = "A2DP MEDIA STREAM",
-                                style = CorewatchMonoTypography.hudSmall,
-                                color = cs.onSurfaceVariant,
-                            )
-                            Text(
-                                text = drops.a2dpPrimaryCounterLabel,
-                                style = CorewatchMonoTypography.hudValue,
-                                color = if (drops.a2dpDroppedFrames > 0L || drops.a2dpUnderflows > 0L) cs.error else cs.onSurface,
-                            )
-                            Text(
-                                text = drops.a2dpDetailSummary,
-                                style = CorewatchMonoTypography.hudSmall,
-                                color = cs.onSurfaceVariant,
-                            )
+                        // 1. A2DP Media
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = cs.surfaceContainerHigh,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text(
+                                    text = "A2DP MEDIA STREAM",
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = cs.onSurfaceVariant,
+                                )
+                                Text(
+                                    text = drops.a2dpPrimaryCounterLabel,
+                                    style = CorewatchMonoTypography.hudValue,
+                                    color = if (drops.a2dpDroppedFrames > 0L || drops.a2dpUnderflows > 0L) cs.error else cs.onSurface,
+                                )
+                                Text(
+                                    text = drops.a2dpDetailSummary,
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = cs.onSurfaceVariant,
+                                )
+                            }
+                        }
+
+                        // 2. HFP / SCO Hands-Free Voice
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = cs.surfaceContainerHigh,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text(
+                                    text = "HFP / SCO VOICE",
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = cs.onSurfaceVariant,
+                                )
+                                Text(
+                                    text = drops.hfpPrimaryCounterLabel,
+                                    style = CorewatchMonoTypography.hudValue,
+                                    color = if (drops.hfpDroppedPackets > 0L || drops.hfpUnderflows > 0L) cs.error else cs.onSurface,
+                                )
+                                Text(
+                                    text = drops.hfpDetailSummary,
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = cs.onSurfaceVariant,
+                                )
+                            }
+                        }
+
+                        // 3. LE Audio (CIS / BIS Isochronous)
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = cs.surfaceContainerHigh,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text(
+                                    text = "LE AUDIO (CIS / BIS)",
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = cs.onSurfaceVariant,
+                                )
+                                Text(
+                                    text = drops.leAudioPrimaryCounterLabel,
+                                    style = CorewatchMonoTypography.hudValue,
+                                    color = if (drops.leAudioUnderflows > 0L || drops.leIsoDroppedPackets > 0L) cs.error else cs.onSurface,
+                                )
+                                Text(
+                                    text = drops.leAudioDetailSummary,
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = cs.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
-
-                    // 2. HFP / SCO Hands-Free Voice
+                } else {
                     Surface(
                         shape = RoundedCornerShape(8.dp),
                         color = cs.surfaceContainerHigh,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.fillMaxWidth().testTag("bluetooth_audio_drops_section"),
                     ) {
-                        Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Text(
-                                text = "HFP / SCO VOICE",
-                                style = CorewatchMonoTypography.hudSmall,
-                                color = cs.onSurfaceVariant,
-                            )
-                            Text(
-                                text = drops.hfpPrimaryCounterLabel,
-                                style = CorewatchMonoTypography.hudValue,
-                                color = if (drops.hfpDroppedPackets > 0L || drops.hfpUnderflows > 0L) cs.error else cs.onSurface,
-                            )
-                            Text(
-                                text = drops.hfpDetailSummary,
-                                style = CorewatchMonoTypography.hudSmall,
-                                color = cs.onSurfaceVariant,
-                            )
-                        }
-                    }
-
-                    // 3. LE Audio (CIS / BIS Isochronous)
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = cs.surfaceContainerHigh,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Text(
-                                text = "LE AUDIO (CIS / BIS)",
-                                style = CorewatchMonoTypography.hudSmall,
-                                color = cs.onSurfaceVariant,
-                            )
-                            Text(
-                                text = drops.leAudioPrimaryCounterLabel,
-                                style = CorewatchMonoTypography.hudValue,
-                                color = if (drops.leAudioUnderflows > 0L || drops.leIsoDroppedPackets > 0L) cs.error else cs.onSurface,
-                            )
-                            Text(
-                                text = drops.leAudioDetailSummary,
-                                style = CorewatchMonoTypography.hudSmall,
-                                color = cs.onSurfaceVariant,
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(3.dp),
+                            ) {
+                                Text(
+                                    text = "Per-Profile Stack Drop Counters Locked (A2DP · HFP/SCO · LE Audio)",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = cs.onSurface,
+                                )
+                                Text(
+                                    text = "Android isolates Bluetooth encoder frame drops, PLC packet loss, and ISO underflows behind android.permission.DUMP. Grant once via ADB (persists across reboots):",
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = cs.onSurfaceVariant,
+                                )
+                                Text(
+                                    text = "adb shell pm grant com.droid.corewatch android.permission.DUMP",
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = cs.primary,
+                                )
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            FilterChip(
+                                selected = false,
+                                onClick = {
+                                    vm.copyTextToClipboard(
+                                        label = "ADB Grant DUMP",
+                                        text = "adb shell pm grant com.droid.corewatch android.permission.DUMP",
+                                        bannerMessage = "Copied ADB DUMP permission command to clipboard",
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Outlined.ContentCopy,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(14.dp),
+                                    )
+                                },
+                                label = { Text("Copy ADB Command") },
+                                modifier = Modifier.testTag("copy_bt_dump_adb_btn"),
                             )
                         }
                     }

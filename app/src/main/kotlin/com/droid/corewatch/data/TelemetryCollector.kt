@@ -19,7 +19,9 @@ import android.hardware.display.DisplayManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.TrafficStats
 import android.net.wifi.WifiInfo
 import android.net.wifi.WifiManager
@@ -56,6 +58,13 @@ class TelemetryCollector(
     private var lastTxBytes: Long = -1L
     private var lastRxPackets: Long = -1L
     private var lastTxPackets: Long = -1L
+    @Volatile
+    private var latestWifiNetwork: Network? = null
+    @Volatile
+    private var latestWifiTransportInfo: WifiInfo? = null
+    private var wifiCallbackRegistered: Boolean = false
+    private var lastLegacyWifiPollElapsedMs: Long = 0L
+    private var cachedLegacyWifiInfo: WifiInfo? = null
     @Volatile
     private var a2dpProxy: BluetoothA2dp? = null
     private var a2dpProxyRequested: Boolean = false
@@ -124,7 +133,7 @@ class TelemetryCollector(
         val frameJank = vrrAndFrameTracker.snapshotFrames(nowElapsedMs, defaultHz = primaryHz)
         val lmkd = readLmkd(am)
         val network = readNetwork(nowElapsedMs)
-        val wifi = readWifi()
+        val wifi = readWifi(nowElapsedMs)
         val bluetooth = readBluetooth(nowElapsedMs)
 
         val caffeineEval = CaffeinePolicy.evaluate(
@@ -620,9 +629,40 @@ class TelemetryCollector(
         )
     }
 
+    private fun ensureWifiCallbackRegistered(cm: ConnectivityManager?) {
+        if (wifiCallbackRegistered || cm == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        wifiCallbackRegistered = true
+        runCatching {
+            val req = NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .build()
+            cm.registerNetworkCallback(
+                req,
+                object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: Network) {
+                        latestWifiNetwork = network
+                    }
+
+                    override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                        latestWifiNetwork = network
+                        latestWifiTransportInfo = networkCapabilities.transportInfo as? WifiInfo
+                    }
+
+                    override fun onLost(network: Network) {
+                        if (latestWifiNetwork == network) {
+                            latestWifiNetwork = null
+                            latestWifiTransportInfo = null
+                        }
+                    }
+                },
+            )
+        }
+    }
+
     @Suppress("DEPRECATION")
-    private fun readWifi(): WifiTelemetrySnapshot {
+    private fun readWifi(nowElapsedMs: Long): WifiTelemetrySnapshot {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        ensureWifiCallbackRegistered(cm)
         val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
         val activeNet = runCatching { cm?.activeNetwork }.getOrNull()
         val caps = runCatching { if (activeNet != null) cm?.getNetworkCapabilities(activeNet) else null }.getOrNull()
@@ -644,8 +684,23 @@ class TelemetryCollector(
         val upKbps = caps?.linkUpstreamBandwidthKbps?.coerceAtLeast(0) ?: 0
 
         val wifiInfo: WifiInfo? = runCatching {
-            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) caps?.transportInfo as? WifiInfo else null)
-                ?: wm?.connectionInfo
+            val fromActive = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) caps?.transportInfo as? WifiInfo else null)
+                ?.takeIf { it.rssi > -120 }
+            val fromTrackedNet = if (fromActive == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val tracked = latestWifiNetwork
+                ((if (tracked != null) cm?.getNetworkCapabilities(tracked)?.transportInfo as? WifiInfo else null)
+                    ?: latestWifiTransportInfo)?.takeIf { it.rssi > -120 }
+            } else {
+                null
+            }
+            fromActive ?: fromTrackedNet ?: run {
+                val elapsed = nowElapsedMs - lastLegacyWifiPollElapsedMs
+                if (cachedLegacyWifiInfo == null || lastLegacyWifiPollElapsedMs == 0L || elapsed >= 2_500L || elapsed < 0L) {
+                    lastLegacyWifiPollElapsedMs = nowElapsedMs
+                    cachedLegacyWifiInfo = wm?.connectionInfo
+                }
+                cachedLegacyWifiInfo
+            }
         }.getOrNull()
 
         val rssi = wifiInfo?.rssi ?: -127

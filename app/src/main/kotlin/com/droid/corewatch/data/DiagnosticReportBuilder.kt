@@ -203,19 +203,28 @@ object DiagnosticReportBuilder {
                     snapshot.network.txMbps,
                 ),
             )
+            val btDropsSummary = if (snapshot.bluetooth.audioDrops.hasStackCounters) {
+                String.format(
+                    Locale.US,
+                    "A2DP `%s`, HFP `%s`, LE Audio `%s`",
+                    SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioDrops.a2dpPrimaryCounterLabel, "0"),
+                    SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioDrops.hfpPrimaryCounterLabel, "0"),
+                    SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioDrops.leAudioPrimaryCounterLabel, "0"),
+                )
+            } else {
+                "`Locked (grant android.permission.DUMP)`"
+            }
             appendLine(
                 String.format(
                     Locale.US,
-                    "| **Bluetooth & Codec** | `%s` — Route: `%s` · Codec: `%s` (`%s`, `%s`, `%s`) · Drops (A2DP `%s`, HFP `%s`, LE Audio `%s`) · Connected: `%d` (`%d` paired) |",
+                    "| **Bluetooth & Codec** | `%s` — Route: `%s` · Codec: `%s` (`%s`, `%s`, `%s`) · Drops (%s) · Connected: `%d` (`%d` paired) |",
                     SysfsParsers.sanitizeSensorName(snapshot.bluetooth.connectionStateLabel, "Off"),
                     SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioCodec.activeRouteLabel, "Speaker"),
                     SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioCodec.activeCodecName, "None"),
                     SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioCodec.sampleRateLabel, "48.0 kHz"),
                     SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioCodec.bitsPerSampleLabel, "24-bit"),
                     SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioCodec.bitrateOrQualityLabel, "Standard"),
-                    SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioDrops.a2dpPrimaryCounterLabel, "0"),
-                    SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioDrops.hfpPrimaryCounterLabel, "0"),
-                    SysfsParsers.sanitizeSensorName(snapshot.bluetooth.audioDrops.leAudioPrimaryCounterLabel, "0"),
+                    btDropsSummary,
                     snapshot.bluetooth.connectedCount,
                     snapshot.bluetooth.bondedCount,
                 ),

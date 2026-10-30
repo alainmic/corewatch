@@ -27,6 +27,8 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import com.droid.corewatch.MainActivity
 import com.droid.corewatch.data.BatteryPowerCalculator
+import com.droid.corewatch.data.BluetoothAudioDropStats
+import com.droid.corewatch.data.BluetoothTelemetrySnapshot
 import com.droid.corewatch.data.CaffeineConfig
 import com.droid.corewatch.data.CaffeineDuration
 import com.droid.corewatch.data.CoreCluster
@@ -707,5 +709,60 @@ class CorewatchUiTest {
             com.droid.corewatch.data.AccelIoctlBridge.testIvpuParamsProvider = null
             tempRoot.deleteRecursively()
         }
+    }
+
+    @Test
+    fun retailUngrantedPermissionsShowActionableFallbacksAndLivePromoteWhenGranted() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = CorewatchViewModel(app)
+        var overlayRequestedCount = 0
+
+        composeRule.setContent {
+            CorewatchTheme(dark = true) {
+                CorewatchAppRoot(
+                    vm = vm,
+                    canDrawOverlays = false,
+                    onRequestOverlayPermission = { overlayRequestedCount++ },
+                )
+            }
+        }
+
+        // 1. Retail ungranted DUMP state on Tab 5 shows honest locked card + Copy ADB Command chip
+        composeRule.onNodeWithTag("tab_4").performClick()
+        composeRule.onNodeWithText("Per-Profile Stack Drop Counters Locked (A2DP · HFP/SCO · LE Audio)")
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeRule.onNodeWithTag("copy_bt_dump_adb_btn").performScrollTo().performClick()
+        assertTrue(vm.state.value.statusBanner!!.contains("ADB DUMP"))
+        vm.dismissBanner()
+
+        // 2. Once DUMP is granted (hasStackCounters = true), live-switches to the 3-column counter grid
+        vm.setSnapshotForTesting(
+            vm.state.value.snapshot.copy(
+                bluetooth = BluetoothTelemetrySnapshot(
+                    isAdapterEnabled = true,
+                    hasConnectPermission = true,
+                    connectionStateLabel = "Connected (1 active)",
+                    audioDrops = BluetoothAudioDropStats(
+                        sourceLabel = "BT STACK DUMPSYS (LIVE)",
+                        hasStackCounters = true,
+                        a2dpExpectedFrames = 12_500L,
+                        a2dpDroppedFrames = 3L,
+                        a2dpTxDropped = 1L,
+                        hfpDroppedPackets = 2L,
+                        leAudioUnderflows = 1L,
+                    ),
+                ),
+            ),
+        )
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("A2DP MEDIA STREAM").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("HFP / SCO VOICE").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("LE AUDIO (CIS / BIS)").performScrollTo().assertIsDisplayed()
+
+        // 3. Retail Mini-HUD without SYSTEM_ALERT_WINDOW shows "Pin Floating PiP" action chip
+        composeRule.onNodeWithTag("btn_mini_hud").performClick()
+        composeRule.onNodeWithTag("btn_grant_overlay_pip").assertIsDisplayed().performClick()
+        assertEquals(1, overlayRequestedCount)
     }
 }

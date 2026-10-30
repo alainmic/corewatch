@@ -153,12 +153,13 @@ Because Corewatch runs as a standard, unprivileged open-source Android applicati
 
 * **Vendor-Specific Thermal Zones & Fan RPMs:** Corewatch always reports official Android thermal status (`PowerManager.getCurrentThermalStatus()`), predictive thermal headroom (`PowerManager.getThermalHeadroom()`), battery temperature (`BatteryManager.EXTRA_TEMPERATURE`), and all world-readable `/sys/class/thermal/` and `/sys/class/hwmon/` nodes. On hardware where specific embedded-controller (EC) fan tachometers or vendor thermal zones are restricted by SELinux policy, Corewatch gracefully falls back to the standard `PowerManager` and `BatteryManager` thermal envelope telemetry.
 * **Per-Process CPU Breakdown:** Android 10+ restricts `/proc/[pid]/stat` enumeration across other applications' processes for untrusted packages. Corewatch therefore focuses on hardware-level per-core CPU frequency scaling (`/sys/devices/system/cpu/cpu*/cpufreq/`), system-wide memory and `zram` swap pressure (`/proc/meminfo`), and total device network throughput (`TrafficStats`).
+* **Optional ADB Diagnostics (`DUMP` & `READ_LOGS`):** All CPU/GPU/NPU compute, thermal, USB-C PD wattage, KMS VRR display, Wi-Fi 7 PHY, and Bluetooth codec/peripheral telemetry works out-of-the-box on standard retail (`user`) builds with zero ADB setup. Android isolates per-profile Bluetooth stack encoder/PLC/ISO drop counters (`android.permission.DUMP`) and system-wide LMKD `EventLog` kills (`android.permission.READ_LOGS`) behind `development` permissions; when ungranted, Corewatch falls back cleanly (`ActivityManager` historical exit reasons + `/proc/pressure/memory` PSI for LMKD, and a 1-click **Copy ADB Command** chip on the Network & Bluetooth tab).
 
 ---
 
 <h2 id="install">Install</h2>
 
-**[⬇ Download Corewatch.apk](../../releases/latest/download/Corewatch.apk)** (universal pure-JVM APK for Intel `x86_64` and Snapdragon `arm64-v8a` Googlebooks).
+**[⬇ Download Corewatch.apk](../../releases/latest/download/Corewatch.apk)** (universal `1.1 MB` R8-minified APK with 16KB page-aligned `x86_64` and `arm64-v8a` ioctl bridges for Intel and Snapdragon Googlebooks).
 
 1. **Download the APK:** Click the link above to download **`Corewatch.apk`**.
 2. **Open the file:** Click the download notification in Chrome, or open `Corewatch.apk` in Wayfinder / Files from your `Downloads` folder.

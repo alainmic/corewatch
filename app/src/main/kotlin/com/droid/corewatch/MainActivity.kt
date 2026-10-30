@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.PixelFormat
 import android.graphics.drawable.ColorDrawable
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -34,6 +35,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.ComposeView
@@ -81,6 +83,8 @@ class MainActivity : ComponentActivity() {
     private var pipOverlayParams: WindowManager.LayoutParams? = null
     private var pipOverlayLifecycle: OverlayLifecycleOwner? = null
     private var pipWasStopped: Boolean = false
+    private val canDrawOverlaysState = mutableStateOf(false)
+    private var awaitingOverlayPermissionForPip: Boolean = false
     private var frameMetricsThread: HandlerThread? = null
     private val frameMetricsListener = Window.OnFrameMetricsAvailableListener { _, metrics, _ ->
         if (metrics.getMetric(FrameMetrics.FIRST_DRAW_FRAME) == 1L) return@OnFrameMetricsAvailableListener
@@ -116,6 +120,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        canDrawOverlaysState.value = runCatching { Settings.canDrawOverlays(this) }.getOrDefault(false)
         window.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
         runCatching {
             val ht = HandlerThread("corewatch-framemetrics").apply { start() }
@@ -171,11 +176,16 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+            val canDrawOverlays by canDrawOverlaysState
             CorewatchTheme(dark = dark) {
                 CorewatchAppRoot(
                     vm = vm,
+                    canDrawOverlays = canDrawOverlays,
+                    onRequestOverlayPermission = { requestOverlayPermissionForPip() },
                     onResizeWindowForMode = { isMini ->
-                        handleMiniHudModeTransition(isMini)
+                        val liveOverlay = runCatching { Settings.canDrawOverlays(this) }.getOrDefault(false)
+                        canDrawOverlaysState.value = liveOverlay
+                        handleMiniHudModeTransition(isMini, canDrawOverlays = liveOverlay)
                     },
                 )
             }
@@ -304,6 +314,22 @@ class MainActivity : ComponentActivity() {
         pipWasStopped = false
     }
 
+    internal fun requestOverlayPermissionForPip() {
+        awaitingOverlayPermissionForPip = true
+        runCatching {
+            startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName"),
+                ),
+            )
+        }.onFailure {
+            runCatching {
+                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION))
+            }
+        }
+    }
+
     override fun onStop() {
         super.onStop()
         if (pipOverlayView != null) {
@@ -313,6 +339,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        val hasOverlay = runCatching { Settings.canDrawOverlays(this) }.getOrDefault(false)
+        canDrawOverlaysState.value = hasOverlay
+        if (awaitingOverlayPermissionForPip) {
+            awaitingOverlayPermissionForPip = false
+            if (vm.state.value.isMiniHud && hasOverlay) {
+                handleMiniHudModeTransition(isMini = true, canDrawOverlays = true)
+                return
+            }
+        }
         if (pipOverlayView != null && pipWasStopped) {
             dismissPipOverlay()
             vm.setMiniHud(false)
