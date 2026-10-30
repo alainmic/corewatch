@@ -917,8 +917,8 @@ internal fun MiniHudView(
                 .verticalScroll(rememberScrollState())
                 .widthIn(max = 460.dp)
                 .align(Alignment.CenterHorizontally)
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(5.dp),
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             // 1. CPU Load & Peak Frequency Sparkline Row
             MiniHudSparklineCard(
@@ -933,19 +933,20 @@ internal fun MiniHudView(
 
             // 2. GPU & NPU Hardware Accelerators Sparkline Row
             MiniHudSparklineCard(
-                title = "GPU & NPU (${snap.gpu.driverName} · ${snap.npu.driverName})",
+                title = "GPU & NPU",
                 primaryValue = String.format(
                     Locale.US,
                     "GPU %d%% (%d MHz) · NPU %d%%",
                     (snap.gpu.utilizationFraction * 100f).roundToInt(),
-                    snap.gpu.actualFreqMhz,
+                    snap.gpu.displayFreqMhz,
                     (snap.npu.utilizationFraction * 100f).roundToInt(),
                 ),
                 subValue = String.format(
                     Locale.US,
-                    "GPU %s · NPU %s (%d MHz max)",
+                    "GPU %s · NPU %s (%d/%d MHz)",
                     snap.gpu.scalingStateLabel,
                     snap.npu.scalingStateLabel,
+                    snap.npu.currentFreqMhz,
                     snap.npu.maxFreqMhz,
                 ),
                 samples = hist.gpuLoadSamples,
@@ -1020,7 +1021,7 @@ private fun MiniHudSparklineCard(
         color = cs.surfaceContainer.copy(alpha = cardAlpha),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Column(modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1043,16 +1044,16 @@ private fun MiniHudSparklineCard(
                     softWrap = false,
                 )
             }
-            Spacer(Modifier.height(2.dp))
+            Spacer(Modifier.height(1.dp))
             SparklineCanvas(
                 samples = samples,
                 lineColor = lineColor,
                 gridColor = cs.outlineVariant.copy(alpha = 0.35f),
                 minFloor = minFloor,
                 maxCeiling = maxCeiling,
-                modifier = Modifier.fillMaxWidth().height(21.dp),
+                modifier = Modifier.fillMaxWidth().height(18.dp),
             )
-            Spacer(Modifier.height(2.dp))
+            Spacer(Modifier.height(1.dp))
             Text(
                 text = subValue,
                 style = CorewatchMonoTypography.hudSmall,
@@ -1263,7 +1264,7 @@ private fun OverviewThermalsTab(state: CorewatchUiState, vm: CorewatchViewModel)
                                 Locale.US,
                                 "%d%% · %d MHz",
                                 (snap.gpu.utilizationFraction * 100f).roundToInt(),
-                                snap.gpu.actualFreqMhz,
+                                snap.gpu.displayFreqMhz,
                             ),
                             style = CorewatchMonoTypography.metricLarge,
                             color = cs.secondary,
@@ -1277,8 +1278,9 @@ private fun OverviewThermalsTab(state: CorewatchUiState, vm: CorewatchViewModel)
                     Text(
                         text = String.format(
                             Locale.US,
-                            "Target: %d MHz · Range: %d–%d MHz (RPe %d MHz) · Throttle: %s",
+                            "Clock: %d MHz (Slice: %d MHz) · Range: %d–%d MHz (RPe %d MHz) · Throttle: %s",
                             snap.gpu.requestedFreqMhz,
+                            snap.gpu.actualFreqMhz,
                             snap.gpu.minFreqMhz,
                             snap.gpu.maxFreqMhz,
                             snap.gpu.efficientFreqMhz,
@@ -1340,10 +1342,10 @@ private fun OverviewThermalsTab(state: CorewatchUiState, vm: CorewatchViewModel)
                     Text(
                         text = String.format(
                             Locale.US,
-                            "Max DPU Clock: %d MHz · Contexts: %d · Heartbeat: %d · Peak: %.1f%%",
-                            snap.npu.maxFreqMhz,
+                            "Active Contexts: %d / %d · Max DPU Clock: %d MHz · Peak: %.1f%%",
+                            snap.npu.activeContexts,
                             snap.npu.maxContexts,
-                            snap.npu.engineHeartbeat,
+                            snap.npu.maxFreqMhz,
                             hist.npuLoadPeak,
                         ),
                         style = CorewatchMonoTypography.hudSmall,

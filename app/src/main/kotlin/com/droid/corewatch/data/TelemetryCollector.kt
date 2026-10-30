@@ -496,7 +496,10 @@ class TelemetryCollector(
         } else if (cachedIvpuStaticParams != null) {
             val hbUpdate = AccelIoctlBridge.queryIvpuParams("/dev/accel0", heartbeatOnly = true)
             if (hbUpdate != null) {
-                cachedIvpuStaticParams = cachedIvpuStaticParams!!.copy(engineHeartbeat = hbUpdate.engineHeartbeat)
+                cachedIvpuStaticParams = cachedIvpuStaticParams!!.copy(
+                    engineHeartbeat = hbUpdate.engineHeartbeat,
+                    activeContexts = hbUpdate.activeContexts,
+                )
             }
         }
 

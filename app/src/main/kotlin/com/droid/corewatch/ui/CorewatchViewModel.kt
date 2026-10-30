@@ -34,7 +34,7 @@ enum class CorewatchTab(
     val fullTitle: String,
     val shortcutLabel: String,
 ) {
-    OverviewThermals(0, "Thermals & CPU", "CPU", "Overview & Thermals", "Ctrl+1"),
+    OverviewThermals(0, "Thermals & Compute", "Compute", "Thermals & Compute", "Ctrl+1"),
     BatteryPower(1, "Battery & W", "Battery", "Battery & Power", "Ctrl+2"),
     MemoryStorage(2, "Memory & Swap", "Memory", "Memory & Storage", "Ctrl+3"),
     DisplaysNetwork(3, "Displays & Net", "Displays", "Displays & Network", "Ctrl+4"),

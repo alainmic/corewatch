@@ -19,6 +19,7 @@ data class IvpuParamInfo(
     val fwApiVersionRaw: Long,
     val engineHeartbeat: Long,
     val tileConfig: Long,
+    val activeContexts: Int = 0,
 ) {
     val maxClockMhz: Int get() = (maxClockHz / 1_000_000L).toInt().coerceAtLeast(0)
 
@@ -109,6 +110,7 @@ object AccelIoctlBridge {
             fwApiVersionRaw = raw[4].coerceAtLeast(0L),
             engineHeartbeat = raw[5].coerceAtLeast(0L),
             tileConfig = raw[6].coerceAtLeast(0L),
+            activeContexts = raw.getOrNull(7)?.toInt()?.coerceAtLeast(0) ?: 0,
         )
     }
 }

@@ -163,7 +163,7 @@ class MainActivity : ComponentActivity() {
         val density = resources.displayMetrics.density
         val (screenW, screenH) = resolveScreenSize(wm)
         val widthPx = (340f * density).roundToInt()
-        val heightPx = (384f * density).roundToInt()
+        val heightPx = (398f * density).roundToInt()
         val marginPx = (24f * density).roundToInt()
         val bottomMarginPx = (88f * density).roundToInt()
 

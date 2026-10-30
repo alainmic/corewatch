@@ -132,7 +132,7 @@ object DiagnosticReportBuilder {
                     SysfsParsers.sanitizeSensorName(snapshot.gpu.deviceName, "GPU"),
                     SysfsParsers.sanitizeSensorName(snapshot.gpu.driverName, "drm"),
                     (snapshot.gpu.utilizationFraction * 100f).roundToInt(),
-                    snapshot.gpu.actualFreqMhz,
+                    snapshot.gpu.displayFreqMhz,
                     snapshot.gpu.maxFreqMhz,
                     snapshot.gpu.scalingStateLabel,
                     SysfsParsers.sanitizeSensorName(snapshot.gpu.throttleSummary, "Nominal"),
@@ -141,7 +141,7 @@ object DiagnosticReportBuilder {
             appendLine(
                 String.format(
                     Locale.US,
-                    "| **NPU Accelerator** | `%s` (`%s`, `%s`) — `%d%%` active (`%d / %d MHz`, `%s`, `%d` contexts) |",
+                    "| **NPU Accelerator** | `%s` (`%s`, `%s`) — `%d%%` active (`%d / %d MHz`, `%s`, `%d / %d` contexts) |",
                     SysfsParsers.sanitizeSensorName(snapshot.npu.deviceName, "NPU"),
                     SysfsParsers.sanitizeSensorName(snapshot.npu.driverName, "accel"),
                     SysfsParsers.sanitizeSensorName(snapshot.npu.firmwareVersion, "v1.0"),
@@ -149,6 +149,7 @@ object DiagnosticReportBuilder {
                     snapshot.npu.currentFreqMhz,
                     snapshot.npu.maxFreqMhz,
                     snapshot.npu.scalingStateLabel,
+                    snapshot.npu.activeContexts,
                     snapshot.npu.maxContexts,
                 ),
             )

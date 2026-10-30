@@ -34,6 +34,7 @@ struct cw_drm_ivpu_param {
 #define CW_DRM_IVPU_PARAM_DEVICE_REVISION 1
 #define CW_DRM_IVPU_PARAM_CORE_CLOCK_RATE 3
 #define CW_DRM_IVPU_PARAM_NUM_CONTEXTS    4
+#define CW_DRM_IVPU_PARAM_CONTEXT_ID      7
 #define CW_DRM_IVPU_PARAM_FW_API_VERSION  8
 #define CW_DRM_IVPU_PARAM_ENGINE_HEARTBEAT 9
 #define CW_DRM_IVPU_PARAM_TILE_CONFIG     11
@@ -109,16 +110,23 @@ Java_com_droid_corewatch_data_AccelIoctlBridge_nativeQueryIvpuParams(
         return NULL;
     }
 
-    jlong out[7];
+    jlong out[8];
     memset(out, 0, sizeof(out));
 
+    struct cw_drm_ivpu_param ctx = { .param = CW_DRM_IVPU_PARAM_CONTEXT_ID, .index = 0, .value = 0 };
+    jlong activeContexts = 0;
+    if (ioctl(fd, CW_DRM_IOCTL_IVPU_GET_PARAM, &ctx) == 0 && ctx.value >= 2) {
+        activeContexts = (jlong)(ctx.value - 2);
+    }
+    out[7] = activeContexts;
+
     if (heartbeatOnly) {
-        struct cw_drm_ivpu_param hb = { .param = CW_DRM_IVPU_PARAM_ENGINE_HEARTBEAT, .index = 0, .value = 0 };
-        if (ioctl(fd, CW_DRM_IOCTL_IVPU_GET_PARAM, &hb) != 0) {
-            close(fd);
-            return NULL;
+        if (activeContexts > 0) {
+            struct cw_drm_ivpu_param hb = { .param = CW_DRM_IVPU_PARAM_ENGINE_HEARTBEAT, .index = 0, .value = 0 };
+            if (ioctl(fd, CW_DRM_IOCTL_IVPU_GET_PARAM, &hb) == 0) {
+                out[5] = (jlong)hb.value;
+            }
         }
-        out[5] = (jlong)hb.value;
     } else {
         const uint32_t params[7] = {
             CW_DRM_IVPU_PARAM_DEVICE_ID,
@@ -131,6 +139,9 @@ Java_com_droid_corewatch_data_AccelIoctlBridge_nativeQueryIvpuParams(
         };
         int anyOk = 0;
         for (int i = 0; i < 7; i++) {
+            if (params[i] == CW_DRM_IVPU_PARAM_ENGINE_HEARTBEAT && activeContexts == 0) {
+                continue;
+            }
             struct cw_drm_ivpu_param arg = { .param = params[i], .index = 0, .value = 0 };
             if (ioctl(fd, CW_DRM_IOCTL_IVPU_GET_PARAM, &arg) == 0) {
                 out[i] = (jlong)arg.value;
@@ -144,9 +155,9 @@ Java_com_droid_corewatch_data_AccelIoctlBridge_nativeQueryIvpuParams(
     }
 
     close(fd);
-    jlongArray arr = (*env)->NewLongArray(env, 7);
+    jlongArray arr = (*env)->NewLongArray(env, 8);
     if (arr != NULL) {
-        (*env)->SetLongArrayRegion(env, arr, 0, 7, out);
+        (*env)->SetLongArrayRegion(env, arr, 0, 8, out);
     }
     return arr;
 }

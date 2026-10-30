@@ -331,6 +331,7 @@ class CorewatchDataUnitTest {
             activeResidencyFraction = 0.01f,
         )
         assertEquals("rc6-sleep", idleGpu.scalingStateLabel)
+        assertEquals(800, idleGpu.displayFreqMhz)
         assertEquals("base", idleGpu.powerProfile)
         assertFalse(idleGpu.isThrottled)
         assertEquals("Nominal", idleGpu.throttleSummary)
@@ -359,7 +360,7 @@ class CorewatchDataUnitTest {
         assertNull(AccelIoctlBridge.parseDrmVersionString("malformed"))
 
         val ivpuParams = AccelIoctlBridge.parseIvpuParamsArray(
-            longArrayOf(0xB03EL, 7L, 2_000_000_000L, 64L, 0x00030025L, 42L, 3L),
+            longArrayOf(0xB03EL, 7L, 2_000_000_000L, 64L, 0x00030025L, 42L, 3L, 0L),
         )
         assertNotNull(ivpuParams)
         assertEquals("0xB03E", ivpuParams!!.deviceIdHex)

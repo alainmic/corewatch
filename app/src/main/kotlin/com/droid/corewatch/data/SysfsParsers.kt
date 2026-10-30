@@ -100,6 +100,13 @@ data class GpuTelemetrySnapshot(
     val isThrottled: Boolean = false,
     val throttleReasons: List<String> = emptyList(),
 ) {
+    /**
+     * Operating GPU frequency in MHz (`actualFreqMhz` when an EU slice is mid-frame, or GuC SLPC
+     * `requestedFreqMhz` / `cur_freq` when sampled during an inter-frame RC6 micro-sleep window).
+     */
+    val displayFreqMhz: Int
+        get() = if (actualFreqMhz > 0) actualFreqMhz else requestedFreqMhz
+
     val utilizationFraction: Float
         get() {
             if (activeResidencyFraction != null) return activeResidencyFraction.coerceIn(0f, 1f)
@@ -127,6 +134,7 @@ data class NpuTelemetrySnapshot(
     val maxFreqMhz: Int = 2000,
     val activeUtilizationFraction: Float = 0f,
     val engineHeartbeat: Long = 0L,
+    val activeContexts: Int = 0,
     val maxContexts: Int = 64,
     val firmwareVersion: String = "v3.0",
     val memoryUsedBytes: Long = 0L,
@@ -398,8 +406,12 @@ object SysfsParsers {
         val sysfsCurMhz = parseFreqToMhz(attrs["npu_current_frequency_mhz"])
             ?: parseFreqToMhz(attrs["current_freq"])
 
+        val activeCtx = ivpuParams?.activeContexts?.coerceAtLeast(0) ?: 0
+        val contextLoad = ((activeCtx.toFloat() * 0.24f) + if (heartbeatActive) 0.20f else 0f).coerceIn(0f, 1f)
+
         val activeFrac = when {
             busyDeltaFraction != null -> busyDeltaFraction.coerceIn(0f, 1f)
+            contextLoad > 0f -> contextLoad
             heartbeatActive -> 0.55f
             sysfsCurMhz != null && sysfsCurMhz > 0 -> (sysfsCurMhz.toFloat() / maxMhz.toFloat()).coerceIn(0f, 1f)
             else -> 0f
@@ -407,7 +419,7 @@ object SysfsParsers {
 
         val curMhz = when {
             sysfsCurMhz != null -> sysfsCurMhz.coerceIn(0, maxMhz)
-            activeFrac > 0.01f -> ((maxMhz * activeFrac).roundToInt()).coerceIn(200, maxMhz)
+            activeFrac > 0.01f -> (600 + ((maxMhz - 600) * activeFrac).roundToInt()).coerceIn(200, maxMhz)
             else -> 0
         }
 
@@ -423,6 +435,7 @@ object SysfsParsers {
             maxFreqMhz = maxMhz,
             activeUtilizationFraction = activeFrac,
             engineHeartbeat = heartbeat,
+            activeContexts = activeCtx,
             maxContexts = contexts,
             firmwareVersion = sanitizeSensorName(fwLabel, "v1.0"),
             memoryUsedBytes = memBytes,
