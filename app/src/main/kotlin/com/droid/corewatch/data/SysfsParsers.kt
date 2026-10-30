@@ -77,6 +77,8 @@ data class MemorySnapshot(
     val dirtyBytes: Long,
     val swapTotalBytes: Long,
     val swapFreeBytes: Long,
+    val amsThresholdBytes: Long = 216L shl 20,
+    val isLowMemory: Boolean = false,
 ) {
     val usedBytes: Long get() = (totalBytes - availableBytes).coerceAtLeast(0L)
     val usedFraction: Float
@@ -99,6 +101,7 @@ data class GpuTelemetrySnapshot(
     val powerProfile: String = "power_saving",
     val isThrottled: Boolean = false,
     val throttleReasons: List<String> = emptyList(),
+    val mediaEngineFreqMhz: Int? = null,
 ) {
     /**
      * Operating GPU frequency in MHz (`actualFreqMhz` when an EU slice is mid-frame, or GuC SLPC
@@ -363,6 +366,7 @@ object SysfsParsers {
             }
         }
         val statusThrottled = attrs["throttle_status"]?.trim() == "1" || reasons.isNotEmpty()
+        val mediaMhz = parseFreqToMhz(attrs["media_freq"])?.coerceIn(0, 10_000)
 
         return GpuTelemetrySnapshot(
             driverName = sanitizeSensorName(driverName, "gpu"),
@@ -376,7 +380,74 @@ object SysfsParsers {
             powerProfile = sanitizeSensorName(selectedProfile, "power_saving"),
             isThrottled = statusThrottled,
             throttleReasons = reasons,
+            mediaEngineFreqMhz = mediaMhz,
         )
+    }
+
+    /**
+     * Parses `/proc/cpuinfo` text to extract the human-readable processor marketing name
+     * (e.g. `Intel Core Ultra 7 355` or `Snapdragon X Elite`).
+     */
+    fun parseCpuModelName(procCpuInfoText: String, fallbackArch: String = "x86_64"): String {
+        for (line in procCpuInfoText.lineSequence().take(128)) {
+            val colon = line.indexOf(':')
+            if (colon <= 0) continue
+            val key = line.substring(0, colon).trim().lowercase()
+            if (key == "model name" || key == "hardware" || key == "processor") {
+                val rawVal = line.substring(colon + 1).trim()
+                if (rawVal.isEmpty() || rawVal.all { it.isDigit() }) continue
+                val cleaned = rawVal
+                    .replace("(R)", "", ignoreCase = true)
+                    .replace("(TM)", "", ignoreCase = true)
+                    .replace("CPU", "", ignoreCase = true)
+                    .replace(WHITESPACE_REGEX, " ")
+                    .trim()
+                if (cleaned.length >= 3) {
+                    return sanitizeSensorName(cleaned, fallbackArch)
+                }
+            }
+        }
+        return sanitizeSensorName(fallbackArch, "CPU")
+    }
+
+    /**
+     * Parses `/proc/pressure/memory` PSI text into `(someAvg10, fullAvg10)` percentages (`0..100`).
+     */
+    fun parsePsiMemoryAvg10(psiText: String): Pair<Float, Float> {
+        var someAvg10 = 0f
+        var fullAvg10 = 0f
+        for (line in psiText.lineSequence().take(16)) {
+            val trimmed = line.trim()
+            val match = PSI_AVG10_REGEX.find(trimmed) ?: continue
+            val valPct = match.groupValues.getOrNull(1)?.toFloatOrNull()?.coerceIn(0f, 100f) ?: continue
+            if (trimmed.startsWith("some ")) {
+                someAvg10 = valPct
+            } else if (trimmed.startsWith("full ")) {
+                fullAvg10 = valPct
+            }
+        }
+        return someAvg10 to fullAvg10
+    }
+
+    /**
+     * Parses Qualcomm Adreno KGSL `gpubusy` (`"<busy_cycles> <total_cycles>"`) or `gpu_busy_percentage` (`"42 %"`).
+     */
+    fun parseQualcommKgslGpuBusy(rawBusy: String?): Float? {
+        if (rawBusy.isNullOrBlank()) return null
+        val tokens = rawBusy.trim().replace("%", "").split(WHITESPACE_REGEX).filter { it.isNotEmpty() }
+        if (tokens.size >= 2) {
+            val busy = tokens[0].toDoubleOrNull()
+            val total = tokens[1].toDoubleOrNull()
+            if (busy != null && total != null && total > 0.0 && busy >= 0.0) {
+                return (busy / total).toFloat().coerceIn(0f, 1f)
+            }
+        } else if (tokens.size == 1) {
+            val pct = tokens[0].toFloatOrNull()
+            if (pct != null && pct.isFinite()) {
+                return (pct / 100f).coerceIn(0f, 1f)
+            }
+        }
+        return null
     }
 
     /**
@@ -455,4 +526,5 @@ object SysfsParsers {
 
     private val WHITESPACE_REGEX = Regex("\\s+")
     private val PROFILE_BRACKET_REGEX = Regex("\\[([^\\]]+)]")
+    private val PSI_AVG10_REGEX = Regex("avg10=([0-9]+(?:\\.[0-9]+)?)")
 }

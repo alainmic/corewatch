@@ -10,8 +10,12 @@ import android.graphics.PixelFormat
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.HandlerThread
 import android.provider.Settings
+import android.view.FrameMetrics
 import android.view.Gravity
+import android.view.Window
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -74,11 +78,47 @@ class MainActivity : ComponentActivity() {
     private var pipOverlayParams: WindowManager.LayoutParams? = null
     private var pipOverlayLifecycle: OverlayLifecycleOwner? = null
     private var pipWasStopped: Boolean = false
+    private var frameMetricsThread: HandlerThread? = null
+    private val frameMetricsListener = Window.OnFrameMetricsAvailableListener { _, metrics, _ ->
+        if (metrics.getMetric(FrameMetrics.FIRST_DRAW_FRAME) == 1L) return@OnFrameMetricsAvailableListener
+        val totalNs = metrics.getMetric(FrameMetrics.TOTAL_DURATION)
+        val cpuStagesNs = metrics.getMetric(FrameMetrics.INPUT_HANDLING_DURATION).coerceAtLeast(0L) +
+            metrics.getMetric(FrameMetrics.ANIMATION_DURATION).coerceAtLeast(0L) +
+            metrics.getMetric(FrameMetrics.LAYOUT_MEASURE_DURATION).coerceAtLeast(0L) +
+            metrics.getMetric(FrameMetrics.DRAW_DURATION).coerceAtLeast(0L) +
+            metrics.getMetric(FrameMetrics.SYNC_DURATION).coerceAtLeast(0L) +
+            metrics.getMetric(FrameMetrics.COMMAND_ISSUE_DURATION).coerceAtLeast(0L)
+        val deadlineNs = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            metrics.getMetric(FrameMetrics.DEADLINE)
+        } else {
+            -1L
+        }
+        val gpuNs = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            metrics.getMetric(FrameMetrics.GPU_DURATION)
+        } else {
+            0L
+        }
+        val intendedNs = metrics.getMetric(FrameMetrics.INTENDED_VSYNC_TIMESTAMP)
+        val vsyncNs = metrics.getMetric(FrameMetrics.VSYNC_TIMESTAMP)
+        vm.recordFrameMetric(
+            totalDurationNs = totalNs,
+            deadlineNs = deadlineNs,
+            gpuDurationNs = gpuNs,
+            intendedVsyncNs = intendedNs,
+            vsyncNs = vsyncNs,
+            cpuStagesDurationNs = cpuStagesNs,
+        )
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         window.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
+        runCatching {
+            val ht = HandlerThread("corewatch-framemetrics").apply { start() }
+            frameMetricsThread = ht
+            window.addOnFrameMetricsAvailableListener(frameMetricsListener, Handler(ht.looper))
+        }
 
         setContent {
             val state by vm.state.collectAsState()
@@ -267,7 +307,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        vm.onTrimMemoryLevel(level)
+    }
+
     override fun onDestroy() {
+        runCatching { window.removeOnFrameMetricsAvailableListener(frameMetricsListener) }
+        runCatching { frameMetricsThread?.quitSafely() }
+        frameMetricsThread = null
         dismissPipOverlay()
         super.onDestroy()
     }

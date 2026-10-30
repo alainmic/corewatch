@@ -520,6 +520,24 @@ private fun CorewatchActionToolbarButtons(
         }
     }
 
+    Surface(
+        onClick = vm::cycleSamplingInterval,
+        shape = RoundedCornerShape(6.dp),
+        color = cs.surfaceContainerHigh,
+        modifier = Modifier
+            .testTag("btn_sampling_rate")
+            .semantics { contentDescription = "Cycle Sampling Interval (${state.samplingInterval.label})" },
+    ) {
+        Text(
+            text = state.samplingInterval.label,
+            style = CorewatchMonoTypography.hudSmall,
+            color = cs.primary,
+            maxLines = 1,
+            softWrap = false,
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+        )
+    }
+
     IconButton(
         onClick = vm::togglePaused,
         modifier = Modifier.size(btnSize).testTag("btn_pause_resume"),
@@ -1155,7 +1173,8 @@ private fun OverviewThermalsTab(state: CorewatchUiState, vm: CorewatchViewModel)
                     Text(
                         text = String.format(
                             Locale.US,
-                            "Arch: %s (%d Cores) · Session Avg %.1f%% · Peak %.1f%%",
+                            "%s · %s (%d Cores) · Avg %.1f%% · Peak %.1f%%",
+                            snap.cpuModelName,
                             snap.cpuAbi,
                             snap.cpuCores.size,
                             hist.cpuLoadAvg,
@@ -1275,15 +1294,17 @@ private fun OverviewThermalsTab(state: CorewatchUiState, vm: CorewatchViewModel)
                         style = CorewatchMonoTypography.hudSmall,
                         color = cs.onSurface,
                     )
+                    val mediaSuffix = snap.gpu.mediaEngineFreqMhz?.let { " · Media GT1: $it MHz" } ?: ""
                     Text(
                         text = String.format(
                             Locale.US,
-                            "Clock: %d MHz (Slice: %d MHz) · Range: %d–%d MHz (RPe %d MHz) · Throttle: %s",
+                            "Clock: %d MHz (Slice: %d MHz) · Range: %d–%d MHz (RPe %d MHz)%s · Throttle: %s",
                             snap.gpu.requestedFreqMhz,
                             snap.gpu.actualFreqMhz,
                             snap.gpu.minFreqMhz,
                             snap.gpu.maxFreqMhz,
                             snap.gpu.efficientFreqMhz,
+                            mediaSuffix,
                             snap.gpu.throttleSummary,
                         ),
                         style = CorewatchMonoTypography.hudSmall,
@@ -1620,6 +1641,17 @@ private fun MemoryStorageTab(state: CorewatchUiState) {
                     style = CorewatchMonoTypography.hudSmall,
                     color = cs.onSurfaceVariant,
                 )
+                Text(
+                    text = String.format(
+                        Locale.US,
+                        "LMKD / AMS Low Threshold: %s · LowMem Flag: %s · Memory Trim State: %s",
+                        DiagnosticReportBuilder.formatGiB(mem.amsThresholdBytes),
+                        if (mem.isLowMemory) "LOW MEMORY!" else "Healthy",
+                        state.snapshot.lmkd.trimLevelLabel,
+                    ),
+                    style = CorewatchMonoTypography.hudSmall,
+                    color = if (mem.isLowMemory) cs.error else cs.onSurfaceVariant,
+                )
                 SparklineCanvas(
                     samples = hist.memoryUsedPctSamples,
                     lineColor = cs.primary,
@@ -1631,43 +1663,83 @@ private fun MemoryStorageTab(state: CorewatchUiState) {
             }
         }
 
-        Surface(
-            shape = RoundedCornerShape(14.dp),
-            color = cs.surfaceContainer,
+        Row(
             modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("zram / Swap Pressure", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        text = String.format(
-                            Locale.US,
-                            "%s / %s (%d%%)",
-                            DiagnosticReportBuilder.formatGiB(mem.swapUsedBytes),
-                            DiagnosticReportBuilder.formatGiB(mem.swapTotalBytes),
-                            (mem.swapUsedFraction * 100f).roundToInt(),
-                        ),
-                        style = CorewatchMonoTypography.hudValue,
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = cs.surfaceContainer,
+                modifier = Modifier.weight(1f),
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("zram / Swap Pressure", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            text = String.format(
+                                Locale.US,
+                                "%s / %s (%d%%)",
+                                DiagnosticReportBuilder.formatGiB(mem.swapUsedBytes),
+                                DiagnosticReportBuilder.formatGiB(mem.swapTotalBytes),
+                                (mem.swapUsedFraction * 100f).roundToInt(),
+                            ),
+                            style = CorewatchMonoTypography.hudValue,
+                            color = cs.secondary,
+                        )
+                    }
+                    LinearProgressIndicator(
+                        progress = { mem.swapUsedFraction },
+                        modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
                         color = cs.secondary,
+                        trackColor = cs.surfaceContainerHighest,
                     )
                 }
-                LinearProgressIndicator(
-                    progress = { mem.swapUsedFraction },
-                    modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
-                    color = cs.secondary,
-                    trackColor = cs.surfaceContainerHighest,
-                )
+            }
+
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = cs.surfaceContainer,
+                modifier = Modifier.weight(1f),
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Internal User Storage (/data)", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            text = String.format(
+                                Locale.US,
+                                "%s / %s (%s free)",
+                                DiagnosticReportBuilder.formatGiB(storage.usedBytes),
+                                DiagnosticReportBuilder.formatGiB(storage.totalBytes),
+                                DiagnosticReportBuilder.formatGiB(storage.freeBytes),
+                            ),
+                            style = CorewatchMonoTypography.hudValue,
+                            color = cs.onSurface,
+                        )
+                    }
+                    LinearProgressIndicator(
+                        progress = { storage.usedFraction },
+                        modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
+                        color = cs.tertiary,
+                        trackColor = cs.surfaceContainerHighest,
+                    )
+                }
             }
         }
 
+        // LMKD (Low Memory Killer Daemon) & PSI Memory Pressure Monitor (5m)
+        val lmkd = state.snapshot.lmkd
         Surface(
             shape = RoundedCornerShape(14.dp),
             color = cs.surfaceContainer,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().testTag("lmkd_monitor_card"),
         ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(
@@ -1675,25 +1747,66 @@ private fun MemoryStorageTab(state: CorewatchUiState) {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("Internal User Storage (/data)", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        text = String.format(
-                            Locale.US,
-                            "%s used of %s (%s free)",
-                            DiagnosticReportBuilder.formatGiB(storage.usedBytes),
-                            DiagnosticReportBuilder.formatGiB(storage.totalBytes),
-                            DiagnosticReportBuilder.formatGiB(storage.freeBytes),
-                        ),
-                        style = CorewatchMonoTypography.hudValue,
-                        color = cs.onSurface,
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("LMKD Invocations & PSI Pressure (Last 5 Mins)", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            text = String.format(
+                                Locale.US,
+                                "Rolling 5-minute LMKD kill count · Trim Level: %s · PSI Memory (10s): some %.2f%% / full %.2f%%",
+                                lmkd.trimLevelLabel,
+                                lmkd.psiMemorySomeAvg10,
+                                lmkd.psiMemoryFullAvg10,
+                            ),
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onSurfaceVariant,
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = cs.surfaceContainerHigh,
+                        ) {
+                            Text(
+                                text = lmkd.scopeBadgeLabel,
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            )
+                        }
+                        Text(
+                            text = "${lmkd.killCount5m} invocations",
+                            style = CorewatchMonoTypography.metricLarge,
+                            color = if (lmkd.killCount5m > 0) cs.error else cs.secondary,
+                        )
+                    }
                 }
-                LinearProgressIndicator(
-                    progress = { storage.usedFraction },
-                    modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
-                    color = cs.tertiary,
-                    trackColor = cs.surfaceContainerHighest,
-                )
+
+                if (lmkd.recentKills5m.isEmpty()) {
+                    Text(
+                        text = "✓ Zero LMKD kills recorded in the last 5 minutes.",
+                        style = CorewatchMonoTypography.hudValue,
+                        color = cs.secondary,
+                    )
+                } else {
+                    for (kill in lmkd.recentKills5m) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "${kill.processName} (PID ${kill.pid}) · ${kill.reason}",
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.error,
+                            )
+                            Text(
+                                text = kill.formattedPssMb,
+                                style = CorewatchMonoTypography.hudValue,
+                                color = cs.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -1723,41 +1836,148 @@ private fun DisplaysNetworkTab(state: CorewatchUiState) {
             DisplayCard(disp = disp)
         }
 
-        Surface(
-            shape = RoundedCornerShape(14.dp),
-            color = cs.surfaceContainer,
+        val jank = snap.frameJank
+        Row(
             modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("Network Throughput (TrafficStats RX / TX)", style = MaterialTheme.typography.titleMedium)
+            // Dropped & Janky Frames (Rolling 5-Min Window, VRR-Aware)
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = cs.surfaceContainer,
+                modifier = Modifier.weight(1.15f).testTag("frame_jank_card"),
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("Dropped & Janky Frames (Last 5 Mins · VRR-Aware)", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                text = "Window: ${jank.windowElapsedLabel} · ${jank.evaluatedFrames5m} evaluated frames",
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSurfaceVariant,
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = cs.surfaceContainerHigh,
+                        ) {
+                            Text(
+                                text = jank.scopeBadgeLabel,
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = cs.surfaceContainerHigh,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text("DROPPED FRAMES (5M)", style = CorewatchMonoTypography.hudSmall, color = cs.onSurfaceVariant)
+                                Text(
+                                    text = String.format(Locale.US, "%.2f%%", jank.droppedPercent5m),
+                                    style = CorewatchMonoTypography.metricLarge,
+                                    color = if (jank.droppedFrames5m > 0) cs.error else cs.secondary,
+                                )
+                                Text(
+                                    text = "${jank.droppedFrames5m} dropped frames (5m)",
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = cs.onSurfaceVariant,
+                                )
+                            }
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = cs.surfaceContainerHigh,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text("JANKY FRAMES (5M)", style = CorewatchMonoTypography.hudSmall, color = cs.onSurfaceVariant)
+                                Text(
+                                    text = String.format(Locale.US, "%.2f%%", jank.jankyPercent5m),
+                                    style = CorewatchMonoTypography.metricLarge,
+                                    color = if (jank.jankyPercent5m >= 5f) cs.error else cs.primary,
+                                )
+                                Text(
+                                    text = "${jank.jankyFrames5m} janky frames (5m)",
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = cs.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+
+                    SparklineCanvas(
+                        samples = hist.jankPercentSamples,
+                        lineColor = cs.tertiary,
+                        gridColor = cs.outlineVariant.copy(alpha = 0.4f),
+                        minFloor = 0f,
+                        maxCeiling = 100f,
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                    )
+
                     Text(
-                        text = String.format(Locale.US, "↓ %.2f Mbps · ↑ %.2f Mbps", snap.network.rxMbps, snap.network.txMbps),
-                        style = CorewatchMonoTypography.hudValue,
+                        text = String.format(
+                            Locale.US,
+                            "Jank Causes (5m): Long CPU: %d · Long GPU: %d · Buffer Stuffing: %d · Missed VSync: %d",
+                            jank.longCpuJank5m,
+                            jank.longGpuJank5m,
+                            jank.bufferStuffing5m,
+                            jank.sfMissedFrames5m,
+                        ),
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurfaceVariant,
+                    )
+                    Text(
+                        text = "VRR Deadline Accounting: Per-frame dynamic FrameMetrics.DEADLINE ${jank.deadlineRangeLabel}",
+                        style = CorewatchMonoTypography.hudSmall,
                         color = cs.primary,
                     )
                 }
-                Text(
-                    text = String.format(
-                        Locale.US,
-                        "Boot Cumulative RX: %s · Cumulative TX: %s",
-                        DiagnosticReportBuilder.formatGiB(snap.network.totalRxBytes),
-                        DiagnosticReportBuilder.formatGiB(snap.network.totalTxBytes),
-                    ),
-                    style = CorewatchMonoTypography.hudSmall,
-                    color = cs.onSurfaceVariant,
-                )
-                SparklineCanvas(
-                    samples = hist.networkMbpsSamples,
-                    lineColor = cs.primary,
-                    gridColor = cs.outlineVariant.copy(alpha = 0.4f),
-                    minFloor = 0f,
-                    modifier = Modifier.fillMaxWidth().height(64.dp),
-                )
+            }
+
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = cs.surfaceContainer,
+                modifier = Modifier.weight(0.85f),
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Network Throughput (TrafficStats RX / TX)", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = String.format(Locale.US, "↓ %.2f Mbps · ↑ %.2f Mbps", snap.network.rxMbps, snap.network.txMbps),
+                        style = CorewatchMonoTypography.metricLarge,
+                        color = cs.primary,
+                    )
+                    Text(
+                        text = String.format(
+                            Locale.US,
+                            "Boot Cumulative RX: %s · Cumulative TX: %s",
+                            DiagnosticReportBuilder.formatGiB(snap.network.totalRxBytes),
+                            DiagnosticReportBuilder.formatGiB(snap.network.totalTxBytes),
+                        ),
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurfaceVariant,
+                    )
+                    SparklineCanvas(
+                        samples = hist.networkMbpsSamples,
+                        lineColor = cs.primary,
+                        gridColor = cs.outlineVariant.copy(alpha = 0.4f),
+                        minFloor = 0f,
+                        modifier = Modifier.fillMaxWidth().height(96.dp),
+                    )
+                }
             }
         }
     }
@@ -1843,14 +2063,49 @@ private fun DisplayCard(disp: DisplaySpec) {
                     Text(
                         text = String.format(
                             Locale.US,
-                            "DRM vrr_capable: %s · CRTC VRR_ENABLED: %s · Android ARR: %s",
+                            "DRM vrr_capable: %s · CRTC VRR_ENABLED: %s · Android ARR: %s · 5m VRR Switches: %d",
                             if (disp.vrrCapable) "Yes (1)" else "No (0)",
                             if (disp.vrrKernelEnabled) "Active (1)" else "Idle (0)",
                             if (disp.hasAndroidArr) "Supported" else "eDP Dynamic Steps",
+                            disp.vrrSwitchCount5m,
                         ),
                         style = CorewatchMonoTypography.hudSmall,
                         color = cs.onSurfaceVariant,
                     )
+                    if (disp.vrrResidencyBuckets.isNotEmpty()) {
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = "5-MINUTE VRR REFRESH RATE TIME-IN-STATE",
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onSurface,
+                        )
+                        for (bucket in disp.vrrResidencyBuckets) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    text = String.format(Locale.US, "%3d Hz", bucket.hz),
+                                    style = CorewatchMonoTypography.hudValue,
+                                    color = cs.primary,
+                                    modifier = Modifier.width(52.dp),
+                                )
+                                LinearProgressIndicator(
+                                    progress = { bucket.fraction.coerceIn(0f, 1f) },
+                                    modifier = Modifier.weight(1f).height(7.dp).clip(CircleShape),
+                                    color = cs.primary,
+                                    trackColor = cs.surfaceContainerHighest,
+                                )
+                                Text(
+                                    text = bucket.summaryLabel,
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = cs.onSurfaceVariant,
+                                    modifier = Modifier.widthIn(min = 96.dp),
+                                )
+                            }
+                        }
+                    }
                 }
             }
 

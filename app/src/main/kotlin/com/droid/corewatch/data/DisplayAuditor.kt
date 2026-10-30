@@ -40,6 +40,8 @@ data class DisplaySpec(
     val maxBpc: Int = 8,
     val panelModel: String = "",
     val drmConnectorName: String = "",
+    val vrrResidencyBuckets: List<VrrResidencyBucket> = emptyList(),
+    val vrrSwitchCount5m: Int = 0,
 ) {
     val activeResolutionLabel: String
         get() = "${activeWidth}×${activeHeight}"
@@ -115,6 +117,8 @@ object DisplayAuditor {
         maxBpc: Int = 8,
         panelModel: String? = null,
         drmConnectorName: String? = null,
+        vrrResidencyBuckets: List<VrrResidencyBucket> = emptyList(),
+        vrrSwitchCount5m: Int = 0,
     ): DisplaySpec {
         val isBuiltIn = displayId == 0
         val cleanName = SysfsParsers.sanitizeSensorName(
@@ -209,6 +213,8 @@ object DisplayAuditor {
             maxBpc = maxBpc.coerceIn(6, 16),
             panelModel = SysfsParsers.sanitizeSensorName(panelModel, ""),
             drmConnectorName = cleanConnector,
+            vrrResidencyBuckets = vrrResidencyBuckets,
+            vrrSwitchCount5m = vrrSwitchCount5m.coerceAtLeast(0),
         )
     }
 }

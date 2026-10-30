@@ -27,6 +27,7 @@ data class SystemTelemetrySnapshot(
     val deviceModel: String = "Googlebook",
     val osVersion: String = "Android 16",
     val cpuAbi: String = "x86_64",
+    val cpuModelName: String = "Intel Core Ultra",
     val thermalLevel: ThermalLevel = ThermalLevel.NONE,
     val thermalHeadroom: Float = 0.25f,
     val cpuCores: List<CpuCoreReading> = emptyList(),
@@ -55,6 +56,8 @@ data class SystemTelemetrySnapshot(
     ),
     val storage: StorageSummary = StorageSummary(totalBytes = 256L shl 30, freeBytes = 180L shl 30),
     val displays: List<DisplaySpec> = emptyList(),
+    val frameJank: FrameJankSnapshot = FrameJankSnapshot(),
+    val lmkd: LmkdTelemetrySnapshot = LmkdTelemetrySnapshot(),
     val network: NetworkThroughput = NetworkThroughput(),
     val caffeineEvaluation: CaffeineEvaluation = CaffeineEvaluation(false, "Off", null, false),
 ) {
@@ -83,6 +86,7 @@ object DiagnosticReportBuilder {
         val model = SysfsParsers.sanitizeSensorName(snapshot.deviceModel, "Googlebook")
         val os = SysfsParsers.sanitizeSensorName(snapshot.osVersion, "Android")
         val abi = SysfsParsers.sanitizeSensorName(snapshot.cpuAbi, "unknown")
+        val cpuModel = SysfsParsers.sanitizeSensorName(snapshot.cpuModelName, abi)
 
         val pCores = snapshot.cpuCores.count { it.cluster == CoreCluster.Performance }
         val eCores = snapshot.cpuCores.count { it.cluster == CoreCluster.Efficiency }
@@ -121,7 +125,7 @@ object DiagnosticReportBuilder {
             appendLine()
             appendLine("| Metric | Value |")
             appendLine("| :--- | :--- |")
-            appendLine("| **Device / Board** | `$model` (`$board`, `$abi`) |")
+            appendLine("| **Device / Board** | `$model` (`$board`, `$abi` · `$cpuModel`) |")
             appendLine("| **OS Release** | `$os` |")
             appendLine("| **Thermal Status** | `${snapshot.thermalLevel.label}` (Headroom: `$headroomStr`, Peak: `$sensorSummary`) |")
             appendLine("| **CPU Scaling** | `$coreTopology` — Avg `${avgCpuPct}%`, Peak `${snapshot.maxCpuFreqMhz} MHz` |")
@@ -166,7 +170,17 @@ object DiagnosticReportBuilder {
                 ),
             )
             appendLine(
-                "| **Memory & zram Swap** | RAM: `${formatGiB(snapshot.memory.usedBytes)} / ${formatGiB(snapshot.memory.totalBytes)}` (`${ramPct}%`) · Swap: `${formatGiB(snapshot.memory.swapUsedBytes)} / ${formatGiB(snapshot.memory.swapTotalBytes)}` (`${swapPct}%`) |",
+                "| **Memory & zram Swap** | RAM: `${formatGiB(snapshot.memory.usedBytes)} / ${formatGiB(snapshot.memory.totalBytes)}` (`${ramPct}%`, AMS Threshold `${formatGiB(snapshot.memory.amsThresholdBytes)}`) · Swap: `${formatGiB(snapshot.memory.swapUsedBytes)} / ${formatGiB(snapshot.memory.swapTotalBytes)}` (`${swapPct}%`) · LMKD 5m: `${snapshot.lmkd.killCount5m} kills` |",
+            )
+            appendLine(
+                String.format(
+                    Locale.US,
+                    "| **Frame Pacing (5m)** | `%d` frames (`%.2f%%` dropped, `%.2f%%` janky · Deadlines `%s`) |",
+                    snapshot.frameJank.evaluatedFrames5m,
+                    snapshot.frameJank.droppedPercent5m,
+                    snapshot.frameJank.jankyPercent5m,
+                    snapshot.frameJank.deadlineRangeLabel,
+                ),
             )
             appendLine("| **Displays** | $displaySummary |")
             appendLine("| **Caffeine Keep-Awake** | `${SysfsParsers.sanitizeSensorName(snapshot.caffeineEvaluation.activeReason, "Off")}` |")

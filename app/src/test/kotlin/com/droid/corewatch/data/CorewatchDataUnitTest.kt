@@ -431,5 +431,53 @@ class CorewatchDataUnitTest {
         assertEquals("Render 60 Hz · VSync 120 Hz", vrrDisplay.liveCadenceSummary)
         assertEquals(12, vrrDisplay.maxBpc)
         assertEquals("BOE NB140B91-ML1", vrrDisplay.panelModel)
+
+        val cpuModel = SysfsParsers.parseCpuModelName(
+            "processor\t: 0\nmodel name\t: Intel(R) Core(TM) Ultra 7 355\n",
+            "x86_64",
+        )
+        assertEquals("Intel Core Ultra 7 355", cpuModel)
+
+        val (somePsi, fullPsi) = SysfsParsers.parsePsiMemoryAvg10(
+            "some avg10=1.25 avg60=0.40 avg300=0.10 total=12345\nfull avg10=0.50 avg60=0.10 avg300=0.00 total=2345\n",
+        )
+        assertEquals(1.25f, somePsi, 0.01f)
+        assertEquals(0.50f, fullPsi, 0.01f)
+
+        assertEquals(0.42f, SysfsParsers.parseQualcommKgslGpuBusy("420 1000")!!, 0.01f)
+        assertEquals(0.65f, SysfsParsers.parseQualcommKgslGpuBusy("65 %")!!, 0.01f)
+
+        val tracker = VrrAndFrameWindowTracker(windowHorizonMs = 300_000L)
+        val steps = listOf(20f, 24f, 30f, 40f, 60f, 120f)
+        tracker.recordDisplayRefreshSample(1_000L, 120f, steps)
+        val (buckets, switches) = tracker.recordDisplayRefreshSample(2_000L, 60f, steps)
+        assertEquals(2, buckets.size)
+        assertEquals(1, switches)
+        assertEquals(120, buckets[0].hz)
+        assertEquals(60, buckets[1].hz)
+
+        // Frame metrics: 1 smooth frame (6ms vs 8.33ms deadline) + 1 janky/dropped frame (20ms vs 8.33ms deadline)
+        tracker.recordFrameMetric(
+            nowElapsedMs = 2_000L,
+            totalDurationNs = 6_000_000L,
+            deadlineNs = 8_333_333L,
+            gpuDurationNs = 2_000_000L,
+            intendedVsyncNs = 100_000_000L,
+            vsyncNs = 100_000_000L,
+        )
+        tracker.recordFrameMetric(
+            nowElapsedMs = 2_200L,
+            totalDurationNs = 20_000_000L,
+            deadlineNs = 16_666_666L,
+            gpuDurationNs = 3_000_000L,
+            intendedVsyncNs = 120_000_000L,
+            vsyncNs = 140_000_000L,
+        )
+        val frameSnap = tracker.snapshotFrames(2_500L, defaultHz = 120)
+        assertEquals(2, frameSnap.evaluatedFrames5m)
+        assertEquals(1, frameSnap.jankyFrames5m)
+        assertEquals(1, frameSnap.droppedFrames5m)
+        assertEquals(1, frameSnap.longCpuJank5m)
+        assertEquals("[60, 120] Hz", frameSnap.deadlineRangeLabel)
     }
 }

@@ -40,6 +40,20 @@ enum class CorewatchTab(
     DisplaysNetwork(3, "Displays & Net", "Displays", "Displays & Network", "Ctrl+4"),
 }
 
+enum class SamplingInterval(val delayMs: Long, val label: String) {
+    FAST_250MS(250L, "250ms"),
+    FAST_500MS(500L, "500ms"),
+    NORMAL_1S(1_000L, "1s"),
+    SLOW_2S(2_000L, "2s");
+
+    fun next(): SamplingInterval = when (this) {
+        FAST_250MS -> FAST_500MS
+        FAST_500MS -> NORMAL_1S
+        NORMAL_1S -> SLOW_2S
+        SLOW_2S -> FAST_250MS
+    }
+}
+
 data class TelemetryHistoryStats(
     val cpuLoadSamples: List<Float> = emptyList(),
     val cpuLoadPeak: Float = 0f,
@@ -57,6 +71,7 @@ data class TelemetryHistoryStats(
     val batteryAvgWatts: Float = 0f,
     val memoryUsedPctSamples: List<Float> = emptyList(),
     val networkMbpsSamples: List<Float> = emptyList(),
+    val jankPercentSamples: List<Float> = emptyList(),
 )
 
 data class CorewatchUiState(
@@ -64,6 +79,7 @@ data class CorewatchUiState(
     val isMiniHud: Boolean = false,
     val miniHudAlpha: Float = 0.88f,
     val isPaused: Boolean = false,
+    val samplingInterval: SamplingInterval = SamplingInterval.NORMAL_1S,
     val useFahrenheit: Boolean = false,
     val showShortcutsDialog: Boolean = false,
     val themeMode: ThemeMode = ThemeMode.Dark,
@@ -82,6 +98,7 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
     private val wattsRing = FloatRingBuffer(60)
     private val memRing = FloatRingBuffer(60)
     private val netRing = FloatRingBuffer(60)
+    private val jankRing = FloatRingBuffer(60)
     private var lastWindowNarrow: Boolean = false
 
     private val _state = MutableStateFlow(CorewatchUiState())
@@ -97,7 +114,7 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             while (isActive) {
-                delay(1_000L)
+                delay(_state.value.samplingInterval.delayMs)
                 if (!_state.value.isPaused) {
                     sampleNow()
                 }
@@ -118,6 +135,7 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
         wattsRing.push(abs(snap.battery.watts))
         memRing.push(snap.memory.usedFraction * 100f)
         netRing.push(snap.network.rxMbps + snap.network.txMbps)
+        jankRing.push(snap.frameJank.latestIntervalJankPercent)
 
         val hist = TelemetryHistoryStats(
             cpuLoadSamples = cpuRing.toList(),
@@ -136,6 +154,7 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
             batteryAvgWatts = wattsRing.average(),
             memoryUsedPctSamples = memRing.toList(),
             networkMbpsSamples = netRing.toList(),
+            jankPercentSamples = jankRing.toList(),
         )
 
         _state.update {
@@ -228,6 +247,52 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
         sampleNow()
     }
 
+    fun cycleSamplingInterval() {
+        _state.update {
+            val next = it.samplingInterval.next()
+            it.copy(samplingInterval = next)
+        }
+    }
+
+    fun setSamplingInterval(interval: SamplingInterval) {
+        _state.update { it.copy(samplingInterval = interval) }
+    }
+
+    fun recordFrameMetric(
+        totalDurationNs: Long,
+        deadlineNs: Long,
+        gpuDurationNs: Long,
+        intendedVsyncNs: Long,
+        vsyncNs: Long,
+        cpuStagesDurationNs: Long = -1L,
+        nowElapsedMs: Long = SystemClock.elapsedRealtime(),
+    ) {
+        val fallbackHz = _state.value.snapshot.displays.firstOrNull()?.renderFrameRateHz ?: 120f
+        collector.vrrAndFrameTracker.recordFrameMetric(
+            nowElapsedMs = nowElapsedMs,
+            totalDurationNs = totalDurationNs,
+            deadlineNs = deadlineNs,
+            gpuDurationNs = gpuDurationNs,
+            intendedVsyncNs = intendedVsyncNs,
+            vsyncNs = vsyncNs,
+            fallbackHz = fallbackHz,
+            cpuStagesDurationNs = cpuStagesDurationNs,
+        )
+    }
+
+    fun onTrimMemoryLevel(level: Int) {
+        collector.lastTrimLevelLabel = when {
+            level >= 80 -> "Complete ($level)"
+            level >= 60 -> "Moderate ($level)"
+            level >= 40 -> "Background ($level)"
+            level == 20 -> "UI Hidden (20)"
+            level >= 15 -> "Running Critical (15)"
+            level >= 10 -> "Running Low (10)"
+            level >= 5 -> "Running Moderate (5)"
+            else -> "Normal"
+        }
+    }
+
     fun resetSessionHistory() {
         cpuRing.clear()
         gpuRing.clear()
@@ -236,8 +301,10 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
         wattsRing.clear()
         memRing.clear()
         netRing.clear()
+        jankRing.clear()
+        collector.resetWindowCounters()
         sampleNow()
-        _state.update { it.copy(statusBanner = "Session min/max/average telemetry counters reset") }
+        _state.update { it.copy(statusBanner = "Session min/max/average & 5-minute VRR/Jank counters reset") }
     }
 
     fun copyDiagnosticMarkdown(): String {

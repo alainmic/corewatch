@@ -28,13 +28,14 @@ object CaffeineController {
     val config: StateFlow<CaffeineConfig> = _config.asStateFlow()
 
     private var wakeLock: PowerManager.WakeLock? = null
-    private var initialized = false
+    private var initializedApp: Context? = null
 
     @Synchronized
     fun init(context: Context) {
-        if (initialized) return
-        initialized = true
-        val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val appCtx = context.applicationContext
+        if (initializedApp === appCtx) return
+        initializedApp = appCtx
+        val prefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         _config.value = CaffeineConfig(
             duration = CaffeineDuration.Off,
             activatedAtElapsedMs = 0L,

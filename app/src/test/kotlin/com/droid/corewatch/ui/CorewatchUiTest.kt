@@ -90,9 +90,11 @@ class CorewatchUiTest {
         composeRule.onNodeWithText("Physical RAM (/proc/meminfo)").assertIsDisplayed()
         composeRule.onNodeWithText("zram / Swap Pressure").assertIsDisplayed()
         composeRule.onNodeWithText("Internal User Storage (/data)").assertIsDisplayed()
+        composeRule.onNodeWithTag("lmkd_monitor_card").assertIsDisplayed()
 
         // 4. Switch to Tab 4 (Displays & Network)
         composeRule.onNodeWithTag("tab_3").performClick()
+        composeRule.onNodeWithTag("frame_jank_card").assertIsDisplayed()
         composeRule.onNodeWithText("Network Throughput (TrafficStats RX / TX)").assertIsDisplayed()
 
         // 5. Copy Markdown Diagnostic Snapshot AND verify switching all 4 tabs works while the notification bar is visible
@@ -321,6 +323,16 @@ class CorewatchUiTest {
 
         composeRule.onNodeWithTag("btn_reset_history").performClick()
         assertTrue(vm.state.value.statusBanner!!.contains("reset"))
+
+        // Cycle telemetry sampling rate (1s -> 2s -> 250ms -> 500ms -> 1s)
+        composeRule.onNodeWithTag("btn_sampling_rate").performClick()
+        assertEquals(SamplingInterval.SLOW_2S, vm.state.value.samplingInterval)
+        composeRule.onNodeWithTag("btn_sampling_rate").performClick()
+        assertEquals(SamplingInterval.FAST_250MS, vm.state.value.samplingInterval)
+        composeRule.onNodeWithTag("btn_sampling_rate").performClick()
+        assertEquals(SamplingInterval.FAST_500MS, vm.state.value.samplingInterval)
+        composeRule.onNodeWithTag("btn_sampling_rate").performClick()
+        assertEquals(SamplingInterval.NORMAL_1S, vm.state.value.samplingInterval)
 
         composeRule.onNodeWithTag("btn_theme").performClick()
         assertEquals(ThemeMode.Light, vm.state.value.themeMode)

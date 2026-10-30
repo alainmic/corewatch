@@ -4,6 +4,7 @@
 package com.droid.corewatch.data
 
 import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -32,6 +33,9 @@ class TelemetryCollector(
     private val procMemInfoFile: File = File("/proc/meminfo"),
     private val drmSysfsRoot: File = File("/sys/class/drm"),
     private val accelSysfsRoot: File = File("/sys/class/accel"),
+    private val procCpuInfoFile: File = File("/proc/cpuinfo"),
+    private val procPsiMemoryFile: File = File("/proc/pressure/memory"),
+    val vrrAndFrameTracker: VrrAndFrameWindowTracker = VrrAndFrameWindowTracker(),
 ) {
     private var lastNetSampleElapsedMs: Long = 0L
     private var lastRxBytes: Long = -1L
@@ -53,6 +57,13 @@ class TelemetryCollector(
     private var npuDrmProbed: Boolean = false
     private var thermalSysfsReadable: Boolean? = null
     private var hwmonSysfsReadable: Boolean? = null
+    private var cachedCpuModelName: String? = null
+    @Volatile
+    var lastTrimLevelLabel: String = "Normal"
+
+    fun resetWindowCounters() {
+        vrrAndFrameTracker.reset()
+    }
 
     fun sample(caffeineConfig: CaffeineConfig, nowElapsedMs: Long = SystemClock.elapsedRealtime()): SystemTelemetrySnapshot {
         val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
@@ -60,6 +71,11 @@ class TelemetryCollector(
         val dm = context.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
 
+        val abi = Build.SUPPORTED_ABIS?.firstOrNull() ?: "x86_64"
+        val cpuModel = cachedCpuModelName ?: run {
+            val rawCpuInfo = readSmallFile(procCpuInfoFile, maxBytes = 8 * 1024).orEmpty()
+            SysfsParsers.parseCpuModelName(rawCpuInfo, abi).also { cachedCpuModelName = it }
+        }
         val thermalLevel = readThermalLevel(pm)
         val battery = readBattery(bm)
         val cpuCores = readCpuCores(nowElapsedMs)
@@ -69,7 +85,10 @@ class TelemetryCollector(
         val thermalSensors = readThermalSensors(battery.temperatureCelsius, headroom, cpuCores)
         val memory = readMemory(am)
         val storage = readStorage()
-        val displays = readDisplays(dm)
+        val displays = readDisplays(dm, nowElapsedMs)
+        val primaryHz = displays.firstOrNull()?.activeRefreshHz?.toInt()?.coerceIn(30, 480) ?: 120
+        val frameJank = vrrAndFrameTracker.snapshotFrames(nowElapsedMs, defaultHz = primaryHz)
+        val lmkd = readLmkd(am)
         val network = readNetwork(nowElapsedMs)
 
         val caffeineEval = CaffeinePolicy.evaluate(
@@ -84,7 +103,8 @@ class TelemetryCollector(
             deviceBoard = Build.DEVICE?.takeIf { it.isNotBlank() } ?: "googlebook",
             deviceModel = Build.MODEL?.takeIf { it.isNotBlank() } ?: "Googlebook",
             osVersion = "Android ${Build.VERSION.RELEASE ?: "16"} (API ${Build.VERSION.SDK_INT})",
-            cpuAbi = Build.SUPPORTED_ABIS?.firstOrNull() ?: "x86_64",
+            cpuAbi = abi,
+            cpuModelName = cpuModel,
             thermalLevel = thermalLevel,
             thermalHeadroom = headroom,
             cpuCores = cpuCores,
@@ -95,6 +115,8 @@ class TelemetryCollector(
             memory = memory,
             storage = storage,
             displays = displays,
+            frameJank = frameJank,
+            lmkd = lmkd,
             network = network,
             caffeineEvaluation = caffeineEval,
         )
@@ -312,13 +334,21 @@ class TelemetryCollector(
     }
 
     private fun readMemory(am: ActivityManager?): MemorySnapshot {
+        val info = ActivityManager.MemoryInfo()
+        runCatching { am?.getMemoryInfo(info) }
+        val threshold = info.threshold.takeIf { it > 0L } ?: (216L shl 20)
+        val lowMem = info.lowMemory
+
         val rawText = readSmallFile(procMemInfoFile, maxBytes = 16 * 1024)
         if (!rawText.isNullOrBlank()) {
             val snap = SysfsParsers.parseMemInfo(rawText)
-            if (snap.totalBytes > 0L) return snap
+            if (snap.totalBytes > 0L) {
+                return snap.copy(
+                    amsThresholdBytes = threshold,
+                    isLowMemory = lowMem,
+                )
+            }
         }
-        val info = ActivityManager.MemoryInfo()
-        runCatching { am?.getMemoryInfo(info) }
         val total = info.totalMem.takeIf { it > 0L } ?: (16L shl 30)
         val avail = info.availMem.takeIf { it > 0L } ?: (9L shl 30)
         return MemorySnapshot(
@@ -330,6 +360,45 @@ class TelemetryCollector(
             dirtyBytes = 8L shl 20,
             swapTotalBytes = total / 2,
             swapFreeBytes = (total / 2) * 3 / 4,
+            amsThresholdBytes = threshold,
+            isLowMemory = lowMem,
+        )
+    }
+
+    private fun readLmkd(am: ActivityManager?): LmkdTelemetrySnapshot {
+        val kills = ArrayList<LmkdKillEvent>()
+        val cutoffWallMs = System.currentTimeMillis() - 300_000L
+        if (am != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching {
+                val exits = am.getHistoricalProcessExitReasons(null, 0, 32)
+                for (ex in exits) {
+                    if (ex.timestamp < cutoffWallMs) continue
+                    val isLowMemKill = ex.reason == ApplicationExitInfo.REASON_LOW_MEMORY ||
+                        ex.reason == ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE
+                    if (isLowMemKill) {
+                        val reasonStr = if (ex.reason == ApplicationExitInfo.REASON_LOW_MEMORY) "LMKD Low Memory" else "Excessive Resource"
+                        kills += LmkdKillEvent(
+                            timestampMs = ex.timestamp,
+                            processName = SysfsParsers.sanitizeSensorName(ex.processName, "process"),
+                            pid = ex.pid,
+                            pssKb = ex.pss.coerceAtLeast(0L),
+                            reason = reasonStr,
+                        )
+                    }
+                }
+            }
+        }
+        val psiText = readSmallFile(procPsiMemoryFile, maxBytes = 1024).orEmpty()
+        val (someAvg10, fullAvg10) = SysfsParsers.parsePsiMemoryAvg10(psiText)
+
+        return LmkdTelemetrySnapshot(
+            killCount5m = kills.size,
+            recentKills5m = kills.take(6),
+            trimLevelLabel = lastTrimLevelLabel,
+            psiMemorySomeAvg10 = someAvg10,
+            psiMemoryFullAvg10 = fullAvg10,
+            vmstatOomKills = 0L,
+            isSystemWide = false,
         )
     }
 
@@ -344,11 +413,13 @@ class TelemetryCollector(
     }
 
     @Suppress("DEPRECATION")
-    private fun readDisplays(dm: DisplayManager?): List<DisplaySpec> {
+    private fun readDisplays(dm: DisplayManager?, nowElapsedMs: Long): List<DisplaySpec> {
         val drmConnectors = runCatching { AccelIoctlBridge.queryDrmConnectors("/dev/dri/card0") }.getOrDefault(emptyList())
         val displays = runCatching { dm?.displays }.getOrNull().orEmpty()
         if (displays.isEmpty()) {
             val eDpConn = drmConnectors.firstOrNull()
+            val defaultSteps = listOf(20f, 24f, 30f, 40f, 60f, 120f)
+            val (buckets, switches) = vrrAndFrameTracker.recordDisplayRefreshSample(nowElapsedMs, 120f, defaultSteps)
             return listOf(
                 DisplayAuditor.auditDisplay(
                     displayId = 0,
@@ -373,6 +444,8 @@ class TelemetryCollector(
                     hasAndroidArr = false,
                     maxBpc = eDpConn?.maxBpc ?: 10,
                     drmConnectorName = eDpConn?.connectorName ?: "eDP-1",
+                    vrrResidencyBuckets = buckets,
+                    vrrSwitchCount5m = switches,
                 ),
             )
         }
@@ -393,7 +466,7 @@ class TelemetryCollector(
                     null
                 }
             }.getOrNull() ?: modeHz
-            val supportedRefreshSteps = runCatching { d.supportedRefreshRates ?: FloatArray(0) }.getOrDefault(FloatArray(0))
+            val supportedRefreshSteps = runCatching { d.supportedRefreshRates }.getOrNull() ?: FloatArray(0)
             val hasArr = runCatching {
                 val method = d.javaClass.getMethod("hasArrSupport")
                 (method.invoke(d) as? Boolean) ?: false
@@ -403,8 +476,8 @@ class TelemetryCollector(
                     val info = d.deviceProductInfo
                     if (info != null) {
                         listOfNotNull(
-                            info.manufacturerPnpId?.takeIf { it.isNotBlank() },
-                            info.productId?.takeIf { it.isNotBlank() },
+                            info.manufacturerPnpId.takeIf { it.isNotBlank() },
+                            info.productId.takeIf { it.isNotBlank() },
                             info.name?.takeIf { it.isNotBlank() },
                         ).joinToString(" ").trim()
                     } else {
@@ -434,6 +507,15 @@ class TelemetryCollector(
                 }.orEmpty()
             }.getOrDefault(emptyList())
             val hdrTypes = runCatching { d.hdrCapabilities?.supportedHdrTypes ?: IntArray(0) }.getOrDefault(IntArray(0))
+            val (buckets, switches) = if (idx == 0) {
+                vrrAndFrameTracker.recordDisplayRefreshSample(
+                    nowElapsedMs = nowElapsedMs,
+                    effectiveHz = renderHz,
+                    supportedStepsHz = supportedRefreshSteps.toList(),
+                )
+            } else {
+                emptyList<VrrResidencyBucket>() to 0
+            }
             DisplayAuditor.auditDisplay(
                 displayId = d.displayId,
                 rawName = d.name,
@@ -455,6 +537,8 @@ class TelemetryCollector(
                 maxBpc = drmConn?.maxBpc ?: 8,
                 panelModel = panelModel,
                 drmConnectorName = drmConn?.connectorName,
+                vrrResidencyBuckets = buckets,
+                vrrSwitchCount5m = switches,
             )
         }
     }
@@ -487,13 +571,21 @@ class TelemetryCollector(
         var curIdleMs: Long? = null
 
         val xeFreqDir = File(drmSysfsRoot, "card0/device/tile0/gt0/freq0")
+        val xeMediaFreqDir = File(drmSysfsRoot, "card0/device/tile0/gt1/freq0")
         val xeIdleFile = File(drmSysfsRoot, "card0/device/tile0/gt0/gtidle/idle_residency_ms")
         val i915GtDir = File(drmSysfsRoot, "card0/gt/gt0")
+        val kgslDir = File("/sys/class/kgsl/kgsl-3d0")
+        var fallbackBusyFraction: Float? = null
 
         if (xeFreqDir.isDirectory) {
             for (name in listOf("act_freq", "cur_freq", "min_freq", "max_freq", "rp0_freq", "rpa_freq", "rpe_freq", "rpn_freq", "power_profile")) {
                 val v = readSmallFile(File(xeFreqDir, name))
                 if (v != null) attrs[name] = v
+            }
+            if (xeMediaFreqDir.isDirectory) {
+                val mediaFreq = readSmallFile(File(xeMediaFreqDir, "act_freq"))?.takeIf { it != "0" }
+                    ?: readSmallFile(File(xeMediaFreqDir, "cur_freq"))
+                if (mediaFreq != null) attrs["media_freq"] = mediaFreq
             }
             val thrDir = File(xeFreqDir, "throttle")
             if (thrDir.isDirectory) {
@@ -512,6 +604,17 @@ class TelemetryCollector(
             readSmallFile(File(i915GtDir, "rps_RP1_freq_mhz"))?.let { attrs["rpe_freq"] = it }
             readSmallFile(File(i915GtDir, "rps_RPn_freq_mhz"))?.let { attrs["rpn_freq"] = it }
             curIdleMs = readSmallFile(File(i915GtDir, "rc6_residency_ms"))?.toLongOrNull()
+        } else if (kgslDir.isDirectory) {
+            readSmallFile(File(kgslDir, "gpuclk"))?.let {
+                attrs["act_freq"] = it
+                attrs["cur_freq"] = it
+            }
+            readSmallFile(File(kgslDir, "max_gpuclk"))?.let { attrs["max_freq"] = it }
+            readSmallFile(File(kgslDir, "min_clock_mhz"))?.let { attrs["min_freq"] = it }
+            fallbackBusyFraction = SysfsParsers.parseQualcommKgslGpuBusy(
+                readSmallFile(File(kgslDir, "gpu_busy_percentage"))
+                    ?: readSmallFile(File(kgslDir, "gpubusy")),
+            )
         }
 
         val dtMs = nowElapsedMs - lastGpuSampleElapsedMs
@@ -524,6 +627,8 @@ class TelemetryCollector(
         ) {
             val deltaIdleMs = curIdleMs - lastGpuIdleTimeMs
             (1.0 - (deltaIdleMs.toDouble() / dtMs.toDouble())).toFloat().coerceIn(0f, 1f)
+        } else if (fallbackBusyFraction != null) {
+            fallbackBusyFraction
         } else if (curIdleMs != null && attrs["act_freq"]?.trim() == "0") {
             0f
         } else {
