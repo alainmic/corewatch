@@ -931,7 +931,30 @@ internal fun MiniHudView(
                 cardAlpha = cardAlpha,
             )
 
-            // 2. Thermal Status & Headroom Sparkline Row
+            // 2. GPU & NPU Hardware Accelerators Sparkline Row
+            MiniHudSparklineCard(
+                title = "GPU & NPU (${snap.gpu.driverName} · ${snap.npu.driverName})",
+                primaryValue = String.format(
+                    Locale.US,
+                    "GPU %d%% (%d MHz) · NPU %d%%",
+                    (snap.gpu.utilizationFraction * 100f).roundToInt(),
+                    snap.gpu.actualFreqMhz,
+                    (snap.npu.utilizationFraction * 100f).roundToInt(),
+                ),
+                subValue = String.format(
+                    Locale.US,
+                    "GPU %s · NPU %s (%d MHz max)",
+                    snap.gpu.scalingStateLabel,
+                    snap.npu.scalingStateLabel,
+                    snap.npu.maxFreqMhz,
+                ),
+                samples = hist.gpuLoadSamples,
+                lineColor = cs.tertiary,
+                maxCeiling = 100f,
+                cardAlpha = cardAlpha,
+            )
+
+            // 3. Thermal Status & Headroom Sparkline Row
             MiniHudSparklineCard(
                 title = "THERMAL (${snap.thermalLevel.label})",
                 primaryValue = formatTemp(snap.primaryCpuTempCelsius, state.useFahrenheit),
@@ -1210,6 +1233,136 @@ private fun OverviewThermalsTab(state: CorewatchUiState, vm: CorewatchViewModel)
                             modifier = Modifier.widthIn(min = 215.dp),
                         )
                     }
+                }
+            }
+        }
+
+        // GPU & NPU Hardware Accelerators (60s)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = cs.surfaceContainer,
+                modifier = Modifier.weight(1f).testTag("gpu_accelerator_card"),
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Outlined.Speed, contentDescription = null, tint = cs.secondary, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("GPU Accelerator (60s)", style = MaterialTheme.typography.titleMedium)
+                        }
+                        Text(
+                            text = String.format(
+                                Locale.US,
+                                "%d%% · %d MHz",
+                                (snap.gpu.utilizationFraction * 100f).roundToInt(),
+                                snap.gpu.actualFreqMhz,
+                            ),
+                            style = CorewatchMonoTypography.metricLarge,
+                            color = cs.secondary,
+                        )
+                    }
+                    Text(
+                        text = "${snap.gpu.deviceName} (${snap.gpu.driverName}) · State: ${snap.gpu.scalingStateLabel} · Profile: ${snap.gpu.powerProfile}",
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurface,
+                    )
+                    Text(
+                        text = String.format(
+                            Locale.US,
+                            "Target: %d MHz · Range: %d–%d MHz (RPe %d MHz) · Throttle: %s",
+                            snap.gpu.requestedFreqMhz,
+                            snap.gpu.minFreqMhz,
+                            snap.gpu.maxFreqMhz,
+                            snap.gpu.efficientFreqMhz,
+                            snap.gpu.throttleSummary,
+                        ),
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = if (snap.gpu.isThrottled) cs.error else cs.onSurfaceVariant,
+                    )
+                    LinearProgressIndicator(
+                        progress = { snap.gpu.utilizationFraction.coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape),
+                        color = if (snap.gpu.isThrottled) cs.error else cs.secondary,
+                        trackColor = cs.surfaceContainerHighest,
+                    )
+                    SparklineCanvas(
+                        samples = hist.gpuLoadSamples,
+                        lineColor = cs.secondary,
+                        gridColor = cs.outlineVariant.copy(alpha = 0.4f),
+                        minFloor = 0f,
+                        maxCeiling = 100f,
+                        modifier = Modifier.fillMaxWidth().height(56.dp),
+                    )
+                }
+            }
+
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = cs.surfaceContainer,
+                modifier = Modifier.weight(1f).testTag("npu_accelerator_card"),
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Outlined.Memory, contentDescription = null, tint = cs.tertiary, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("NPU Accelerator (60s)", style = MaterialTheme.typography.titleMedium)
+                        }
+                        Text(
+                            text = String.format(
+                                Locale.US,
+                                "%d%% · %d / %d MHz",
+                                (snap.npu.utilizationFraction * 100f).roundToInt(),
+                                snap.npu.currentFreqMhz,
+                                snap.npu.maxFreqMhz,
+                            ),
+                            style = CorewatchMonoTypography.metricLarge,
+                            color = cs.tertiary,
+                        )
+                    }
+                    Text(
+                        text = "${snap.npu.deviceName} (${snap.npu.driverName} ${snap.npu.firmwareVersion}) · State: ${snap.npu.scalingStateLabel}",
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurface,
+                    )
+                    Text(
+                        text = String.format(
+                            Locale.US,
+                            "Max DPU Clock: %d MHz · Contexts: %d · Heartbeat: %d · Peak: %.1f%%",
+                            snap.npu.maxFreqMhz,
+                            snap.npu.maxContexts,
+                            snap.npu.engineHeartbeat,
+                            hist.npuLoadPeak,
+                        ),
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurfaceVariant,
+                    )
+                    LinearProgressIndicator(
+                        progress = { snap.npu.utilizationFraction.coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape),
+                        color = cs.tertiary,
+                        trackColor = cs.surfaceContainerHighest,
+                    )
+                    SparklineCanvas(
+                        samples = hist.npuLoadSamples,
+                        lineColor = cs.tertiary,
+                        gridColor = cs.outlineVariant.copy(alpha = 0.4f),
+                        minFloor = 0f,
+                        maxCeiling = 100f,
+                        modifier = Modifier.fillMaxWidth().height(56.dp),
+                    )
                 }
             }
         }

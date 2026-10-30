@@ -311,4 +311,86 @@ class CorewatchDataUnitTest {
         val toggledOff = CaffeinePolicy.toggleQuick(toggledOn, 6_000L)
         assertEquals(CaffeineDuration.Off, toggledOff.duration)
     }
+
+    @Test
+    fun parseGpuAndNpuTelemetryAndAccelIoctlBridgeCoverAllStates() {
+        val idleGpu = SysfsParsers.parseGpuTelemetry(
+            attrs = mapOf(
+                "act_freq" to "0",
+                "cur_freq" to "800",
+                "min_freq" to "800",
+                "max_freq" to "2500",
+                "rp0_freq" to "2500",
+                "rpe_freq" to "850",
+                "rpn_freq" to "100",
+                "power_profile" to "[base]    power_saving",
+                "throttle_status" to "0",
+            ),
+            driverName = "xe",
+            deviceName = "Intel Xe2 Graphics",
+            activeResidencyFraction = 0.01f,
+        )
+        assertEquals("rc6-sleep", idleGpu.scalingStateLabel)
+        assertEquals("base", idleGpu.powerProfile)
+        assertFalse(idleGpu.isThrottled)
+        assertEquals("Nominal", idleGpu.throttleSummary)
+
+        val throttledGpu = SysfsParsers.parseGpuTelemetry(
+            attrs = mapOf(
+                "act_freq" to "1800000",
+                "cur_freq" to "2000000",
+                "max_freq" to "2500000",
+                "throttle_status" to "1",
+                "reason_pl1" to "1",
+                "reason_thermal" to "1",
+            ),
+            driverName = "xe",
+            deviceName = "Intel Xe2 Graphics",
+            activeResidencyFraction = null,
+        )
+        assertTrue(throttledGpu.isThrottled)
+        assertEquals("throttled", throttledGpu.scalingStateLabel)
+        assertEquals("PL1, THERMAL", throttledGpu.throttleSummary)
+        assertEquals(0.72f, throttledGpu.utilizationFraction, 0.02f)
+
+        val drmVer = AccelIoctlBridge.parseDrmVersionString("intel_vpu|Driver for Intel NPU|1.0.0")
+        assertNotNull(drmVer)
+        assertEquals("intel_vpu", drmVer!!.driverName)
+        assertNull(AccelIoctlBridge.parseDrmVersionString("malformed"))
+
+        val ivpuParams = AccelIoctlBridge.parseIvpuParamsArray(
+            longArrayOf(0xB03EL, 7L, 2_000_000_000L, 64L, 0x00030025L, 42L, 3L),
+        )
+        assertNotNull(ivpuParams)
+        assertEquals("0xB03E", ivpuParams!!.deviceIdHex)
+        assertEquals(2000, ivpuParams.maxClockMhz)
+        assertEquals("v3.37", ivpuParams.firmwareVersionLabel)
+        assertNull(AccelIoctlBridge.parseIvpuParamsArray(longArrayOf(1L, 2L)))
+
+        val idleNpu = SysfsParsers.parseNpuTelemetry(
+            attrs = emptyMap(),
+            drmVersion = drmVer,
+            ivpuParams = ivpuParams,
+            busyDeltaFraction = 0f,
+            heartbeatActive = false,
+        )
+        assertEquals("d3cold-sleep", idleNpu.scalingStateLabel)
+        assertEquals(2000, idleNpu.maxFreqMhz)
+        assertEquals(0, idleNpu.currentFreqMhz)
+
+        val activeNpu = SysfsParsers.parseNpuTelemetry(
+            attrs = mapOf(
+                "npu_current_frequency_mhz" to "1650",
+                "npu_max_frequency_mhz" to "2000",
+                "npu_memory_utilization" to "67108864",
+            ),
+            drmVersion = drmVer,
+            ivpuParams = ivpuParams,
+            busyDeltaFraction = 0.75f,
+            heartbeatActive = true,
+        )
+        assertEquals("turbo", activeNpu.scalingStateLabel)
+        assertEquals(1650, activeNpu.currentFreqMhz)
+        assertEquals(0.75f, activeNpu.utilizationFraction, 0.01f)
+    }
 }

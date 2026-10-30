@@ -30,6 +30,8 @@ class TelemetryCollector(
     private val thermalSysfsRoot: File = File("/sys/class/thermal"),
     private val hwmonSysfsRoot: File = File("/sys/class/hwmon"),
     private val procMemInfoFile: File = File("/proc/meminfo"),
+    private val drmSysfsRoot: File = File("/sys/class/drm"),
+    private val accelSysfsRoot: File = File("/sys/class/accel"),
 ) {
     private var lastNetSampleElapsedMs: Long = 0L
     private var lastRxBytes: Long = -1L
@@ -39,6 +41,16 @@ class TelemetryCollector(
     private var discoveredCoreIndices: List<Int>? = null
     private val cachedStaticCoreAttrs = HashMap<Int, Map<String, String>>()
     private val cachedCpuIdleFiles = HashMap<Int, List<File>>()
+    private var lastGpuSampleElapsedMs: Long = 0L
+    private var lastGpuIdleTimeMs: Long = -1L
+    private var cachedGpuDrmVersion: DrmVersionInfo? = null
+    private var gpuDrmVersionProbed: Boolean = false
+    private var lastNpuSampleElapsedMs: Long = 0L
+    private var lastNpuBusyTimeUs: Long = -1L
+    private var lastNpuHeartbeat: Long = -1L
+    private var cachedNpuDrmVersion: DrmVersionInfo? = null
+    private var cachedIvpuStaticParams: IvpuParamInfo? = null
+    private var npuDrmProbed: Boolean = false
     private var thermalSysfsReadable: Boolean? = null
     private var hwmonSysfsReadable: Boolean? = null
 
@@ -51,6 +63,8 @@ class TelemetryCollector(
         val thermalLevel = readThermalLevel(pm)
         val battery = readBattery(bm)
         val cpuCores = readCpuCores(nowElapsedMs)
+        val gpu = readGpu(nowElapsedMs)
+        val npu = readNpu(nowElapsedMs)
         val headroom = readThermalHeadroom(pm, thermalLevel, battery.temperatureCelsius)
         val thermalSensors = readThermalSensors(battery.temperatureCelsius, headroom, cpuCores)
         val memory = readMemory(am)
@@ -74,6 +88,8 @@ class TelemetryCollector(
             thermalLevel = thermalLevel,
             thermalHeadroom = headroom,
             cpuCores = cpuCores,
+            gpu = gpu,
+            npu = npu,
             thermalSensors = thermalSensors,
             battery = battery,
             memory = memory,
@@ -402,6 +418,129 @@ class TelemetryCollector(
         lastRxBytes = rx
         lastTxBytes = tx
         return NetworkThroughput(rxMbps = rxMbps, txMbps = txMbps, totalRxBytes = rx, totalTxBytes = tx)
+    }
+
+    private fun readGpu(nowElapsedMs: Long): GpuTelemetrySnapshot {
+        if (!gpuDrmVersionProbed) {
+            gpuDrmVersionProbed = true
+            cachedGpuDrmVersion = AccelIoctlBridge.queryDrmVersion("/dev/dri/renderD128")
+                ?: AccelIoctlBridge.queryDrmVersion("/dev/dri/card0")
+        }
+        val attrs = HashMap<String, String>()
+        var curIdleMs: Long? = null
+
+        val xeFreqDir = File(drmSysfsRoot, "card0/device/tile0/gt0/freq0")
+        val xeIdleFile = File(drmSysfsRoot, "card0/device/tile0/gt0/gtidle/idle_residency_ms")
+        val i915GtDir = File(drmSysfsRoot, "card0/gt/gt0")
+
+        if (xeFreqDir.isDirectory) {
+            for (name in listOf("act_freq", "cur_freq", "min_freq", "max_freq", "rp0_freq", "rpa_freq", "rpe_freq", "rpn_freq", "power_profile")) {
+                val v = readSmallFile(File(xeFreqDir, name))
+                if (v != null) attrs[name] = v
+            }
+            val thrDir = File(xeFreqDir, "throttle")
+            if (thrDir.isDirectory) {
+                readSmallFile(File(thrDir, "status"))?.let { attrs["throttle_status"] = it }
+                for (r in listOf("reason_pl1", "reason_pl2", "reason_pl4", "reason_prochot", "reason_ratl", "reason_thermal", "reason_vr_edc", "reason_vr_thermalert")) {
+                    readSmallFile(File(thrDir, r))?.let { attrs[r] = it }
+                }
+            }
+            curIdleMs = readSmallFile(xeIdleFile)?.toLongOrNull()
+        } else if (i915GtDir.isDirectory) {
+            readSmallFile(File(i915GtDir, "rps_act_freq_mhz"))?.let { attrs["act_freq"] = it }
+            readSmallFile(File(i915GtDir, "rps_cur_freq_mhz"))?.let { attrs["cur_freq"] = it }
+            readSmallFile(File(i915GtDir, "rps_min_freq_mhz"))?.let { attrs["min_freq"] = it }
+            readSmallFile(File(i915GtDir, "rps_max_freq_mhz"))?.let { attrs["max_freq"] = it }
+            readSmallFile(File(i915GtDir, "rps_RP0_freq_mhz"))?.let { attrs["rp0_freq"] = it }
+            readSmallFile(File(i915GtDir, "rps_RP1_freq_mhz"))?.let { attrs["rpe_freq"] = it }
+            readSmallFile(File(i915GtDir, "rps_RPn_freq_mhz"))?.let { attrs["rpn_freq"] = it }
+            curIdleMs = readSmallFile(File(i915GtDir, "rc6_residency_ms"))?.toLongOrNull()
+        }
+
+        val dtMs = nowElapsedMs - lastGpuSampleElapsedMs
+        val activeResidency: Float? = if (
+            lastGpuSampleElapsedMs > 0L &&
+            dtMs in 50L..30_000L &&
+            curIdleMs != null &&
+            lastGpuIdleTimeMs >= 0L &&
+            curIdleMs >= lastGpuIdleTimeMs
+        ) {
+            val deltaIdleMs = curIdleMs - lastGpuIdleTimeMs
+            (1.0 - (deltaIdleMs.toDouble() / dtMs.toDouble())).toFloat().coerceIn(0f, 1f)
+        } else if (curIdleMs != null && attrs["act_freq"]?.trim() == "0") {
+            0f
+        } else {
+            null
+        }
+
+        if (curIdleMs != null) {
+            lastGpuSampleElapsedMs = nowElapsedMs
+            lastGpuIdleTimeMs = curIdleMs
+        }
+
+        val driver = cachedGpuDrmVersion?.driverName ?: "xe"
+        val desc = cachedGpuDrmVersion?.description ?: "Intel Xe2 Graphics"
+        return SysfsParsers.parseGpuTelemetry(
+            attrs = attrs,
+            driverName = driver,
+            deviceName = desc,
+            activeResidencyFraction = activeResidency,
+        )
+    }
+
+    private fun readNpu(nowElapsedMs: Long): NpuTelemetrySnapshot {
+        if (!npuDrmProbed) {
+            npuDrmProbed = true
+            cachedNpuDrmVersion = AccelIoctlBridge.queryDrmVersion("/dev/accel0")
+            cachedIvpuStaticParams = AccelIoctlBridge.queryIvpuParams("/dev/accel0", heartbeatOnly = false)
+        } else if (cachedIvpuStaticParams != null) {
+            val hbUpdate = AccelIoctlBridge.queryIvpuParams("/dev/accel0", heartbeatOnly = true)
+            if (hbUpdate != null) {
+                cachedIvpuStaticParams = cachedIvpuStaticParams!!.copy(engineHeartbeat = hbUpdate.engineHeartbeat)
+            }
+        }
+
+        val attrs = HashMap<String, String>()
+        val accelDevDir = File(accelSysfsRoot, "accel0/device")
+        for (name in listOf("npu_busy_time_us", "npu_current_frequency_mhz", "npu_max_frequency_mhz", "npu_memory_utilization")) {
+            readSmallFile(File(accelDevDir, name))?.let { attrs[name] = it }
+        }
+        val freqSubDir = File(accelDevDir, "freq")
+        for (name in listOf("current_freq", "hw_max_freq", "hw_min_freq", "hw_efficient_freq")) {
+            readSmallFile(File(freqSubDir, name))?.let { attrs[name] = it }
+        }
+
+        val curBusyUs = attrs["npu_busy_time_us"]?.toLongOrNull()
+        val dtUs = (nowElapsedMs - lastNpuSampleElapsedMs) * 1_000L
+        val busyFraction: Float? = if (
+            lastNpuSampleElapsedMs > 0L &&
+            dtUs in 50_000L..30_000_000L &&
+            curBusyUs != null &&
+            lastNpuBusyTimeUs >= 0L &&
+            curBusyUs >= lastNpuBusyTimeUs
+        ) {
+            val deltaBusyUs = curBusyUs - lastNpuBusyTimeUs
+            (deltaBusyUs.toDouble() / dtUs.toDouble()).toFloat().coerceIn(0f, 1f)
+        } else {
+            null
+        }
+
+        val curHeartbeat = cachedIvpuStaticParams?.engineHeartbeat ?: 0L
+        val heartbeatActive = lastNpuHeartbeat >= 0L && curHeartbeat > lastNpuHeartbeat
+
+        lastNpuSampleElapsedMs = nowElapsedMs
+        if (curBusyUs != null) {
+            lastNpuBusyTimeUs = curBusyUs
+        }
+        lastNpuHeartbeat = curHeartbeat
+
+        return SysfsParsers.parseNpuTelemetry(
+            attrs = attrs,
+            drmVersion = cachedNpuDrmVersion,
+            ivpuParams = cachedIvpuStaticParams,
+            busyDeltaFraction = busyFraction,
+            heartbeatActive = heartbeatActive,
+        )
     }
 
     private fun readSmallFile(file: File, maxBytes: Int = 256): String? {

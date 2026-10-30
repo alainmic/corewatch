@@ -187,7 +187,7 @@ class CorewatchFuzzTest {
             assertTrue(md.startsWith("### Corewatch Hardware & Thermal Diagnostic Snapshot"))
             // Every table row must have balanced pipe delimiters
             val tableLines = md.lines().filter { it.startsWith("|") }
-            assertEqualsCount(10, tableLines.size)
+            assertEqualsCount(12, tableLines.size)
             for (line in tableLines) {
                 assertEqualsCount(3, line.count { it == '|' })
             }

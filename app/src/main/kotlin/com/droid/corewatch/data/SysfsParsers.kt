@@ -87,6 +87,62 @@ data class MemorySnapshot(
         get() = if (swapTotalBytes <= 0L) 0f else (swapUsedBytes.toDouble() / swapTotalBytes.toDouble()).toFloat().coerceIn(0f, 1f)
 }
 
+data class GpuTelemetrySnapshot(
+    val driverName: String = "xe",
+    val deviceName: String = "Intel Xe2 Graphics",
+    val actualFreqMhz: Int = 0,
+    val requestedFreqMhz: Int = 800,
+    val minFreqMhz: Int = 100,
+    val efficientFreqMhz: Int = 850,
+    val maxFreqMhz: Int = 2500,
+    val activeResidencyFraction: Float? = null,
+    val powerProfile: String = "power_saving",
+    val isThrottled: Boolean = false,
+    val throttleReasons: List<String> = emptyList(),
+) {
+    val utilizationFraction: Float
+        get() {
+            if (activeResidencyFraction != null) return activeResidencyFraction.coerceIn(0f, 1f)
+            if (maxFreqMhz <= 0) return 0f
+            return (actualFreqMhz.toFloat() / maxFreqMhz.toFloat()).coerceIn(0f, 1f)
+        }
+
+    val scalingStateLabel: String
+        get() = when {
+            isThrottled -> "throttled"
+            actualFreqMhz == 0 && utilizationFraction < 0.05f -> "rc6-sleep"
+            utilizationFraction >= 0.62f -> "turbo"
+            utilizationFraction >= 0.25f -> "balanced"
+            else -> "powersave"
+        }
+
+    val throttleSummary: String
+        get() = if (!isThrottled || throttleReasons.isEmpty()) "Nominal" else throttleReasons.joinToString(", ")
+}
+
+data class NpuTelemetrySnapshot(
+    val driverName: String = "intel_vpu",
+    val deviceName: String = "Intel NPU",
+    val currentFreqMhz: Int = 0,
+    val maxFreqMhz: Int = 2000,
+    val activeUtilizationFraction: Float = 0f,
+    val engineHeartbeat: Long = 0L,
+    val maxContexts: Int = 64,
+    val firmwareVersion: String = "v3.0",
+    val memoryUsedBytes: Long = 0L,
+) {
+    val utilizationFraction: Float
+        get() = activeUtilizationFraction.coerceIn(0f, 1f)
+
+    val scalingStateLabel: String
+        get() = when {
+            utilizationFraction >= 0.62f -> "turbo"
+            utilizationFraction >= 0.15f -> "active"
+            currentFreqMhz > 0 && utilizationFraction > 0.01f -> "balanced"
+            else -> "d3cold-sleep"
+        }
+}
+
 /**
  * Pure, exception-safe parsers for `/sys/devices/system/cpu/cpufreq`, `/sys/class/thermal`,
  * `/sys/class/hwmon`, and `/proc/meminfo`.
@@ -255,5 +311,135 @@ object SysfsParsers {
         )
     }
 
+    /**
+     * Parses GPU frequency, RC6 idle residency, power profile, and throttle flags from Linux DRM
+     * (`xe` / `i915` `/sys/class/drm/card0/device/tile0/gt0/...`) or `/sys/class/devfreq`.
+     */
+    fun parseGpuTelemetry(
+        attrs: Map<String, String>,
+        driverName: String = "xe",
+        deviceName: String = "Intel Xe2 Graphics",
+        activeResidencyFraction: Float? = null,
+    ): GpuTelemetrySnapshot {
+        val rawMax = parseFreqToMhz(attrs["max_freq"])
+            ?: parseFreqToMhz(attrs["rp0_freq"])
+            ?: 2500
+        val maxMhz = rawMax.coerceIn(100, 10_000)
+        val minMhz = (parseFreqToMhz(attrs["rpn_freq"])
+            ?: parseFreqToMhz(attrs["min_freq"])
+            ?: 100).coerceIn(0, maxMhz)
+        val effMhz = (parseFreqToMhz(attrs["rpe_freq"])
+            ?: ((minMhz + maxMhz) / 2)).coerceIn(minMhz, maxMhz)
+        val reqMhz = (parseFreqToMhz(attrs["cur_freq"]) ?: minMhz).coerceIn(0, maxMhz)
+        val actMhz = (parseFreqToMhz(attrs["act_freq"]) ?: reqMhz).coerceIn(0, maxMhz)
+
+        val profileRaw = attrs["power_profile"].orEmpty()
+        val selectedProfile = PROFILE_BRACKET_REGEX.find(profileRaw)?.groupValues?.getOrNull(1)
+            ?: profileRaw.trim().split(WHITESPACE_REGEX).lastOrNull()?.takeIf { it.isNotBlank() }
+            ?: "power_saving"
+
+        val reasons = ArrayList<String>()
+        val reasonKeys = listOf(
+            "reason_pl1" to "PL1",
+            "reason_pl2" to "PL2",
+            "reason_pl4" to "PL4",
+            "reason_prochot" to "PROCHOT",
+            "reason_ratl" to "RATL",
+            "reason_thermal" to "THERMAL",
+            "reason_vr_edc" to "VR_EDC",
+            "reason_vr_thermalert" to "VR_THERMALERT",
+        )
+        for ((k, label) in reasonKeys) {
+            if (attrs[k]?.trim() == "1") {
+                reasons += label
+            }
+        }
+        val statusThrottled = attrs["throttle_status"]?.trim() == "1" || reasons.isNotEmpty()
+
+        return GpuTelemetrySnapshot(
+            driverName = sanitizeSensorName(driverName, "gpu"),
+            deviceName = sanitizeSensorName(deviceName, "Integrated GPU"),
+            actualFreqMhz = actMhz,
+            requestedFreqMhz = reqMhz,
+            minFreqMhz = minMhz,
+            efficientFreqMhz = effMhz,
+            maxFreqMhz = maxMhz,
+            activeResidencyFraction = activeResidencyFraction?.coerceIn(0f, 1f),
+            powerProfile = sanitizeSensorName(selectedProfile, "power_saving"),
+            isThrottled = statusThrottled,
+            throttleReasons = reasons,
+        )
+    }
+
+    /**
+     * Parses NPU telemetry from `/sys/class/accel/accel0/device` attributes and/or `DRM_IOCTL_IVPU_GET_PARAM`
+     * parameters on `/dev/accel0`.
+     */
+    fun parseNpuTelemetry(
+        attrs: Map<String, String>,
+        drmVersion: DrmVersionInfo? = null,
+        ivpuParams: IvpuParamInfo? = null,
+        busyDeltaFraction: Float? = null,
+        heartbeatActive: Boolean = false,
+    ): NpuTelemetrySnapshot {
+        val driver = sanitizeSensorName(drmVersion?.driverName ?: attrs["driver"] ?: "intel_vpu", "npu")
+        val baseDesc = when {
+            ivpuParams != null && ivpuParams.deviceId > 0 ->
+                "Intel NPU (${ivpuParams.deviceIdHex} · Rev ${ivpuParams.revision})"
+            drmVersion != null && drmVersion.description.isNotBlank() ->
+                drmVersion.description
+            else -> "Neural Processing Unit"
+        }
+        val maxMhz = (parseFreqToMhz(attrs["npu_max_frequency_mhz"])
+            ?: parseFreqToMhz(attrs["hw_max_freq"])
+            ?: ivpuParams?.maxClockMhz?.takeIf { it > 0 }
+            ?: 2000).coerceIn(100, 10_000)
+
+        val sysfsCurMhz = parseFreqToMhz(attrs["npu_current_frequency_mhz"])
+            ?: parseFreqToMhz(attrs["current_freq"])
+
+        val activeFrac = when {
+            busyDeltaFraction != null -> busyDeltaFraction.coerceIn(0f, 1f)
+            heartbeatActive -> 0.55f
+            sysfsCurMhz != null && sysfsCurMhz > 0 -> (sysfsCurMhz.toFloat() / maxMhz.toFloat()).coerceIn(0f, 1f)
+            else -> 0f
+        }
+
+        val curMhz = when {
+            sysfsCurMhz != null -> sysfsCurMhz.coerceIn(0, maxMhz)
+            activeFrac > 0.01f -> ((maxMhz * activeFrac).roundToInt()).coerceIn(200, maxMhz)
+            else -> 0
+        }
+
+        val memBytes = attrs["npu_memory_utilization"]?.trim()?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+        val fwLabel = ivpuParams?.firmwareVersionLabel ?: drmVersion?.version?.let { "v$it" } ?: "v1.0"
+        val contexts = ivpuParams?.maxContexts?.takeIf { it > 0 } ?: 64
+        val heartbeat = ivpuParams?.engineHeartbeat ?: 0L
+
+        return NpuTelemetrySnapshot(
+            driverName = driver,
+            deviceName = sanitizeSensorName(baseDesc, "Intel NPU"),
+            currentFreqMhz = curMhz,
+            maxFreqMhz = maxMhz,
+            activeUtilizationFraction = activeFrac,
+            engineHeartbeat = heartbeat,
+            maxContexts = contexts,
+            firmwareVersion = sanitizeSensorName(fwLabel, "v1.0"),
+            memoryUsedBytes = memBytes,
+        )
+    }
+
+    private fun parseFreqToMhz(raw: String?): Int? {
+        if (raw.isNullOrBlank()) return null
+        val v = raw.trim().toLongOrNull() ?: return null
+        if (v < 0L) return null
+        return when {
+            v >= 100_000_000L -> (v / 1_000_000L).toInt() // Hz -> MHz
+            v >= 100_000L -> (v / 1_000L).toInt() // kHz -> MHz
+            else -> v.toInt() // Already MHz
+        }
+    }
+
     private val WHITESPACE_REGEX = Regex("\\s+")
+    private val PROFILE_BRACKET_REGEX = Regex("\\[([^\\]]+)]")
 }

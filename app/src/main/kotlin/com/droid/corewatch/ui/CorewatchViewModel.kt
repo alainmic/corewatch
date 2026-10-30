@@ -44,6 +44,12 @@ data class TelemetryHistoryStats(
     val cpuLoadSamples: List<Float> = emptyList(),
     val cpuLoadPeak: Float = 0f,
     val cpuLoadAvg: Float = 0f,
+    val gpuLoadSamples: List<Float> = emptyList(),
+    val gpuLoadPeak: Float = 0f,
+    val gpuLoadAvg: Float = 0f,
+    val npuLoadSamples: List<Float> = emptyList(),
+    val npuLoadPeak: Float = 0f,
+    val npuLoadAvg: Float = 0f,
     val thermalCelsiusSamples: List<Float> = emptyList(),
     val thermalPeakCelsius: Float = 0f,
     val batteryWattsSamples: List<Float> = emptyList(),
@@ -70,6 +76,8 @@ data class CorewatchUiState(
 class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
     private val collector = TelemetryCollector(app.applicationContext)
     private val cpuRing = FloatRingBuffer(60)
+    private val gpuRing = FloatRingBuffer(60)
+    private val npuRing = FloatRingBuffer(60)
     private val thermalRing = FloatRingBuffer(60)
     private val wattsRing = FloatRingBuffer(60)
     private val memRing = FloatRingBuffer(60)
@@ -104,6 +112,8 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
         CaffeineController.syncWakeLock(ctx, snap.caffeineEvaluation.isActive)
 
         cpuRing.push(snap.avgCpuUtilizationFraction * 100f)
+        gpuRing.push(snap.gpu.utilizationFraction * 100f)
+        npuRing.push(snap.npu.utilizationFraction * 100f)
         thermalRing.push(snap.primaryCpuTempCelsius)
         wattsRing.push(abs(snap.battery.watts))
         memRing.push(snap.memory.usedFraction * 100f)
@@ -113,6 +123,12 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
             cpuLoadSamples = cpuRing.toList(),
             cpuLoadPeak = cpuRing.maxOrNull() ?: 0f,
             cpuLoadAvg = cpuRing.average(),
+            gpuLoadSamples = gpuRing.toList(),
+            gpuLoadPeak = gpuRing.maxOrNull() ?: 0f,
+            gpuLoadAvg = gpuRing.average(),
+            npuLoadSamples = npuRing.toList(),
+            npuLoadPeak = npuRing.maxOrNull() ?: 0f,
+            npuLoadAvg = npuRing.average(),
             thermalCelsiusSamples = thermalRing.toList(),
             thermalPeakCelsius = thermalRing.maxOrNull() ?: snap.primaryCpuTempCelsius,
             batteryWattsSamples = wattsRing.toList(),
@@ -214,6 +230,8 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
 
     fun resetSessionHistory() {
         cpuRing.clear()
+        gpuRing.clear()
+        npuRing.clear()
         thermalRing.clear()
         wattsRing.clear()
         memRing.clear()

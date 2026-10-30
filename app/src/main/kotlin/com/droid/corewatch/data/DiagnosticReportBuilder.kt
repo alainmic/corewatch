@@ -30,6 +30,8 @@ data class SystemTelemetrySnapshot(
     val thermalLevel: ThermalLevel = ThermalLevel.NONE,
     val thermalHeadroom: Float = 0.25f,
     val cpuCores: List<CpuCoreReading> = emptyList(),
+    val gpu: GpuTelemetrySnapshot = GpuTelemetrySnapshot(),
+    val npu: NpuTelemetrySnapshot = NpuTelemetrySnapshot(),
     val thermalSensors: List<ThermalSensorReading> = emptyList(),
     val battery: BatterySnapshot = BatteryPowerCalculator.computeSnapshot(
         levelPercent = 85,
@@ -123,6 +125,33 @@ object DiagnosticReportBuilder {
             appendLine("| **OS Release** | `$os` |")
             appendLine("| **Thermal Status** | `${snapshot.thermalLevel.label}` (Headroom: `$headroomStr`, Peak: `$sensorSummary`) |")
             appendLine("| **CPU Scaling** | `$coreTopology` — Avg `${avgCpuPct}%`, Peak `${snapshot.maxCpuFreqMhz} MHz` |")
+            appendLine(
+                String.format(
+                    Locale.US,
+                    "| **GPU Accelerator** | `%s` (`%s`) — `%d%%` active (`%d / %d MHz`, `%s`, Throttle: `%s`) |",
+                    SysfsParsers.sanitizeSensorName(snapshot.gpu.deviceName, "GPU"),
+                    SysfsParsers.sanitizeSensorName(snapshot.gpu.driverName, "drm"),
+                    (snapshot.gpu.utilizationFraction * 100f).roundToInt(),
+                    snapshot.gpu.actualFreqMhz,
+                    snapshot.gpu.maxFreqMhz,
+                    snapshot.gpu.scalingStateLabel,
+                    SysfsParsers.sanitizeSensorName(snapshot.gpu.throttleSummary, "Nominal"),
+                ),
+            )
+            appendLine(
+                String.format(
+                    Locale.US,
+                    "| **NPU Accelerator** | `%s` (`%s`, `%s`) — `%d%%` active (`%d / %d MHz`, `%s`, `%d` contexts) |",
+                    SysfsParsers.sanitizeSensorName(snapshot.npu.deviceName, "NPU"),
+                    SysfsParsers.sanitizeSensorName(snapshot.npu.driverName, "accel"),
+                    SysfsParsers.sanitizeSensorName(snapshot.npu.firmwareVersion, "v1.0"),
+                    (snapshot.npu.utilizationFraction * 100f).roundToInt(),
+                    snapshot.npu.currentFreqMhz,
+                    snapshot.npu.maxFreqMhz,
+                    snapshot.npu.scalingStateLabel,
+                    snapshot.npu.maxContexts,
+                ),
+            )
             appendLine(
                 String.format(
                     Locale.US,

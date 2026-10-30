@@ -595,22 +595,63 @@ class CorewatchUiTest {
                 """.trimIndent(),
             )
 
+            val drmRoot = java.io.File(tempRoot, "drm").apply { mkdirs() }
+            val xeFreq = java.io.File(drmRoot, "card0/device/tile0/gt0/freq0").apply { mkdirs() }
+            java.io.File(xeFreq, "act_freq").writeText("1200\n")
+            java.io.File(xeFreq, "cur_freq").writeText("1250\n")
+            java.io.File(xeFreq, "min_freq").writeText("800\n")
+            java.io.File(xeFreq, "max_freq").writeText("2500\n")
+            java.io.File(xeFreq, "rp0_freq").writeText("2500\n")
+            java.io.File(xeFreq, "rpe_freq").writeText("850\n")
+            java.io.File(xeFreq, "rpn_freq").writeText("100\n")
+            java.io.File(xeFreq, "power_profile").writeText("[base] power_saving\n")
+            val xeThr = java.io.File(xeFreq, "throttle").apply { mkdirs() }
+            java.io.File(xeThr, "status").writeText("0\n")
+            val xeIdle = java.io.File(drmRoot, "card0/device/tile0/gt0/gtidle").apply { mkdirs() }
+            val gpuIdleTime = java.io.File(xeIdle, "idle_residency_ms")
+            gpuIdleTime.writeText("5000\n")
+
+            val accelRoot = java.io.File(tempRoot, "accel").apply { mkdirs() }
+            val npuDev = java.io.File(accelRoot, "accel0/device").apply { mkdirs() }
+            val npuBusyTime = java.io.File(npuDev, "npu_busy_time_us")
+            npuBusyTime.writeText("100000\n")
+            java.io.File(npuDev, "npu_current_frequency_mhz").writeText("1400\n")
+            java.io.File(npuDev, "npu_max_frequency_mhz").writeText("2000\n")
+
+            com.droid.corewatch.data.AccelIoctlBridge.testDrmVersionProvider = { path ->
+                if (path.contains("accel")) "intel_vpu|Driver for Intel NPU|1.0.0"
+                else "xe|Intel Xe2 Graphics|1.1.0"
+            }
+            var mockHeartbeat = 10L
+            com.droid.corewatch.data.AccelIoctlBridge.testIvpuParamsProvider = { _, _ ->
+                longArrayOf(0xB03EL, 7L, 2_000_000_000L, 64L, 0x00030025L, mockHeartbeat, 1L)
+            }
+
             val populatedCollector = com.droid.corewatch.data.TelemetryCollector(
                 context = app,
                 cpuSysfsRoot = cpuRoot,
                 thermalSysfsRoot = thermalRoot,
                 hwmonSysfsRoot = hwmonRoot,
                 procMemInfoFile = memInfo,
+                drmSysfsRoot = drmRoot,
+                accelSysfsRoot = accelRoot,
             )
             val snap1 = populatedCollector.sample(CaffeineConfig(), nowElapsedMs = 1_000L)
             // Advance 1,000 ms (1,000,000 us): cpu0 sleeps 940,000 us (6% active), cpu1 sleeps 950,000 us (5% active)
             cpu0IdleTime.writeText("1940000\n")
             cpu1IdleTime.writeText("2950000\n")
+            // GPU sleeps 750 ms out of 1,000 ms -> 25% active
+            gpuIdleTime.writeText("5750\n")
+            // NPU busy 400,000 us out of 1,000,000 us -> 40% active
+            npuBusyTime.writeText("500000\n")
+            mockHeartbeat = 25L
             val snap2 = populatedCollector.sample(CaffeineConfig(), nowElapsedMs = 2_000L)
             assertEquals(2, snap1.cpuCores.size)
             assertEquals(0.06f, snap2.cpuCores[0].utilizationFraction, 0.01f)
             assertEquals(0.05f, snap2.cpuCores[1].utilizationFraction, 0.01f)
             assertEquals("powersave", snap2.cpuCores[1].scalingStateLabel)
+            assertEquals(0.25f, snap2.gpu.utilizationFraction, 0.01f)
+            assertEquals(0.40f, snap2.npu.utilizationFraction, 0.01f)
             assertTrue(snap1.thermalSensors.any { it.celsius > 50f })
             assertTrue(snap2.memory.totalBytes > 0L)
 
@@ -628,6 +669,8 @@ class CorewatchUiTest {
             assertEquals(2, fallbackSnap.thermalSensors.size)
             assertTrue(fallbackSnap.memory.totalBytes > 0L)
         } finally {
+            com.droid.corewatch.data.AccelIoctlBridge.testDrmVersionProvider = null
+            com.droid.corewatch.data.AccelIoctlBridge.testIvpuParamsProvider = null
             tempRoot.deleteRecursively()
         }
     }
