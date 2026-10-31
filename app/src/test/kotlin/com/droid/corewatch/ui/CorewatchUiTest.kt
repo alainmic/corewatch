@@ -107,7 +107,7 @@ class CorewatchUiTest {
         composeRule.onNodeWithTag("tab_4").performClick()
         assertEquals(CorewatchTab.NetworkBluetooth, vm.state.value.activeTab)
         composeRule.onNodeWithTag("wifi_link_card").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithTag("ethernet_link_card").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("ethernet_link_card").assertDoesNotExist()
         composeRule.onNodeWithTag("network_throughput_card").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("Network Throughput (TrafficStats RX / TX)").assertIsDisplayed()
         composeRule.onNodeWithTag("wifi_regulatory_card").performScrollTo().assertIsDisplayed()
@@ -821,7 +821,8 @@ class CorewatchUiTest {
         composeRule.onNodeWithText("HFP / SCO VOICE").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("LE AUDIO (CIS / BIS)").performScrollTo().assertIsDisplayed()
 
-        // 3. Docked simultaneous Wi-Fi 7 (Standby) + Wired 2.5 GbE Ethernet (Primary) & 100BASE-TX ceiling warning
+        // 3. Undocked has no Wired Ethernet card; docking dynamically reveals Wired Ethernet beside Wi-Fi 7 (Standby)
+        composeRule.onNodeWithTag("ethernet_link_card").assertDoesNotExist()
         vm.setSnapshotForTesting(
             vm.state.value.snapshot.copy(
                 wifi = WifiTelemetrySnapshot(
@@ -864,10 +865,22 @@ class CorewatchUiTest {
         )
         composeRule.waitForIdle()
         composeRule.onNodeWithText("Wi-Fi Radio & Link").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("ethernet_link_card").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("Wired Ethernet Link").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("100 Mbps (100BASE-TX)").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("ethernet_bottleneck_warning").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("Default Route: Ethernet (eth1)").performScrollTo().assertIsDisplayed()
+
+        // Unplugging the Ethernet dock dynamically removes Wired Ethernet Link and expands Wi-Fi back to full width
+        vm.setSnapshotForTesting(
+            vm.state.value.snapshot.copy(
+                ethernet = EthernetTelemetrySnapshot(isConnected = false),
+                activeDefaultRouteSummary = "Wi-Fi (wlan0)",
+            ),
+        )
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("ethernet_link_card").assertDoesNotExist()
+        composeRule.onNodeWithTag("wifi_link_card").performScrollTo().assertIsDisplayed()
 
         // 4. Retail Mini-HUD without SYSTEM_ALERT_WINDOW shows "Pin Floating PiP" action chip
         composeRule.onNodeWithTag("btn_mini_hud").performClick()

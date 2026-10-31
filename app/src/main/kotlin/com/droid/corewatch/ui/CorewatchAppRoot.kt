@@ -2083,7 +2083,7 @@ private fun NetworkBluetoothTab(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (sideBySideLinks) {
+            if (eth.isConnected && sideBySideLinks) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -2105,11 +2105,13 @@ private fun NetworkBluetoothTab(
                     rssiSamples = hist.wifiSignalSamples,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                WiredEthernetLinkCard(
-                    eth = eth,
-                    ethMbpsSamples = hist.ethernetMbpsSamples,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                if (eth.isConnected) {
+                    WiredEthernetLinkCard(
+                        eth = eth,
+                        ethMbpsSamples = hist.ethernetMbpsSamples,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
 
             // Aggregate Network Throughput (TrafficStats RX / TX) Card across all active interfaces + VPN
@@ -2746,7 +2748,7 @@ private fun WiredEthernetLinkCard(
                     Icon(
                         Icons.Outlined.SettingsEthernet,
                         contentDescription = null,
-                        tint = if (eth.isConnected) cs.primary else cs.onSurfaceVariant,
+                        tint = cs.primary,
                         modifier = Modifier.size(17.dp),
                     )
                     Spacer(Modifier.width(6.dp))
@@ -2754,12 +2756,12 @@ private fun WiredEthernetLinkCard(
                 }
                 Surface(
                     shape = RoundedCornerShape(6.dp),
-                    color = if (eth.isConnected) cs.primaryContainer else cs.surfaceContainerHigh,
+                    color = cs.primaryContainer,
                 ) {
                     Text(
                         text = eth.linkSpeedTierLabel,
                         style = CorewatchMonoTypography.hudSmall,
-                        color = if (eth.isConnected) cs.onPrimaryContainer else cs.onSurfaceVariant,
+                        color = cs.onPrimaryContainer,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                     )
                 }
@@ -2773,7 +2775,7 @@ private fun WiredEthernetLinkCard(
                 Text(
                     text = "Link: ${eth.negotiatedSpeedSummary}",
                     style = CorewatchMonoTypography.hudValue,
-                    color = if (eth.isConnected) cs.primary else cs.onSurfaceVariant,
+                    color = cs.primary,
                 )
                 Text(
                     text = "Role: ${eth.routeRoleLabel}",
@@ -2790,7 +2792,6 @@ private fun WiredEthernetLinkCard(
             )
 
             // Per-Interface Wired Ethernet Throughput Strip (eth* / en*)
-            val ethIfaceDisplay = if (eth.isConnected) eth.interfaceName else "eth*"
             Surface(
                 shape = RoundedCornerShape(8.dp),
                 color = cs.surfaceContainerHigh,
@@ -2806,7 +2807,7 @@ private fun WiredEthernetLinkCard(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            text = "Ethernet Throughput ($ethIfaceDisplay)",
+                            text = "Ethernet Throughput (${eth.interfaceName})",
                             style = CorewatchMonoTypography.hudSmall,
                             color = cs.onSurfaceVariant,
                         )
@@ -2818,7 +2819,7 @@ private fun WiredEthernetLinkCard(
                                 eth.throughput.txMbps,
                             ),
                             style = CorewatchMonoTypography.hudValue,
-                            color = if (eth.isConnected) cs.primary else cs.onSurfaceVariant,
+                            color = cs.primary,
                         )
                     }
                     Text(
@@ -2837,29 +2838,21 @@ private fun WiredEthernetLinkCard(
             }
 
             Text(
-                text = if (eth.isConnected) {
-                    String.format(
-                        Locale.US,
-                        "Interface: %s (MTU %d) · %s · %s (%s)",
-                        eth.interfaceName,
-                        eth.mtu,
-                        eth.ipStackLabel,
-                        if (eth.isValidated) "Validated" else "Unvalidated",
-                        if (eth.isMetered) "Metered" else "Unmetered",
-                    )
-                } else {
-                    "Interface: None (No physical RJ45 / USB-C Ethernet dock detected)"
-                },
+                text = String.format(
+                    Locale.US,
+                    "Interface: %s (MTU %d) · %s · %s (%s)",
+                    eth.interfaceName,
+                    eth.mtu,
+                    eth.ipStackLabel,
+                    if (eth.isValidated) "Validated" else "Unvalidated",
+                    if (eth.isMetered) "Metered" else "Unmetered",
+                ),
                 style = CorewatchMonoTypography.hudSmall,
                 color = cs.onSurfaceVariant,
             )
 
             Text(
-                text = if (eth.isConnected) {
-                    "DNS: ${eth.dnsSummaryLabel} · Wake-on-LAN: ${if (eth.wakeOnLanSupported) "Supported" else "Unsupported"}"
-                } else {
-                    "DNS: N/A · Virtual VM/VPN bridges (avf_tap*, veth*, tun*) excluded"
-                },
+                text = "DNS: ${eth.dnsSummaryLabel} · Wake-on-LAN: ${if (eth.wakeOnLanSupported) "Supported" else "Unsupported"}",
                 style = CorewatchMonoTypography.hudSmall,
                 color = cs.onSurfaceVariant,
             )
@@ -2874,11 +2867,7 @@ private fun WiredEthernetLinkCard(
                 )
             } else {
                 Text(
-                    text = if (eth.isConnected) {
-                        "Carrier: IEEE 802.3 Full-Duplex · Dedicated Wired Link"
-                    } else {
-                        "Carrier: Link Down · Connect USB-C / Thunderbolt Ethernet for wired telemetry"
-                    },
+                    text = "Carrier: IEEE 802.3 Full-Duplex · Dedicated Wired Link",
                     style = CorewatchMonoTypography.hudSmall,
                     color = cs.onSurfaceVariant,
                 )
@@ -2894,13 +2883,11 @@ private fun WiredEthernetLinkCard(
                     style = CorewatchMonoTypography.hudSmall,
                     color = cs.onSurfaceVariant,
                 )
-                if (eth.isConnected) {
-                    Text(
-                        text = String.format(Locale.US, "%.2f Mbps", eth.throughput.rxMbps + eth.throughput.txMbps),
-                        style = CorewatchMonoTypography.hudSmall,
-                        color = cs.primary,
-                    )
-                }
+                Text(
+                    text = String.format(Locale.US, "%.2f Mbps", eth.throughput.rxMbps + eth.throughput.txMbps),
+                    style = CorewatchMonoTypography.hudSmall,
+                    color = cs.primary,
+                )
             }
 
             SparklineCanvas(
