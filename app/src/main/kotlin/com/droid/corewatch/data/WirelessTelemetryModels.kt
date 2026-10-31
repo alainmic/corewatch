@@ -7,9 +7,278 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 /**
- * Live Wi-Fi radio, PHY link speed, MAC frame counter, and per-interface (`wlan*`) throughput telemetry.
- * Collected using install-time `ACCESS_NETWORK_STATE` and `ACCESS_WIFI_STATE` permissions
- * without requiring `INTERNET` or `ACCESS_FINE_LOCATION`.
+ * Allowed vs. currently usable 20 MHz primary channels for a single Wi-Fi frequency band
+ * (`2.4 GHz`, `5 GHz`, or `6 GHz`) in the device's active regulatory domain.
+ */
+data class BandChannelSummary(
+    val bandLabel: String = "N/A",
+    val isHardwareSupported: Boolean = false,
+    val allowedCount: Int = 0,
+    val usableCount: Int = 0,
+    val maxBandwidthMhz: Int = 0,
+    val channelRangeSummary: String = "N/A",
+    val dfsChannelCount: Int = 0,
+    val pscChannelCount: Int = 0,
+    val subBandNote: String = "",
+) {
+    val countBadge: String
+        get() = when {
+            !isHardwareSupported -> "Unsupported"
+            allowedCount == 0 -> "0 Allowed (Reg-Blocked)"
+            usableCount == allowedCount -> "$usableCount / $allowedCount Usable"
+            else -> "$usableCount Usable ($allowedCount Reg)"
+        }
+}
+
+/**
+ * Hardware Wi-Fi radio capabilities, supported IEEE 802.11 generations, security features,
+ * concurrency modes, active ISO/802.11d regulatory region, and per-band allowed channel matrix.
+ */
+data class WifiRadioCapabilities(
+    val isCapabilitiesQueried: Boolean = false,
+    val hasNearbyWifiPermission: Boolean = false,
+    val channelQuerySucceeded: Boolean = false,
+    // Supported IEEE 802.11 Generations
+    val supports11beWifi7: Boolean = false,
+    val supports11axWifi6: Boolean = false,
+    val supports11acWifi5: Boolean = false,
+    val supports11nWifi4: Boolean = false,
+    val supports11abgLegacy: Boolean = false,
+    val supports11adWigig: Boolean = false,
+    // Supported Radio Frequency Bands
+    val supports24Ghz: Boolean = false,
+    val supports5Ghz: Boolean = false,
+    val supports6Ghz: Boolean = false,
+    val supports60Ghz: Boolean = false,
+    // Max Supported PHY Link Speed on Current Association (API 30+)
+    val maxTxLinkSpeedMbps: Int = 0,
+    val maxRxLinkSpeedMbps: Int = 0,
+    // Security & Authentication Capabilities
+    val supportsWpa3Sae: Boolean = false,
+    val supportsSaeH2e: Boolean = false,
+    val supportsSaePk: Boolean = false,
+    val supportsOwe: Boolean = false,
+    val supportsWpa3SuiteB192: Boolean = false,
+    val supportsTlsV13: Boolean = false,
+    val supportsTrustOnFirstUse: Boolean = false,
+    val supportsEasyConnectDpp: Boolean = false,
+    val supportsWpa2Personal: Boolean = false,
+    // Radio Concurrency & Roaming Capabilities
+    val supportsDualBandSimultaneous: Boolean = false,
+    val supportsMloTidToLinkMapping: Boolean = false,
+    val supportsMakeBeforeBreak: Boolean = false,
+    val supportsStaApConcurrency: Boolean = false,
+    val isScanThrottleEnabled: Boolean = true,
+    // Active Regulatory Domain / Country Code
+    val countryCode: String = "Unknown",
+    val countryCodeSource: String = "Unavailable",
+    // Per-Band Allowed & Usable Channel Summaries (API 34+ via NEARBY_WIFI_DEVICES neverForLocation)
+    val band24Ghz: BandChannelSummary = BandChannelSummary(bandLabel = "2.4 GHz"),
+    val band5Ghz: BandChannelSummary = BandChannelSummary(bandLabel = "5 GHz"),
+    val band6Ghz: BandChannelSummary = BandChannelSummary(bandLabel = "6 GHz"),
+) {
+    val maxGenerationLabel: String
+        get() = when {
+            supports11beWifi7 -> "Wi-Fi 7 (802.11be)"
+            supports11axWifi6 && supports6Ghz -> "Wi-Fi 6E (802.11ax)"
+            supports11axWifi6 -> "Wi-Fi 6 (802.11ax)"
+            supports11acWifi5 -> "Wi-Fi 5 (802.11ac)"
+            supports11nWifi4 -> "Wi-Fi 4 (802.11n)"
+            supports11abgLegacy -> "Legacy (802.11a/b/g)"
+            else -> "Unknown"
+        }
+
+    val supportedGenerationsSummary: String
+        get() {
+            val gens = ArrayList<String>(6)
+            if (supports11beWifi7) gens += "Wi-Fi 7 (11be)"
+            if (supports11axWifi6) gens += if (supports6Ghz) "Wi-Fi 6E/6 (11ax)" else "Wi-Fi 6 (11ax)"
+            if (supports11acWifi5) gens += "Wi-Fi 5 (11ac)"
+            if (supports11nWifi4) gens += "Wi-Fi 4 (11n)"
+            if (supports11abgLegacy) gens += "11a/b/g"
+            if (supports11adWigig) gens += "WiGig (11ad)"
+            return if (gens.isEmpty()) "Unknown" else gens.joinToString(" · ")
+        }
+
+    val supportedBandsSummary: String
+        get() {
+            val bands = ArrayList<String>(4)
+            if (supports24Ghz) bands += "2.4 GHz"
+            if (supports5Ghz) bands += "5 GHz"
+            if (supports6Ghz) bands += "6 GHz"
+            if (supports60Ghz) bands += "60 GHz"
+            val tier = when {
+                supports24Ghz && supports5Ghz && supports6Ghz -> " (Tri-Band)"
+                supports24Ghz && supports5Ghz -> " (Dual-Band)"
+                else -> ""
+            }
+            return if (bands.isEmpty()) "Unknown" else bands.joinToString(" · ") + tier
+        }
+
+    val maxPhySpeedSummary: String
+        get() = when {
+            maxTxLinkSpeedMbps > 0 && maxRxLinkSpeedMbps > 0 ->
+                String.format(Locale.US, "TX %,d Mbps · RX %,d Mbps", maxTxLinkSpeedMbps, maxRxLinkSpeedMbps)
+            maxTxLinkSpeedMbps > 0 -> String.format(Locale.US, "TX %,d Mbps", maxTxLinkSpeedMbps)
+            maxRxLinkSpeedMbps > 0 -> String.format(Locale.US, "RX %,d Mbps", maxRxLinkSpeedMbps)
+            else -> "Connect to AP to query"
+        }
+
+    val securityCapabilitiesSummary: String
+        get() {
+            val sec = ArrayList<String>(9)
+            if (supportsWpa3Sae) sec += "WPA3-SAE"
+            if (supportsSaeH2e) sec += "SAE-H2E"
+            if (supportsSaePk) sec += "SAE-PK"
+            if (supportsOwe) sec += "OWE"
+            if (supportsWpa3SuiteB192) sec += "WPA3-Ent 192-bit"
+            if (supportsTlsV13) sec += "EAP-TLS 1.3"
+            if (supportsTrustOnFirstUse) sec += "TOFU"
+            if (supportsEasyConnectDpp) sec += "DPP"
+            if (supportsWpa2Personal) sec += "WPA2"
+            return if (sec.isEmpty()) "Standard WPA2/WPA3" else sec.joinToString(" · ")
+        }
+
+    val concurrencySummary: String
+        get() {
+            val feats = ArrayList<String>(5)
+            if (supportsDualBandSimultaneous) feats += "DBS"
+            if (supportsMloTidToLinkMapping) feats += "MLO T2LM"
+            if (supportsMakeBeforeBreak) feats += "Make-Before-Break"
+            if (supportsStaApConcurrency) feats += "STA+AP"
+            feats += if (isScanThrottleEnabled) "Scan Throttle: On" else "Scan Throttle: Off"
+            return feats.joinToString(" · ")
+        }
+
+    val sixGhzRegulatoryWarning: String?
+        get() {
+            if (!supports6Ghz || !channelQuerySucceeded) return null
+            val cc = countryCode.trim().uppercase(Locale.US)
+            if (band6Ghz.allowedCount == 0) {
+                return when {
+                    cc.isEmpty() || cc == "00" || cc == "UNKNOWN" ->
+                        "6 GHz Hardware Present, 0 Channels Allowed — Regulatory domain is unresolved ('$countryCode' world safe-mode). Driver disables 6 GHz until an 802.11d country beacon, SIM, or country override sets a valid ISO region."
+                    cc == "CA" ->
+                        "6 GHz Hardware Present, 0 Channels Allowed in CA (Canada) — Kernel wireless-regdb / Intel LAR (Location Aware Regulatory) or firmware LPI table is blocking 6 GHz (5955–7115 MHz) in region 'CA'."
+                    else ->
+                        "6 GHz Hardware Present, 0 Channels Allowed in Region '$cc' — Current regulatory domain or firmware LAR policy blocks 6 GHz operation ($countryCodeSource)."
+                }
+            }
+            if (band6Ghz.usableCount == 0) {
+                return "6 GHz Allowed (${band6Ghz.allowedCount} ch in $countryCode) but 0 Usable — Temporarily unavailable due to radio concurrency, cellular coex, or indoor LPI/no-IR restriction."
+            }
+            return null
+        }
+}
+
+enum class WifiApBandFilter(val label: String) {
+    ALL("All Bands"),
+    BAND_24_GHZ("2.4 GHz"),
+    BAND_5_GHZ("5 GHz"),
+    BAND_6_GHZ("6 GHz"),
+}
+
+enum class WifiApSortOrder(val label: String) {
+    SIGNAL_DBM("Sort: Signal (dBm)"),
+    BAND_CHANNEL("Sort: Band & Ch"),
+    SSID_NAME("Sort: SSID");
+
+    fun next(): WifiApSortOrder = when (this) {
+        SIGNAL_DBM -> BAND_CHANNEL
+        BAND_CHANNEL -> SSID_NAME
+        SSID_NAME -> SIGNAL_DBM
+    }
+}
+
+data class ParsedBeaconIes(
+    val countryCode80211d: String? = null,
+    val countryEnvLabel: String = "",
+    val qbssStationCount: Int? = null,
+    val qbssChannelUtilizationPct: Int? = null,
+    val fastTransition11r: Boolean = false,
+    val neighborReport11k: Boolean = false,
+    val bssTransition11v: Boolean = false,
+)
+
+/**
+ * Verbose surrounding Wi-Fi Access Point beacon/probe entry parsed from `WifiManager.getScanResults()`.
+ */
+data class SurroundingWifiAp(
+    val ssid: String,
+    val isHiddenSsid: Boolean = false,
+    val bssid: String,
+    val maskedBssid: String,
+    val isConnectedAp: Boolean = false,
+    val bandGhz: Int,
+    val bandLabel: String,
+    val primaryFreqMhz: Int,
+    val centerFreq0Mhz: Int = 0,
+    val channelNumber: Int,
+    val channelWidthMhz: Int,
+    val channelWidthLabel: String,
+    val isDfsChannel: Boolean = false,
+    val isPscChannel: Boolean = false,
+    val wifiStandardCode: Int = 0,
+    val wifiStandardLabel: String,
+    val securitySummary: String,
+    val capabilityBadges: List<String> = emptyList(),
+    val rssiDbm: Int,
+    val signalPercent: Int,
+    val mloAffiliatedLinkCount: Int = 0,
+    val countryCode80211d: String? = null,
+    val qbssStationCount: Int? = null,
+    val qbssChannelUtilizationPct: Int? = null,
+    val ageSeconds: Float = 0f,
+) {
+    val channelAndFreqSummary: String
+        get() {
+            val tag = when {
+                isPscChannel -> " [PSC]"
+                isDfsChannel -> " [DFS]"
+                else -> ""
+            }
+            val centerPart = if (centerFreq0Mhz > 0 && centerFreq0Mhz != primaryFreqMhz && channelWidthMhz > 20) {
+                " (ctr $centerFreq0Mhz)"
+            } else {
+                ""
+            }
+            return "$bandLabel · Ch $channelNumber$tag · $primaryFreqMhz MHz$centerPart · $channelWidthLabel"
+        }
+
+    val bssLoadSummary: String?
+        get() = if (qbssStationCount != null && qbssChannelUtilizationPct != null) {
+            "BSS Load: ${qbssChannelUtilizationPct}% (${qbssStationCount} STA)"
+        } else {
+            null
+        }
+}
+
+/**
+ * Snapshot of surrounding Wi-Fi Access Point scan results and OS scan permission/location state.
+ */
+data class WifiScanTelemetrySnapshot(
+    val hasScanLocationPermission: Boolean = false,
+    val isLocationEnabled: Boolean = true,
+    val isWifiEnabled: Boolean = true,
+    val totalApCount: Int = 0,
+    val count24Ghz: Int = 0,
+    val count5Ghz: Int = 0,
+    val count6Ghz: Int = 0,
+    val lastScanAgeSeconds: Float = -1f,
+    val accessPoints: List<SurroundingWifiAp> = emptyList(),
+) {
+    val permissionStateSummary: String
+        get() = when {
+            !isWifiEnabled -> "Wi-Fi Adapter Off"
+            !hasScanLocationPermission -> "Location Permission Needed"
+            !isLocationEnabled -> "Location Services Off"
+            else -> "$totalApCount APs (${count24Ghz}×2.4G · ${count5Ghz}×5G · ${count6Ghz}×6G)"
+        }
+}
+
+/**
+ * Live Wi-Fi radio, PHY link speed, MAC frame counter, per-interface (`wlan*`) throughput,
+ * device radio/regulatory capabilities, and surrounding AP scan telemetry.
  */
 data class WifiTelemetrySnapshot(
     val isConnected: Boolean = false,
@@ -42,6 +311,8 @@ data class WifiTelemetrySnapshot(
     val txSuccessPktsPerSec: Double = 0.0,
     val rxSuccessPktsPerSec: Double = 0.0,
     val throughput: NetworkThroughput = NetworkThroughput(),
+    val capabilities: WifiRadioCapabilities = WifiRadioCapabilities(),
+    val surroundingScan: WifiScanTelemetrySnapshot = WifiScanTelemetrySnapshot(),
 ) {
     val signalFraction: Float
         get() = (signalQualityPercent / 100f).coerceIn(0f, 1f)
@@ -488,6 +759,422 @@ object WirelessTelemetryParsers {
         8 -> "WAPI-CERT"
         9 -> "WPA3-Enterprise"
         else -> "WPA2/WPA3"
+    }
+
+    fun bandGhzForFrequency(freqMhz: Int): Int = when (freqMhz) {
+        in 2401..2495 -> 2
+        in 5150..5895 -> 5
+        in 5925..7125 -> 6
+        in 57000..71000 -> 60
+        else -> 0
+    }
+
+    fun bandLabelForFrequency(freqMhz: Int): String = when (bandGhzForFrequency(freqMhz)) {
+        2 -> "2.4 GHz"
+        5 -> "5 GHz"
+        6 -> "6 GHz"
+        60 -> "60 GHz"
+        else -> if (freqMhz > 0) "$freqMhz MHz" else "Unknown"
+    }
+
+    fun frequencyMhzToChannel(freqMhz: Int): Int = when {
+        freqMhz == 2484 -> 14
+        freqMhz in 2412..2472 && (freqMhz - 2407) % 5 == 0 -> (freqMhz - 2407) / 5
+        freqMhz in 2412..2472 -> (freqMhz - 2407) / 5
+        freqMhz in 5150..5895 -> (freqMhz - 5000) / 5
+        freqMhz in 5955..7115 -> (freqMhz - 5950) / 5
+        freqMhz in 58320..69120 -> (freqMhz - 56160) / 2160
+        else -> 0
+    }
+
+    fun isPrimary20MhzChannel(bandGhz: Int, channelNum: Int): Boolean = when (bandGhz) {
+        2 -> channelNum in 1..14
+        5 -> (channelNum in 32..144 && channelNum % 4 == 0) ||
+            (channelNum in 149..177 && (channelNum - 149) % 4 == 0)
+        6 -> channelNum in 1..233 && (channelNum - 1) % 4 == 0
+        else -> channelNum > 0
+    }
+
+    /** Returns true if [freqMhz] lies in 5 GHz radar-avoidance DFS sub-bands (U-NII-2A / U-NII-2C, Ch 52–144). */
+    fun is5GhzDfsChannel(freqMhz: Int): Boolean = freqMhz in 5250..5730
+
+    /** Returns true if [freqMhz] is an IEEE 802.11ax 6 GHz Preferred Scanning Channel (Ch 5, 21, 37, ..., 229). */
+    fun is6GhzPscChannel(freqMhz: Int): Boolean {
+        if (freqMhz !in 5955..7115 || (freqMhz - 5950) % 5 != 0) return false
+        val ch = (freqMhz - 5950) / 5
+        return ch >= 5 && (ch - 5) % 16 == 0
+    }
+
+    fun formatChannelBandwidth(channelWidthCode: Int): Pair<Int, String> = when (channelWidthCode) {
+        0 -> 20 to "20 MHz"
+        1 -> 40 to "40 MHz"
+        2 -> 80 to "80 MHz"
+        3 -> 160 to "160 MHz"
+        4 -> 160 to "80+80 MHz"
+        5 -> 320 to "320 MHz"
+        else -> 20 to "20 MHz"
+    }
+
+    fun formatWifiStandardForBand(standardCode: Int, freqMhz: Int): String = when (standardCode) {
+        8 -> "Wi-Fi 7 (11be)"
+        7 -> "WiGig (11ad)"
+        6 -> if (freqMhz >= 5925) "Wi-Fi 6E (11ax)" else "Wi-Fi 6 (11ax)"
+        5 -> "Wi-Fi 5 (11ac)"
+        4 -> "Wi-Fi 4 (11n)"
+        1 -> "Legacy (11a/b/g)"
+        else -> "Wi-Fi"
+    }
+
+    fun sanitizeSsidDisplay(rawSsid: String?): Pair<String, Boolean> {
+        if (rawSsid == null) return "<Hidden SSID>" to true
+        var text = rawSsid.trim()
+        if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) {
+            text = text.substring(1, text.length - 1).trim()
+        }
+        val cleaned = buildString(text.length.coerceAtMost(32)) {
+            for (ch in text) {
+                if (length >= 32) break
+                if (ch >= ' ' && ch != '\u007f') append(ch)
+            }
+        }.trim()
+        return if (cleaned.isEmpty() || cleaned.equals("<unknown ssid>", ignoreCase = true)) {
+            "<Hidden SSID>" to true
+        } else {
+            cleaned to false
+        }
+    }
+
+    private val MAC_OCTET_REGEX = Regex("^[0-9a-f]{2}$")
+
+    /**
+     * Masks octets 4 and 5 of a 6-octet BSSID (`aa:bb:cc:••:••:ff`), preserving the vendor OUI
+     * (`aa:bb:cc`) and radio VAP suffix (`ff`) while preventing passive location fingerprinting.
+     */
+    fun maskBssid(rawBssid: String?): String {
+        if (rawBssid.isNullOrBlank()) return "••:••:••:••:••:••"
+        val parts = rawBssid.trim().lowercase(Locale.US).split(':', '-')
+        if (parts.size == 6 && parts.all { MAC_OCTET_REGEX.matches(it) }) {
+            return "${parts[0]}:${parts[1]}:${parts[2]}:••:••:${parts[5]}"
+        }
+        return "••:••:••:••:••:••"
+    }
+
+    /**
+     * Compresses per-band `WifiManager.getAllowedChannels` / `getUsableChannels` frequencies into
+     * IEEE channel ranges, DFS / TDWR / PSC sub-band annotations, and maximum regulatory bandwidth.
+     */
+    fun summarizeAllowedBandChannels(
+        bandGhz: Int,
+        allowedFreqsWidths: List<Pair<Int, Int>>,
+        usableFreqs: List<Int>,
+        isBandSupported: Boolean,
+        supports11be: Boolean = false,
+        supports11axOrAc: Boolean = true,
+        supports11n: Boolean = true,
+    ): BandChannelSummary {
+        val bandLabel = when (bandGhz) {
+            2 -> "2.4 GHz"
+            5 -> "5 GHz"
+            6 -> "6 GHz"
+            else -> "${bandGhz} GHz"
+        }
+        if (!isBandSupported) {
+            return BandChannelSummary(
+                bandLabel = bandLabel,
+                isHardwareSupported = false,
+                channelRangeSummary = "Hardware Unsupported",
+            )
+        }
+
+        val hasExplicit20Mhz = allowedFreqsWidths.any { it.first > 0 && it.second <= 0 }
+        val filteredPrimary = allowedFreqsWidths
+            .asSequence()
+            .filter { (freq, widthCode) ->
+                freq > 0 &&
+                    bandGhzForFrequency(freq) == bandGhz &&
+                    (!hasExplicit20Mhz || widthCode <= 0)
+            }
+            .map { (freq, _) -> freq to frequencyMhzToChannel(freq) }
+            .filter { (_, ch) -> isPrimary20MhzChannel(bandGhz, ch) }
+            .distinctBy { it.second }
+            .sortedBy { it.second }
+            .toList()
+
+        val primaryList = if (filteredPrimary.isNotEmpty()) {
+            filteredPrimary
+        } else {
+            allowedFreqsWidths
+                .asSequence()
+                .filter { (freq, _) -> freq > 0 && bandGhzForFrequency(freq) == bandGhz }
+                .map { (freq, _) -> freq to frequencyMhzToChannel(freq) }
+                .filter { (_, ch) -> ch > 0 }
+                .distinctBy { it.second }
+                .sortedBy { it.second }
+                .toList()
+        }
+
+        if (primaryList.isEmpty()) {
+            return BandChannelSummary(
+                bandLabel = bandLabel,
+                isHardwareSupported = true,
+                allowedCount = 0,
+                usableCount = 0,
+                maxBandwidthMhz = 0,
+                channelRangeSummary = "Blocked in Region",
+                subBandNote = if (bandGhz == 6) "0 allowed 6 GHz channels" else "0 allowed channels",
+            )
+        }
+
+        val allowedChannelSet = primaryList.map { it.second }.toHashSet()
+        val usableCount = usableFreqs
+            .asSequence()
+            .filter { freq -> freq > 0 && bandGhzForFrequency(freq) == bandGhz }
+            .map { frequencyMhzToChannel(it) }
+            .filter { it in allowedChannelSet }
+            .distinct()
+            .count()
+            .coerceAtMost(primaryList.size)
+
+        val step = if (bandGhz == 2) 1 else 4
+        val ranges = ArrayList<String>(4)
+        var runStart = primaryList[0].second
+        var runPrev = runStart
+        var curRunLen = 1
+        var maxContiguousRun = 1
+        for (i in 1 until primaryList.size) {
+            val ch = primaryList[i].second
+            if (ch == runPrev + step) {
+                runPrev = ch
+                curRunLen++
+                if (curRunLen > maxContiguousRun) maxContiguousRun = curRunLen
+            } else {
+                ranges += if (runStart == runPrev) "$runStart" else "$runStart–$runPrev"
+                runStart = ch
+                runPrev = ch
+                curRunLen = 1
+            }
+        }
+        ranges += if (runStart == runPrev) "$runStart" else "$runStart–$runPrev"
+        val rangeSummary = "Ch " + ranges.joinToString(", ")
+
+        val explicitMaxWidth = allowedFreqsWidths.maxOfOrNull { (_, w) ->
+            formatChannelBandwidth(w).first
+        } ?: 20
+        val inferredMaxWidth = when (bandGhz) {
+            2 -> if (primaryList.size >= 5 && supports11n) 40 else 20
+            5 -> when {
+                maxContiguousRun >= 8 && supports11axOrAc -> 160
+                maxContiguousRun >= 4 && supports11axOrAc -> 80
+                maxContiguousRun >= 2 && supports11n -> 40
+                else -> 20
+            }
+            6 -> when {
+                maxContiguousRun >= 16 && supports11be -> 320
+                maxContiguousRun >= 8 -> 160
+                maxContiguousRun >= 4 -> 80
+                maxContiguousRun >= 2 -> 40
+                else -> 20
+            }
+            else -> 20
+        }
+        val maxBwMhz = maxOf(explicitMaxWidth, inferredMaxWidth)
+
+        val dfsCount = if (bandGhz == 5) primaryList.count { is5GhzDfsChannel(it.first) } else 0
+        val pscCount = if (bandGhz == 6) primaryList.count { is6GhzPscChannel(it.first) } else 0
+        val maxFreq = primaryList.maxOf { it.first }
+
+        val subNote = when (bandGhz) {
+            2 -> {
+                val maxCh = primaryList.last().second
+                when {
+                    maxCh >= 14 -> "Ch 1–14 (JP)"
+                    maxCh >= 13 -> "ETSI / World (Ch 1–13)"
+                    else -> "FCC / ISED (Ch 1–$maxCh)"
+                }
+            }
+            5 -> {
+                val tdwrExcluded = 116 in allowedChannelSet && 132 in allowedChannelSet && 120 !in allowedChannelSet
+                when {
+                    dfsCount > 0 && tdwrExcluded -> "$dfsCount DFS ch · TDWR 120–128 excl."
+                    dfsCount > 0 -> "$dfsCount DFS ch (U-NII-2A/2C)"
+                    else -> "Non-DFS only (U-NII-1/3)"
+                }
+            }
+            6 -> {
+                if (maxFreq <= 6425) {
+                    "U-NII-5 Only (Lower 500 MHz · $pscCount PSC)"
+                } else {
+                    "U-NII-5..8 Full 1200 MHz ($pscCount PSC)"
+                }
+            }
+            else -> ""
+        }
+
+        return BandChannelSummary(
+            bandLabel = bandLabel,
+            isHardwareSupported = true,
+            allowedCount = primaryList.size,
+            usableCount = usableCount,
+            maxBandwidthMhz = maxBwMhz,
+            channelRangeSummary = rangeSummary,
+            dfsChannelCount = dfsCount,
+            pscChannelCount = pscCount,
+            subBandNote = subNote,
+        )
+    }
+
+    private val DUMPSYS_COUNTRY_PATTERNS: List<Pair<Regex, String>> = listOf(
+        Regex("\\bmDriverCountryCode:\\s*([A-Za-z0-9]{2})\\b") to "Driver RegDomain (dumpsys)",
+        Regex("\\bmOverrideCountryCode:\\s*([A-Za-z0-9]{2})\\b") to "Override RegDomain (dumpsys)",
+        Regex("\\bmTelephonyCountryCode:\\s*([A-Za-z0-9]{2})\\b") to "Telephony RegDomain (dumpsys)",
+        Regex("\\bDefaultCountryCode\\(config store\\):\\s*([A-Za-z0-9]{2})\\b") to "Config Store (dumpsys)",
+        Regex("\\bDefaultCountryCode\\(system property\\):\\s*([A-Za-z0-9]{2})\\b") to "System Property (dumpsys)",
+    )
+
+    fun isValidRegulatoryCountryCode(raw: String?): Boolean {
+        if (raw == null || raw.length != 2) return false
+        if (raw == "00") return true
+        return raw[0].isLetter() && raw[1].isLetter() &&
+            raw[0].code in 65..122 && raw[1].code in 65..122
+    }
+
+    /**
+     * Extracts the active Wi-Fi regulatory country code and provenance from `dumpsys wifi` (`WifiCountryCode`).
+     */
+    fun parseWifiDumpsysCountryCode(dumpsysText: String): Pair<String, String>? {
+        if (dumpsysText.isBlank() || dumpsysText.contains("Permission Denial", ignoreCase = true)) return null
+        val matches = HashMap<Int, Pair<String, String>>(5)
+        for (line in dumpsysText.lineSequence()) {
+            for ((idx, entry) in DUMPSYS_COUNTRY_PATTERNS.withIndex()) {
+                if (matches.containsKey(idx)) continue
+                val m = entry.first.find(line) ?: continue
+                val code = m.groupValues[1].uppercase(Locale.US)
+                if (isValidRegulatoryCountryCode(code)) {
+                    matches[idx] = code to entry.second
+                    if (idx == 0) return matches[0]
+                }
+            }
+        }
+        for (idx in DUMPSYS_COUNTRY_PATTERNS.indices) {
+            matches[idx]?.let { return it }
+        }
+        return null
+    }
+
+    /**
+     * Parses IEEE 802.11 Beacon / Probe Response Information Elements (`ScanResult.InformationElement`):
+     * - `EID 7` (`802.11d` Country code + Indoor/Outdoor environment)
+     * - `EID 11` (`802.11e` QBSS Load station count & channel utilization %)
+     * - `EID 54` (`802.11r` Mobility Domain Fast BSS Transition)
+     * - `EID 70` (`802.11k` Radio Resource Measurement Neighbor Report)
+     * - `EID 127` (`802.11v` Extended Capabilities bit 19 BSS Transition Management)
+     */
+    fun parse80211InformationElements(elements: List<Pair<Int, ByteArray>>): ParsedBeaconIes {
+        var country: String? = null
+        var envLabel = ""
+        var staCount: Int? = null
+        var chanUtilPct: Int? = null
+        var has11r = false
+        var has11k = false
+        var has11v = false
+
+        for ((eid, bytes) in elements) {
+            when (eid) {
+                7 -> if (country == null && bytes.size >= 3) {
+                    val c0 = (bytes[0].toInt() and 0xFF).toChar()
+                    val c1 = (bytes[1].toInt() and 0xFF).toChar()
+                    val cand = "$c0$c1".uppercase(Locale.US)
+                    if (isValidRegulatoryCountryCode(cand)) {
+                        country = cand
+                        val envByte = (bytes[2].toInt() and 0xFF).toChar()
+                        envLabel = when (envByte) {
+                            'I' -> "Indoor"
+                            'O' -> "Outdoor"
+                            'X' -> "Non-Country"
+                            else -> ""
+                        }
+                    }
+                }
+                11 -> if (staCount == null && bytes.size >= 5) {
+                    val stations = (bytes[0].toInt() and 0xFF) or ((bytes[1].toInt() and 0xFF) shl 8)
+                    val utilRaw = bytes[2].toInt() and 0xFF
+                    staCount = stations.coerceIn(0, 65_535)
+                    chanUtilPct = ((utilRaw * 100 + 127) / 255).coerceIn(0, 100)
+                }
+                54 -> if (bytes.size >= 2) {
+                    has11r = true
+                }
+                70 -> if (bytes.isNotEmpty()) {
+                    // Bit 1 of byte 0 is Neighbor Report capability; presence of RRM IE also signals 802.11k
+                    has11k = true
+                }
+                127 -> if (bytes.size >= 3 && (bytes[2].toInt() and 0x08) != 0) {
+                    // Bit 19 (octet 2, bit 3) = BSS Transition
+                    has11v = true
+                }
+            }
+        }
+        return ParsedBeaconIes(
+            countryCode80211d = country,
+            countryEnvLabel = envLabel,
+            qbssStationCount = staCount,
+            qbssChannelUtilizationPct = chanUtilPct,
+            fastTransition11r = has11r,
+            neighborReport11k = has11k,
+            bssTransition11v = has11v,
+        )
+    }
+
+    /**
+     * Parses `ScanResult.capabilities` and `ScanResult.getSecurityTypes()` into a primary security
+     * label and supplementary AKM / management-frame badges (`SAE-H2E`, `PMF-Req`, `PMF`, `11r`, `WPS`).
+     */
+    fun formatScanCapabilitiesSecurity(
+        capabilitiesRaw: String,
+        securityTypes: IntArray = IntArray(0),
+    ): Pair<String, List<String>> {
+        val caps = capabilitiesRaw.uppercase(Locale.US)
+        val hasSae = caps.contains("SAE") || securityTypes.contains(4)
+        val hasPsk = caps.contains("PSK") || securityTypes.contains(2)
+        val hasOwe = caps.contains("OWE") || securityTypes.contains(6)
+        val hasSuiteB = caps.contains("SUITE_B_192") || caps.contains("SUITE-B-192") || securityTypes.contains(5)
+        val hasEap = caps.contains("EAP") || securityTypes.contains(3) || securityTypes.contains(9)
+        val hasWep = caps.contains("WEP") || securityTypes.contains(1)
+        val hasWapi = caps.contains("WAPI") || securityTypes.contains(7) || securityTypes.contains(8)
+
+        val primary = when {
+            hasSuiteB -> "WPA3-Ent 192-bit"
+            hasSae && hasPsk -> "WPA2/WPA3-SAE"
+            hasSae -> "WPA3-SAE"
+            hasEap && (caps.contains("WPA3") || caps.contains("RSN-EAP") && securityTypes.contains(9)) -> "WPA3-Enterprise"
+            hasEap -> "WPA2/WPA3-Ent"
+            hasOwe && caps.contains("OWE_TRANSITION") -> "Open / OWE"
+            hasOwe -> "OWE (Enhanced Open)"
+            hasPsk && caps.contains("WPA2") -> "WPA2-PSK"
+            hasPsk -> "WPA/WPA2-PSK"
+            hasWapi -> "WAPI"
+            hasWep -> "WEP"
+            else -> "Open"
+        }
+
+        val badges = ArrayList<String>(5)
+        if (caps.contains("SAE_EXT_KEY") || caps.contains("SAE-H2E")) {
+            badges += "SAE-H2E"
+        }
+        if (caps.contains("SAE-PK") || caps.contains("SAE_PK")) {
+            badges += "SAE-PK"
+        }
+        when {
+            caps.contains("MFPR") -> badges += "PMF-Req"
+            caps.contains("MFPC") -> badges += "PMF"
+        }
+        if (caps.contains("FT/") || caps.contains("-FT-") || caps.contains("-FT]")) {
+            badges += "11r"
+        }
+        if (caps.contains("[WPS]")) {
+            badges += "WPS"
+        }
+        return primary to badges
     }
 
     fun formatBluetoothCodecType(codecType: Int): String = when (codecType) {

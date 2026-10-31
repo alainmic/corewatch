@@ -740,4 +740,214 @@ class CorewatchDataUnitTest {
         assertTrue(dockedReport.contains("Standby (Ethernet Primary)"))
         assertTrue(dockedReport.contains("| **Wired Ethernet** | `eth1` — `2.5 GbE (2500BASE-T)`"))
     }
+
+    @Test
+    fun wifiRegulatoryCapabilitiesCanada6GhzWarningChannelSummariesAndBeaconIeParsersWorkCorrectly() {
+        // 1. 2.4 GHz FCC/ISED (Ch 1–11) vs ETSI (Ch 1–13) vs JP (Ch 1–14)
+        val freqs24Ca = (1..11).map { (2407 + it * 5) to 0 }
+        val sum24Ca = WirelessTelemetryParsers.summarizeAllowedBandChannels(
+            bandGhz = 2,
+            allowedFreqsWidths = freqs24Ca,
+            usableFreqs = freqs24Ca.map { it.first },
+            isBandSupported = true,
+        )
+        assertEquals(11, sum24Ca.allowedCount)
+        assertEquals(11, sum24Ca.usableCount)
+        assertEquals(40, sum24Ca.maxBandwidthMhz)
+        assertEquals("Ch 1–11", sum24Ca.channelRangeSummary)
+        assertEquals("11 / 11 Usable", sum24Ca.countBadge)
+        assertTrue(sum24Ca.subBandNote.contains("FCC / ISED"))
+
+        val freqs24Eu = (1..13).map { (2407 + it * 5) to 0 }
+        val sum24Eu = WirelessTelemetryParsers.summarizeAllowedBandChannels(
+            bandGhz = 2,
+            allowedFreqsWidths = freqs24Eu,
+            usableFreqs = freqs24Eu.map { it.first },
+            isBandSupported = true,
+        )
+        assertEquals("Ch 1–13", sum24Eu.channelRangeSummary)
+        assertTrue(sum24Eu.subBandNote.contains("ETSI"))
+
+        // 2. 5 GHz Canada ISED with DFS and TDWR (Ch 120–128) exclusion
+        val ch5Ca = listOf(36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 132, 136, 140, 144, 149, 153, 157, 161, 165)
+        val freqs5Ca = ch5Ca.map { (5000 + it * 5) to 0 }
+        val sum5Ca = WirelessTelemetryParsers.summarizeAllowedBandChannels(
+            bandGhz = 5,
+            allowedFreqsWidths = freqs5Ca,
+            usableFreqs = freqs5Ca.take(18).map { it.first },
+            isBandSupported = true,
+            supports11be = true,
+        )
+        assertEquals(22, sum5Ca.allowedCount)
+        assertEquals(18, sum5Ca.usableCount)
+        assertEquals("18 Usable (22 Reg)", sum5Ca.countBadge)
+        assertEquals(160, sum5Ca.maxBandwidthMhz)
+        assertEquals("Ch 36–64, 100–116, 132–144, 149–165", sum5Ca.channelRangeSummary)
+        assertEquals(13, sum5Ca.dfsChannelCount)
+        assertTrue(sum5Ca.subBandNote.contains("TDWR 120–128 excl."))
+
+        // 3. 6 GHz US/ISED Full 1200 MHz (59 channels, 15 PSC, 320 MHz on Wi-Fi 7) vs EU U-NII-5 Only (24 channels, 6 PSC)
+        val freqs6Full = (0 until 59).map { idx -> (5955 + idx * 20) to 0 }
+        val sum6FullWifi7 = WirelessTelemetryParsers.summarizeAllowedBandChannels(
+            bandGhz = 6,
+            allowedFreqsWidths = freqs6Full,
+            usableFreqs = freqs6Full.map { it.first },
+            isBandSupported = true,
+            supports11be = true,
+        )
+        assertEquals(59, sum6FullWifi7.allowedCount)
+        assertEquals(59, sum6FullWifi7.usableCount)
+        assertEquals(15, sum6FullWifi7.pscChannelCount)
+        assertEquals(320, sum6FullWifi7.maxBandwidthMhz)
+        assertEquals("Ch 1–233", sum6FullWifi7.channelRangeSummary)
+        assertTrue(sum6FullWifi7.subBandNote.contains("U-NII-5..8 Full 1200 MHz (15 PSC)"))
+
+        val freqs6Eu = (0 until 24).map { idx -> (5955 + idx * 20) to 0 }
+        val sum6EuWifi6e = WirelessTelemetryParsers.summarizeAllowedBandChannels(
+            bandGhz = 6,
+            allowedFreqsWidths = freqs6Eu,
+            usableFreqs = freqs6Eu.map { it.first },
+            isBandSupported = true,
+            supports11be = false,
+        )
+        assertEquals(24, sum6EuWifi6e.allowedCount)
+        assertEquals(6, sum6EuWifi6e.pscChannelCount)
+        assertEquals(160, sum6EuWifi6e.maxBandwidthMhz)
+        assertEquals("Ch 1–93", sum6EuWifi6e.channelRangeSummary)
+        assertTrue(sum6EuWifi6e.subBandNote.contains("U-NII-5 Only"))
+
+        // 4. Exact Canada ('CA') & World ('00') 6 GHz blocked diagnosis on Wi-Fi 7 hardware
+        val sum6Blocked = WirelessTelemetryParsers.summarizeAllowedBandChannels(
+            bandGhz = 6,
+            allowedFreqsWidths = emptyList(),
+            usableFreqs = emptyList(),
+            isBandSupported = true,
+            supports11be = true,
+        )
+        assertEquals("0 Allowed (Reg-Blocked)", sum6Blocked.countBadge)
+        assertEquals("Blocked in Region", sum6Blocked.channelRangeSummary)
+
+        val caBlockedCaps = WifiRadioCapabilities(
+            isCapabilitiesQueried = true,
+            hasNearbyWifiPermission = true,
+            channelQuerySucceeded = true,
+            supports11beWifi7 = true,
+            supports11axWifi6 = true,
+            supports11acWifi5 = true,
+            supports11nWifi4 = true,
+            supports11abgLegacy = true,
+            supports24Ghz = true,
+            supports5Ghz = true,
+            supports6Ghz = true,
+            maxTxLinkSpeedMbps = 2882,
+            maxRxLinkSpeedMbps = 2882,
+            supportsWpa3Sae = true,
+            supportsSaeH2e = true,
+            supportsOwe = true,
+            supportsDualBandSimultaneous = true,
+            supportsMloTidToLinkMapping = true,
+            countryCode = "CA",
+            countryCodeSource = "Driver RegDomain (dumpsys)",
+            band24Ghz = sum24Ca,
+            band5Ghz = sum5Ca,
+            band6Ghz = sum6Blocked,
+        )
+        assertEquals("Wi-Fi 7 (802.11be)", caBlockedCaps.maxGenerationLabel)
+        assertTrue(caBlockedCaps.supportedBandsSummary.contains("Tri-Band"))
+        assertEquals("TX 2,882 Mbps · RX 2,882 Mbps", caBlockedCaps.maxPhySpeedSummary)
+        assertNotNull(caBlockedCaps.sixGhzRegulatoryWarning)
+        assertTrue(caBlockedCaps.sixGhzRegulatoryWarning!!.contains("CA (Canada)"))
+        assertTrue(caBlockedCaps.sixGhzRegulatoryWarning!!.contains("Intel LAR"))
+
+        val worldBlockedCaps = caBlockedCaps.copy(countryCode = "00")
+        assertTrue(worldBlockedCaps.sixGhzRegulatoryWarning!!.contains("world safe-mode"))
+
+        val concurrencyMutedCaps = caBlockedCaps.copy(
+            band6Ghz = sum6FullWifi7.copy(usableCount = 0),
+        )
+        assertTrue(concurrencyMutedCaps.sixGhzRegulatoryWarning!!.contains("59 ch in CA"))
+
+        // 5. Dumpsys WifiCountryCode provenance parser
+        val dumpsysWifiSample = """
+            WifiCountryCode:
+              mTelephonyCountryCode: US
+              DefaultCountryCode(system property): 00
+              mDriverCountryCode: CA
+        """.trimIndent()
+        assertEquals(
+            "CA" to "Driver RegDomain (dumpsys)",
+            WirelessTelemetryParsers.parseWifiDumpsysCountryCode(dumpsysWifiSample),
+        )
+        assertNull(WirelessTelemetryParsers.parseWifiDumpsysCountryCode("Permission Denial: can't dump WifiService"))
+
+        // 6. 802.11d Country IE + QBSS Load + 11r/11k/11v Beacon IE parser & BSSID privacy masking
+        val parsedIes = WirelessTelemetryParsers.parse80211InformationElements(
+            listOf(
+                7 to byteArrayOf('C'.code.toByte(), 'A'.code.toByte(), 'I'.code.toByte(), 1, 11, 30),
+                11 to byteArrayOf(12, 0, 64, 0, 0), // 12 stations, 64/255 = 25% channel utilization
+                54 to byteArrayOf(0x12, 0x34, 0x00),
+                70 to byteArrayOf(0x02, 0x00, 0x00, 0x00, 0x00),
+                127 to byteArrayOf(0x00, 0x00, 0x08, 0x00),
+            ),
+        )
+        assertEquals("CA", parsedIes.countryCode80211d)
+        assertEquals("Indoor", parsedIes.countryEnvLabel)
+        assertEquals(12, parsedIes.qbssStationCount)
+        assertEquals(25, parsedIes.qbssChannelUtilizationPct)
+        assertTrue(parsedIes.fastTransition11r)
+        assertTrue(parsedIes.neighborReport11k)
+        assertTrue(parsedIes.bssTransition11v)
+
+        assertEquals("02:11:22:••:••:06", WirelessTelemetryParsers.maskBssid("02:11:22:33:44:06"))
+        assertEquals("••:••:••:••:••:••", WirelessTelemetryParsers.maskBssid("invalid"))
+        assertEquals("Wi-Fi 6E (11ax)", WirelessTelemetryParsers.formatWifiStandardForBand(6, 6135))
+        assertEquals("Wi-Fi 6 (11ax)", WirelessTelemetryParsers.formatWifiStandardForBand(6, 5180))
+        assertEquals(320 to "320 MHz", WirelessTelemetryParsers.formatChannelBandwidth(5))
+
+        val (secLabel, secBadges) = WirelessTelemetryParsers.formatScanCapabilitiesSecurity(
+            "[WPA2-PSK-CCMP][RSN-SAE+SAE_EXT_KEY-CCMP][MFPR][FT/SAE][ESS]",
+            intArrayOf(2, 4),
+        )
+        assertEquals("WPA2/WPA3-SAE", secLabel)
+        assertTrue(secBadges.containsAll(listOf("SAE-H2E", "PMF-Req", "11r")))
+
+        // 7. DiagnosticReportBuilder exports Wi-Fi Radio & RegDomain but NEVER surrounding SSIDs or BSSIDs
+        val reportWithAps = DiagnosticReportBuilder.buildMarkdownReport(
+            SystemTelemetrySnapshot(
+                wifi = WifiTelemetrySnapshot(
+                    isConnected = true,
+                    capabilities = caBlockedCaps,
+                    surroundingScan = WifiScanTelemetrySnapshot(
+                        hasScanLocationPermission = true,
+                        isLocationEnabled = true,
+                        totalApCount = 1,
+                        count6Ghz = 1,
+                        accessPoints = listOf(
+                            SurroundingWifiAp(
+                                ssid = "PrivateHomeCorpSSID",
+                                bssid = "02:aa:bb:cc:dd:ee",
+                                maskedBssid = "02:aa:bb:••:••:ee",
+                                bandGhz = 6,
+                                bandLabel = "6 GHz",
+                                primaryFreqMhz = 6135,
+                                channelNumber = 37,
+                                channelWidthMhz = 320,
+                                channelWidthLabel = "320 MHz",
+                                isPscChannel = true,
+                                wifiStandardCode = 8,
+                                wifiStandardLabel = "Wi-Fi 7 (11be)",
+                                securitySummary = "WPA3-SAE",
+                                rssiDbm = -48,
+                                signalPercent = 95,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        assertTrue(reportWithAps.contains("| **Wi-Fi Radio & RegDomain** |"))
+        assertTrue(reportWithAps.contains("⚠️ 6 GHz RegDomain Blocked"))
+        assertFalse(reportWithAps.contains("PrivateHomeCorpSSID"))
+        assertFalse(reportWithAps.contains("02:aa:bb"))
+    }
 }

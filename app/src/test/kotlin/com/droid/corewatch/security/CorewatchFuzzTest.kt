@@ -14,7 +14,9 @@ import com.droid.corewatch.data.EthernetTelemetrySnapshot
 import com.droid.corewatch.data.FloatRingBuffer
 import com.droid.corewatch.data.SysfsParsers
 import com.droid.corewatch.data.SystemTelemetrySnapshot
+import com.droid.corewatch.data.WifiRadioCapabilities
 import com.droid.corewatch.data.WifiTelemetrySnapshot
+import com.droid.corewatch.data.WirelessTelemetryParsers
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -191,6 +193,13 @@ class CorewatchFuzzTest {
                     wifiStandardLabel = randomStr(r, 24),
                     bandAndChannelLabel = randomStr(r, 24),
                     rssiDbm = r.nextInt(-130, 10),
+                    capabilities = WifiRadioCapabilities(
+                        isCapabilitiesQueried = r.nextBoolean(),
+                        channelQuerySucceeded = r.nextBoolean(),
+                        supports6Ghz = r.nextBoolean(),
+                        countryCode = randomStr(r, 12),
+                        countryCodeSource = randomStr(r, 24),
+                    ),
                 ),
                 ethernet = EthernetTelemetrySnapshot(
                     isConnected = r.nextBoolean(),
@@ -208,10 +217,64 @@ class CorewatchFuzzTest {
             assertTrue(md.startsWith("### Corewatch Hardware & Thermal Diagnostic Snapshot"))
             // Every table row must have balanced pipe delimiters
             val tableLines = md.lines().filter { it.startsWith("|") }
-            assertEqualsCount(16, tableLines.size)
+            assertEqualsCount(17, tableLines.size)
             for (line in tableLines) {
                 assertEqualsCount(3, line.count { it == '|' })
             }
+        }
+    }
+
+    @Test
+    fun fuzzWifiRegulatoryAndBeaconParsers() {
+        val r = Random(0x57494649L)
+        repeat(15_000) {
+            val rawSsid = if (r.nextInt(8) == 0) null else randomStr(r, 64)
+            val (ssid, hidden) = WirelessTelemetryParsers.sanitizeSsidDisplay(rawSsid)
+            assertTrue(ssid.isNotEmpty() && ssid.length <= 32)
+            if (hidden) assertEqualsCount("<Hidden SSID>".length, ssid.length)
+            assertFalse(ssid.any { it < ' ' || it == '\u007f' })
+
+            val masked = WirelessTelemetryParsers.maskBssid(if (r.nextInt(6) == 0) null else randomStr(r, 24))
+            assertTrue(masked.contains("••"))
+
+            val band = listOf(0, 2, 5, 6, 60, -1)[r.nextInt(6)]
+            val allowed = List(r.nextInt(12)) {
+                val freq = listOf(-100, 0, 2412, 2437, 5180, 5260, 5600, 5955, 5975, 7115, r.nextInt(-50, 80_000))[r.nextInt(11)]
+                freq to r.nextInt(-2, 8)
+            }
+            val usable = List(r.nextInt(8)) { allowed.getOrNull(it)?.first ?: r.nextInt(-10, 10_000) }
+            val summary = WirelessTelemetryParsers.summarizeAllowedBandChannels(
+                bandGhz = band,
+                allowedFreqsWidths = allowed,
+                usableFreqs = usable,
+                isBandSupported = r.nextBoolean(),
+                supports11be = r.nextBoolean(),
+            )
+            assertTrue(summary.allowedCount >= 0)
+            assertTrue(summary.usableCount in 0..summary.allowedCount)
+            assertTrue(summary.maxBandwidthMhz in 0..320)
+
+            val ies = List(r.nextInt(6)) {
+                val eid = listOf(0, 7, 11, 54, 70, 127, 255, r.nextInt(-5, 300))[r.nextInt(8)]
+                val bytes = ByteArray(r.nextInt(16)).also { r.nextBytes(it) }
+                eid to bytes
+            }
+            val parsedIes = WirelessTelemetryParsers.parse80211InformationElements(ies)
+            parsedIes.qbssChannelUtilizationPct?.let { pct -> assertTrue(pct in 0..100) }
+            parsedIes.qbssStationCount?.let { stas -> assertTrue(stas in 0..65_535) }
+            parsedIes.countryCode80211d?.let { cc -> assertTrue(WirelessTelemetryParsers.isValidRegulatoryCountryCode(cc)) }
+
+            val dumpsys = randomStr(r, 80) + "\nmDriverCountryCode: " + randomStr(r, 5)
+            WirelessTelemetryParsers.parseWifiDumpsysCountryCode(dumpsys)?.let { (cc, _) ->
+                assertTrue(WirelessTelemetryParsers.isValidRegulatoryCountryCode(cc))
+            }
+
+            val (sec, badges) = WirelessTelemetryParsers.formatScanCapabilitiesSecurity(
+                capabilitiesRaw = randomStr(r, 48),
+                securityTypes = IntArray(r.nextInt(4)) { r.nextInt(-2, 12) },
+            )
+            assertTrue(sec.isNotBlank())
+            assertTrue(badges.size <= 5)
         }
     }
 

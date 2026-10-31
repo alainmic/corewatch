@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -97,12 +98,18 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.max
+import com.droid.corewatch.data.BandChannelSummary
 import com.droid.corewatch.data.CaffeineDuration
 import com.droid.corewatch.data.CoreCluster
 import com.droid.corewatch.data.DiagnosticReportBuilder
 import com.droid.corewatch.data.DisplaySpec
 import com.droid.corewatch.data.EthernetTelemetrySnapshot
+import com.droid.corewatch.data.SurroundingWifiAp
 import com.droid.corewatch.data.ThermalLevel
+import com.droid.corewatch.data.WifiApBandFilter
+import com.droid.corewatch.data.WifiApSortOrder
+import com.droid.corewatch.data.WifiRadioCapabilities
+import com.droid.corewatch.data.WifiScanTelemetrySnapshot
 import com.droid.corewatch.data.WifiTelemetrySnapshot
 import com.droid.corewatch.ui.theme.CorewatchMonoTypography
 import java.util.Locale
@@ -187,6 +194,9 @@ fun CorewatchAppRoot(
     vm: CorewatchViewModel,
     canDrawOverlays: Boolean = true,
     onRequestOverlayPermission: (() -> Unit)? = null,
+    onRequestWifiScanPermission: (() -> Unit)? = null,
+    onRequestNearbyWifiPermission: (() -> Unit)? = null,
+    onOpenLocationSettings: (() -> Unit)? = null,
     onResizeWindowForMode: (Boolean) -> Unit = {},
 ) {
     val state by vm.state.collectAsState()
@@ -225,6 +235,12 @@ fun CorewatchAppRoot(
                 when {
                     ev.isCtrlPressed && ev.isShiftPressed && ev.key == Key.C -> {
                         vm.copyDiagnosticMarkdown(); true
+                    }
+                    ev.isCtrlPressed && ev.isShiftPressed && ev.key == Key.S -> {
+                        vm.triggerWifiScan(); true
+                    }
+                    ev.isCtrlPressed && ev.isShiftPressed && ev.key == Key.B -> {
+                        vm.toggleMaskApBssids(); true
                     }
                     ev.isCtrlPressed && ev.key == Key.M -> {
                         vm.toggleMiniHud(); true
@@ -286,7 +302,13 @@ fun CorewatchAppRoot(
                             CorewatchTab.BatteryPower -> BatteryPowerTab(state = state, vm = vm)
                             CorewatchTab.MemoryStorage -> MemoryStorageTab(state = state)
                             CorewatchTab.Displays -> DisplaysTab(state = state)
-                            CorewatchTab.NetworkBluetooth -> NetworkBluetoothTab(state = state, vm = vm)
+                            CorewatchTab.NetworkBluetooth -> NetworkBluetoothTab(
+                                state = state,
+                                vm = vm,
+                                onRequestWifiScanPermission = onRequestWifiScanPermission,
+                                onRequestNearbyWifiPermission = onRequestNearbyWifiPermission,
+                                onOpenLocationSettings = onOpenLocationSettings,
+                            )
                         }
                     }
                 }
@@ -2037,7 +2059,13 @@ private fun DisplaysTab(state: CorewatchUiState) {
 // ------------------------------------------------------------------------ Tab 5: Network & Bluetooth
 
 @Composable
-private fun NetworkBluetoothTab(state: CorewatchUiState, vm: CorewatchViewModel) {
+private fun NetworkBluetoothTab(
+    state: CorewatchUiState,
+    vm: CorewatchViewModel,
+    onRequestWifiScanPermission: (() -> Unit)? = null,
+    onRequestNearbyWifiPermission: (() -> Unit)? = null,
+    onOpenLocationSettings: (() -> Unit)? = null,
+) {
     val cs = MaterialTheme.colorScheme
     val snap = state.snapshot
     val hist = state.history
@@ -2047,6 +2075,7 @@ private fun NetworkBluetoothTab(state: CorewatchUiState, vm: CorewatchViewModel)
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val sideBySideLinks = maxWidth >= 760.dp
+        val threeColumnBands = maxWidth >= 680.dp
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -2169,6 +2198,25 @@ private fun NetworkBluetoothTab(state: CorewatchUiState, vm: CorewatchViewModel)
                     }
                 }
             }
+
+            WifiRadioRegulatoryCard(
+                capabilities = wifi.capabilities,
+                threeColumnBands = threeColumnBands,
+                onRequestNearbyWifiPermission = onRequestNearbyWifiPermission,
+            )
+
+            SurroundingWifiApsCard(
+                scan = wifi.surroundingScan,
+                bandFilter = state.wifiApBandFilter,
+                sortOrder = state.wifiApSortOrder,
+                maskBssids = state.maskApBssids,
+                onSelectBandFilter = vm::setWifiApBandFilter,
+                onCycleSortOrder = vm::cycleWifiApSortOrder,
+                onToggleMaskBssids = vm::toggleMaskApBssids,
+                onTriggerScan = vm::triggerWifiScan,
+                onRequestWifiScanPermission = onRequestWifiScanPermission,
+                onOpenLocationSettings = onOpenLocationSettings,
+            )
 
         // Bluetooth Audio Codec & Peripherals Card
         Surface(
@@ -2867,6 +2915,649 @@ private fun WiredEthernetLinkCard(
 }
 
 @Composable
+private fun WifiRadioRegulatoryCard(
+    capabilities: WifiRadioCapabilities,
+    threeColumnBands: Boolean,
+    onRequestNearbyWifiPermission: (() -> Unit)?,
+) {
+    val cs = MaterialTheme.colorScheme
+    val viewCtx = LocalView.current.context
+    val sixGhzWarn = capabilities.sixGhzRegulatoryWarning
+    val isWorldOrBlocked = sixGhzWarn != null || capabilities.countryCode == "00"
+
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = cs.surfaceContainer,
+        modifier = Modifier.fillMaxWidth().testTag("wifi_regulatory_card"),
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f, fill = false),
+                ) {
+                    Icon(
+                        Icons.Outlined.Speed,
+                        contentDescription = null,
+                        tint = cs.primary,
+                        modifier = Modifier.size(17.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = "Device Wi-Fi Radio & Regulatory Capabilities",
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = cs.primaryContainer,
+                    ) {
+                        Text(
+                            text = "Max: ${capabilities.maxGenerationLabel}",
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onPrimaryContainer,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = if (isWorldOrBlocked) cs.errorContainer else cs.secondaryContainer,
+                        modifier = Modifier.testTag("wifi_reg_country_badge"),
+                    ) {
+                        Text(
+                            text = "Region: ${capabilities.countryCode} · ${capabilities.countryCodeSource}",
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = if (isWorldOrBlocked) cs.onErrorContainer else cs.onSecondaryContainer,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                        )
+                    }
+                }
+            }
+
+            if (sixGhzWarn != null) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = cs.errorContainer,
+                    modifier = Modifier.fillMaxWidth().testTag("wifi_6ghz_reg_warning"),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.WarningAmber,
+                            contentDescription = null,
+                            tint = cs.onErrorContainer,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(
+                            text = sixGhzWarn,
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onErrorContainer,
+                        )
+                    }
+                }
+            }
+
+            Surface(
+                shape = RoundedCornerShape(9.dp),
+                color = cs.surfaceContainerHigh,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = "Supported Generations: ${capabilities.supportedGenerationsSummary}",
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurface,
+                    )
+                    Text(
+                        text = "Supported Bands: ${capabilities.supportedBandsSummary} · Max Supported PHY: ${capabilities.maxPhySpeedSummary}",
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.primary,
+                    )
+                    Text(
+                        text = "Security Capabilities: ${capabilities.securityCapabilitiesSummary}",
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurfaceVariant,
+                    )
+                    Text(
+                        text = "Concurrency & Roaming: ${capabilities.concurrencySummary}",
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurfaceVariant,
+                    )
+                }
+            }
+
+            Text(
+                text = "REGULATORY ALLOWED & USABLE STA CHANNELS IN CURRENT REGION (${capabilities.countryCode})",
+                style = CorewatchMonoTypography.hudSmall,
+                color = cs.onSurfaceVariant,
+            )
+
+            if (capabilities.channelQuerySucceeded) {
+                if (threeColumnBands) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        BandChannelTile(
+                            summary = capabilities.band24Ghz,
+                            tag = "wifi_band_24g_tile",
+                            modifier = Modifier.weight(1f),
+                        )
+                        BandChannelTile(
+                            summary = capabilities.band5Ghz,
+                            tag = "wifi_band_5g_tile",
+                            modifier = Modifier.weight(1f),
+                        )
+                        BandChannelTile(
+                            summary = capabilities.band6Ghz,
+                            tag = "wifi_band_6g_tile",
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        BandChannelTile(
+                            summary = capabilities.band24Ghz,
+                            tag = "wifi_band_24g_tile",
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        BandChannelTile(
+                            summary = capabilities.band5Ghz,
+                            tag = "wifi_band_5g_tile",
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        BandChannelTile(
+                            summary = capabilities.band6Ghz,
+                            tag = "wifi_band_6g_tile",
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+            } else if (!capabilities.hasNearbyWifiPermission && Build.VERSION.SDK_INT >= 33) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Grant NEARBY_WIFI_DEVICES (neverForLocation) to inspect allowed & usable 2.4 / 5 / 6 GHz channels in the active regulatory domain.",
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    FilterChip(
+                        selected = false,
+                        onClick = {
+                            if (onRequestNearbyWifiPermission != null) {
+                                onRequestNearbyWifiPermission()
+                            } else {
+                                runCatching {
+                                    val act = viewCtx as? android.app.Activity
+                                    act?.requestPermissions(arrayOf(android.Manifest.permission.NEARBY_WIFI_DEVICES), 1003)
+                                }
+                            }
+                        },
+                        label = { Text("Grant Nearby Wi-Fi") },
+                        modifier = Modifier.testTag("grant_nearby_wifi_permission_btn"),
+                    )
+                }
+            } else {
+                Text(
+                    text = "Per-band regulatory channel table requires Android 14+ (API 34) WifiManager.getAllowedChannels().",
+                    style = CorewatchMonoTypography.hudSmall,
+                    color = cs.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BandChannelTile(
+    summary: BandChannelSummary,
+    tag: String,
+    modifier: Modifier = Modifier,
+) {
+    val cs = MaterialTheme.colorScheme
+    val isRegBlocked = summary.isHardwareSupported && summary.allowedCount == 0
+    val isUsableDegraded = summary.isHardwareSupported && summary.allowedCount > 0 && summary.usableCount == 0
+
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = if (isRegBlocked) cs.errorContainer.copy(alpha = 0.45f) else cs.surfaceContainerHigh,
+        modifier = modifier.testTag(tag),
+    ) {
+        Column(
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = summary.bandLabel,
+                    style = CorewatchMonoTypography.hudValue,
+                    color = cs.onSurface,
+                )
+                Text(
+                    text = summary.countBadge,
+                    style = CorewatchMonoTypography.hudSmall,
+                    color = when {
+                        isRegBlocked || isUsableDegraded -> cs.error
+                        summary.isHardwareSupported -> cs.secondary
+                        else -> cs.onSurfaceVariant
+                    },
+                )
+            }
+            Text(
+                text = "Channels: ${summary.channelRangeSummary}",
+                style = CorewatchMonoTypography.hudSmall,
+                color = if (isRegBlocked) cs.error else cs.primary,
+            )
+            if (summary.isHardwareSupported && summary.maxBandwidthMhz > 0) {
+                Text(
+                    text = "Max Width: ${summary.maxBandwidthMhz} MHz",
+                    style = CorewatchMonoTypography.hudSmall,
+                    color = cs.onSurface,
+                )
+            }
+            if (summary.subBandNote.isNotBlank()) {
+                Text(
+                    text = summary.subBandNote,
+                    style = CorewatchMonoTypography.hudSmall,
+                    color = cs.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SurroundingWifiApsCard(
+    scan: WifiScanTelemetrySnapshot,
+    bandFilter: WifiApBandFilter,
+    sortOrder: WifiApSortOrder,
+    maskBssids: Boolean,
+    onSelectBandFilter: (WifiApBandFilter) -> Unit,
+    onCycleSortOrder: () -> Unit,
+    onToggleMaskBssids: () -> Unit,
+    onTriggerScan: () -> Unit,
+    onRequestWifiScanPermission: (() -> Unit)?,
+    onOpenLocationSettings: (() -> Unit)?,
+) {
+    val cs = MaterialTheme.colorScheme
+    val viewCtx = LocalView.current.context
+
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = cs.surfaceContainer,
+        modifier = Modifier.fillMaxWidth().testTag("surrounding_wifi_aps_card"),
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        text = "Surrounding Wi-Fi Access Points (Verbose Beacons)",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    val ageNote = if (scan.lastScanAgeSeconds >= 0f) {
+                        String.format(Locale.US, " · Newest beacon %.1fs ago", scan.lastScanAgeSeconds)
+                    } else {
+                        ""
+                    }
+                    Text(
+                        text = "Band, channel, bandwidth, Wi-Fi generation, AKM security, 802.11d/k/r/v & QBSS load$ageNote",
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurfaceVariant,
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = if (scan.hasScanLocationPermission && scan.isLocationEnabled && scan.isWifiEnabled) {
+                        cs.secondaryContainer
+                    } else {
+                        cs.surfaceContainerHigh
+                    },
+                ) {
+                    Text(
+                        text = scan.permissionStateSummary,
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = if (scan.hasScanLocationPermission && scan.isLocationEnabled && scan.isWifiEnabled) {
+                            cs.onSecondaryContainer
+                        } else {
+                            cs.onSurfaceVariant
+                        },
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    )
+                }
+            }
+
+            if (scan.isWifiEnabled && scan.hasScanLocationPermission && scan.isLocationEnabled) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val filterLabels = listOf(
+                        WifiApBandFilter.ALL to "All (${scan.totalApCount})",
+                        WifiApBandFilter.BAND_24_GHZ to "2.4 GHz (${scan.count24Ghz})",
+                        WifiApBandFilter.BAND_5_GHZ to "5 GHz (${scan.count5Ghz})",
+                        WifiApBandFilter.BAND_6_GHZ to "6 GHz (${scan.count6Ghz})",
+                    )
+                    for ((f, label) in filterLabels) {
+                        FilterChip(
+                            selected = bandFilter == f,
+                            onClick = { onSelectBandFilter(f) },
+                            label = { Text(label) },
+                            modifier = Modifier.testTag("wifi_filter_${f.name}"),
+                        )
+                    }
+                    FilterChip(
+                        selected = false,
+                        onClick = onCycleSortOrder,
+                        label = { Text(sortOrder.label) },
+                        modifier = Modifier.testTag("wifi_ap_sort_chip"),
+                    )
+                    FilterChip(
+                        selected = !maskBssids,
+                        onClick = onToggleMaskBssids,
+                        label = { Text(if (maskBssids) "BSSID: Masked" else "BSSID: Full") },
+                        modifier = Modifier.testTag("wifi_ap_mask_bssid_chip"),
+                    )
+                    FilterChip(
+                        selected = false,
+                        onClick = onTriggerScan,
+                        leadingIcon = {
+                            Icon(
+                                Icons.Outlined.Refresh,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                            )
+                        },
+                        label = { Text("Scan Now") },
+                        modifier = Modifier.testTag("wifi_scan_now_btn"),
+                    )
+                }
+            }
+
+            when {
+                !scan.isWifiEnabled -> {
+                    Text(
+                        text = "Wi-Fi adapter is currently turned off. Enable Wi-Fi to inspect surrounding access points.",
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurfaceVariant,
+                    )
+                }
+
+                !scan.hasScanLocationPermission -> {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = cs.surfaceContainerHigh,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(3.dp),
+                            ) {
+                                Text(
+                                    text = "Opt-In Location Permission Required by Android for Surrounding AP List",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = cs.onSurface,
+                                )
+                                Text(
+                                    text = "Android gates WifiManager.getScanResults() (SSID, BSSID, channel, bandwidth, security, 802.11d/k/r/v IEs) behind Location permission. Corewatch holds zero INTERNET permission — AP beacons never leave your device and are omitted from exported reports.",
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = cs.onSurfaceVariant,
+                                )
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            FilterChip(
+                                selected = false,
+                                onClick = {
+                                    if (onRequestWifiScanPermission != null) {
+                                        onRequestWifiScanPermission()
+                                    } else {
+                                        runCatching {
+                                            val act = viewCtx as? android.app.Activity
+                                            act?.requestPermissions(
+                                                arrayOf(
+                                                    android.Manifest.permission.ACCESS_FINE_LOCATION,
+                                                    android.Manifest.permission.ACCESS_COARSE_LOCATION,
+                                                ),
+                                                1002,
+                                            )
+                                        }
+                                    }
+                                },
+                                label = { Text("Grant Location for AP Scan") },
+                                modifier = Modifier.testTag("grant_wifi_scan_permission_btn"),
+                            )
+                        }
+                    }
+                }
+
+                !scan.isLocationEnabled -> {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = cs.surfaceContainerHigh,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "Location permission is granted, but Android's system Location Services toggle is Off — Android blocks Wi-Fi scan results while Location is disabled.",
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            FilterChip(
+                                selected = false,
+                                onClick = {
+                                    if (onOpenLocationSettings != null) {
+                                        onOpenLocationSettings()
+                                    } else {
+                                        runCatching {
+                                            viewCtx.startActivity(android.content.Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                                        }
+                                    }
+                                },
+                                label = { Text("Open Location Settings") },
+                                modifier = Modifier.testTag("open_location_settings_btn"),
+                            )
+                        }
+                    }
+                }
+
+                else -> {
+                    val filtered = remember(scan.accessPoints, bandFilter, sortOrder) {
+                        val bandMatched = when (bandFilter) {
+                            WifiApBandFilter.ALL -> scan.accessPoints
+                            WifiApBandFilter.BAND_24_GHZ -> scan.accessPoints.filter { it.bandGhz == 2 }
+                            WifiApBandFilter.BAND_5_GHZ -> scan.accessPoints.filter { it.bandGhz == 5 }
+                            WifiApBandFilter.BAND_6_GHZ -> scan.accessPoints.filter { it.bandGhz == 6 }
+                        }
+                        when (sortOrder) {
+                            WifiApSortOrder.SIGNAL_DBM -> bandMatched.sortedWith(
+                                compareByDescending<SurroundingWifiAp> { it.isConnectedAp }
+                                    .thenByDescending { it.rssiDbm },
+                            )
+                            WifiApSortOrder.BAND_CHANNEL -> bandMatched.sortedWith(
+                                compareBy<SurroundingWifiAp> { it.bandGhz }
+                                    .thenBy { it.channelNumber }
+                                    .thenByDescending { it.rssiDbm },
+                            )
+                            WifiApSortOrder.SSID_NAME -> bandMatched.sortedWith(
+                                compareBy<SurroundingWifiAp> { it.isHiddenSsid }
+                                    .thenBy { it.ssid.lowercase(Locale.US) }
+                                    .thenByDescending { it.rssiDbm },
+                            )
+                        }
+                    }
+
+                    if (filtered.isEmpty()) {
+                        Text(
+                            text = "No access points detected on ${bandFilter.label}. Tap 'Scan Now' to trigger an active scan.",
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onSurfaceVariant,
+                        )
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            for (ap in filtered.take(40)) {
+                                SurroundingApRow(ap = ap, maskBssids = maskBssids)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SurroundingApRow(
+    ap: SurroundingWifiAp,
+    maskBssids: Boolean,
+) {
+    val cs = MaterialTheme.colorScheme
+    val displayBssid = if (maskBssids) ap.maskedBssid else ap.bssid
+    val signalColor = when {
+        ap.rssiDbm >= -60 -> cs.secondary
+        ap.rssiDbm >= -73 -> cs.primary
+        else -> cs.tertiary
+    }
+
+    Surface(
+        shape = RoundedCornerShape(9.dp),
+        color = if (ap.isConnectedAp) cs.secondaryContainer.copy(alpha = 0.35f) else cs.surfaceContainerHigh,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        text = ap.ssid,
+                        style = CorewatchMonoTypography.hudValue,
+                        color = when {
+                            ap.isConnectedAp -> cs.secondary
+                            ap.isHiddenSsid -> cs.onSurfaceVariant
+                            else -> cs.onSurface
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (ap.isConnectedAp) {
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = cs.secondaryContainer,
+                        ) {
+                            Text(
+                                text = "CONNECTED",
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSecondaryContainer,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                            )
+                        }
+                    }
+                    Text(
+                        text = displayBssid,
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(5.dp),
+                        color = if (ap.bandGhz == 6) cs.primaryContainer else cs.surfaceVariant,
+                    ) {
+                        Text(
+                            text = ap.wifiStandardLabel,
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = if (ap.bandGhz == 6) cs.onPrimaryContainer else cs.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                    }
+                    Text(
+                        text = "${ap.rssiDbm} dBm (${ap.signalPercent}%)",
+                        style = CorewatchMonoTypography.hudValue,
+                        color = signalColor,
+                    )
+                }
+            }
+
+            val badgesPart = if (ap.capabilityBadges.isNotEmpty()) {
+                " [${ap.capabilityBadges.joinToString(" · ")}]"
+            } else {
+                ""
+            }
+            val extras = buildList {
+                ap.countryCode80211d?.let { add("802.11d: $it") }
+                ap.bssLoadSummary?.let { add(it) }
+                if (ap.ageSeconds > 0f) add(String.format(Locale.US, "%.1fs ago", ap.ageSeconds))
+            }.joinToString(" · ")
+            val extrasPart = if (extras.isNotEmpty()) " · $extras" else ""
+
+            Text(
+                text = "${ap.channelAndFreqSummary} · ${ap.securitySummary}$badgesPart$extrasPart",
+                style = CorewatchMonoTypography.hudSmall,
+                color = cs.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
 private fun DisplayCard(disp: DisplaySpec) {
     val cs = MaterialTheme.colorScheme
     Surface(
@@ -3031,6 +3722,8 @@ private fun ShortcutsDialog(onDismiss: () -> Unit) {
         "Ctrl+K" to "Toggle Caffeine Keep-Awake active state",
         "Space" to "Pause / Resume live telemetry graph scrolling",
         "Ctrl+Shift+C" to "Copy Markdown Hardware & Thermal Diagnostic Snapshot",
+        "Ctrl+Shift+S" to "Trigger an active Wi-Fi scan on Network & Bluetooth",
+        "Ctrl+Shift+B" to "Toggle surrounding AP BSSID MAC privacy masking",
         "F5 / Ctrl+R" to "Reset session min/max/average telemetry counters",
         "F1" to "Show / hide this Keyboard Shortcuts cheatsheet",
     )

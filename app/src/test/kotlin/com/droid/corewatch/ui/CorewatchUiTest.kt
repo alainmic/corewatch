@@ -106,11 +106,13 @@ class CorewatchUiTest {
 
         composeRule.onNodeWithTag("tab_4").performClick()
         assertEquals(CorewatchTab.NetworkBluetooth, vm.state.value.activeTab)
-        composeRule.onNodeWithTag("wifi_link_card").assertIsDisplayed()
-        composeRule.onNodeWithTag("ethernet_link_card").assertIsDisplayed()
-        composeRule.onNodeWithTag("network_throughput_card").assertIsDisplayed()
-        composeRule.onNodeWithTag("bluetooth_card").assertIsDisplayed()
+        composeRule.onNodeWithTag("wifi_link_card").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("ethernet_link_card").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("network_throughput_card").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("Network Throughput (TrafficStats RX / TX)").assertIsDisplayed()
+        composeRule.onNodeWithTag("wifi_regulatory_card").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("surrounding_wifi_aps_card").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("bluetooth_card").performScrollTo().assertIsDisplayed()
 
         // 5. Copy Markdown Diagnostic Snapshot AND verify switching all 5 tabs works while the notification bar is visible
         composeRule.onNodeWithTag("btn_copy_markdown").performClick()
@@ -139,7 +141,7 @@ class CorewatchUiTest {
 
         composeRule.onNodeWithTag("tab_4").performClick()
         assertEquals(CorewatchTab.NetworkBluetooth, vm.state.value.activeTab)
-        composeRule.onNodeWithText("Network Throughput (TrafficStats RX / TX)").assertIsDisplayed()
+        composeRule.onNodeWithText("Network Throughput (TrafficStats RX / TX)").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("status_banner").assertIsDisplayed()
 
         composeRule.onNodeWithContentDescription("Dismiss notification").performClick()
@@ -871,5 +873,248 @@ class CorewatchUiTest {
         composeRule.onNodeWithTag("btn_mini_hud").performClick()
         composeRule.onNodeWithTag("btn_grant_overlay_pip").assertIsDisplayed().performClick()
         assertEquals(1, overlayRequestedCount)
+    }
+
+    @Test
+    fun wifiRegulatoryCapabilitiesAndSurroundingApScannerRenderFilterSortMaskAndCollect() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = CorewatchViewModel(app)
+        var scanPermRequests = 0
+        var locSettingsOpens = 0
+
+        composeRule.setContent {
+            CorewatchTheme(dark = true) {
+                CorewatchAppRoot(
+                    vm = vm,
+                    onRequestWifiScanPermission = { scanPermRequests++ },
+                    onOpenLocationSettings = { locSettingsOpens++ },
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag("tab_4").performClick()
+
+        // 1. Verify opt-in Location permission card before granting
+        vm.setSnapshotForTesting(
+            vm.state.value.snapshot.copy(
+                wifi = WifiTelemetrySnapshot(
+                    isConnected = true,
+                    capabilities = com.droid.corewatch.data.WifiRadioCapabilities(
+                        isCapabilitiesQueried = true,
+                        hasNearbyWifiPermission = true,
+                        channelQuerySucceeded = true,
+                        supports11beWifi7 = true,
+                        supports11axWifi6 = true,
+                        supports24Ghz = true,
+                        supports5Ghz = true,
+                        supports6Ghz = true,
+                        maxTxLinkSpeedMbps = 5764,
+                        maxRxLinkSpeedMbps = 5764,
+                        supportsWpa3Sae = true,
+                        supportsSaeH2e = true,
+                        countryCode = "CA",
+                        countryCodeSource = "Driver RegDomain (dumpsys)",
+                        band24Ghz = com.droid.corewatch.data.BandChannelSummary(
+                            bandLabel = "2.4 GHz",
+                            isHardwareSupported = true,
+                            allowedCount = 11,
+                            usableCount = 11,
+                            maxBandwidthMhz = 40,
+                            channelRangeSummary = "Ch 1–11",
+                            subBandNote = "FCC / ISED (Ch 1–11)",
+                        ),
+                        band5Ghz = com.droid.corewatch.data.BandChannelSummary(
+                            bandLabel = "5 GHz",
+                            isHardwareSupported = true,
+                            allowedCount = 22,
+                            usableCount = 22,
+                            maxBandwidthMhz = 160,
+                            channelRangeSummary = "Ch 36–64, 100–116, 132–144, 149–165",
+                            dfsChannelCount = 13,
+                            subBandNote = "13 DFS ch · TDWR 120–128 excl.",
+                        ),
+                        band6Ghz = com.droid.corewatch.data.BandChannelSummary(
+                            bandLabel = "6 GHz",
+                            isHardwareSupported = true,
+                            allowedCount = 0,
+                            usableCount = 0,
+                            maxBandwidthMhz = 0,
+                            channelRangeSummary = "Blocked in Region",
+                            subBandNote = "0 allowed 6 GHz channels",
+                        ),
+                    ),
+                    surroundingScan = com.droid.corewatch.data.WifiScanTelemetrySnapshot(
+                        hasScanLocationPermission = false,
+                        isLocationEnabled = true,
+                        isWifiEnabled = true,
+                    ),
+                ),
+            ),
+        )
+        composeRule.waitForIdle()
+
+        // Verify Device Wi-Fi Radio & Regulatory Capabilities card + Canada 6 GHz warning banner
+        composeRule.onNodeWithTag("wifi_regulatory_card").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("wifi_6ghz_reg_warning").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("wifi_band_6g_tile").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("0 Allowed (Reg-Blocked)").performScrollTo().assertIsDisplayed()
+
+        // Click opt-in Location permission button
+        composeRule.onNodeWithTag("grant_wifi_scan_permission_btn").performScrollTo().performClick()
+        assertEquals(1, scanPermRequests)
+
+        // 2. Verify Location Services Off state
+        vm.setSnapshotForTesting(
+            vm.state.value.snapshot.copy(
+                wifi = vm.state.value.snapshot.wifi.copy(
+                    surroundingScan = com.droid.corewatch.data.WifiScanTelemetrySnapshot(
+                        hasScanLocationPermission = true,
+                        isLocationEnabled = false,
+                        isWifiEnabled = true,
+                    ),
+                ),
+            ),
+        )
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("open_location_settings_btn").performScrollTo().performClick()
+        assertEquals(1, locSettingsOpens)
+
+        // 3. Populate verbose surrounding APs across 2.4 GHz, 5 GHz [DFS], and 6 GHz [PSC] 320 MHz Wi-Fi 7
+        vm.setSnapshotForTesting(
+            vm.state.value.snapshot.copy(
+                wifi = vm.state.value.snapshot.wifi.copy(
+                    surroundingScan = com.droid.corewatch.data.WifiScanTelemetrySnapshot(
+                        hasScanLocationPermission = true,
+                        isLocationEnabled = true,
+                        isWifiEnabled = true,
+                        totalApCount = 3,
+                        count24Ghz = 1,
+                        count5Ghz = 1,
+                        count6Ghz = 1,
+                        lastScanAgeSeconds = 0.8f,
+                        accessPoints = listOf(
+                            com.droid.corewatch.data.SurroundingWifiAp(
+                                ssid = "Lab-WiFi7-6GHz",
+                                bssid = "02:11:22:33:44:06",
+                                maskedBssid = "02:11:22:••:••:06",
+                                isConnectedAp = true,
+                                bandGhz = 6,
+                                bandLabel = "6 GHz",
+                                primaryFreqMhz = 6135,
+                                centerFreq0Mhz = 6105,
+                                channelNumber = 37,
+                                channelWidthMhz = 320,
+                                channelWidthLabel = "320 MHz",
+                                isPscChannel = true,
+                                wifiStandardCode = 8,
+                                wifiStandardLabel = "Wi-Fi 7 (11be)",
+                                securitySummary = "WPA3-SAE",
+                                capabilityBadges = listOf("SAE-H2E", "PMF-Req", "MLO (2L)", "TWT"),
+                                rssiDbm = -46,
+                                signalPercent = 98,
+                                mloAffiliatedLinkCount = 2,
+                                countryCode80211d = "US",
+                                qbssStationCount = 4,
+                                qbssChannelUtilizationPct = 12,
+                                ageSeconds = 0.8f,
+                            ),
+                            com.droid.corewatch.data.SurroundingWifiAp(
+                                ssid = "Office-5G-DFS",
+                                bssid = "02:11:22:33:44:05",
+                                maskedBssid = "02:11:22:••:••:05",
+                                bandGhz = 5,
+                                bandLabel = "5 GHz",
+                                primaryFreqMhz = 5500,
+                                centerFreq0Mhz = 5530,
+                                channelNumber = 100,
+                                channelWidthMhz = 80,
+                                channelWidthLabel = "80 MHz",
+                                isDfsChannel = true,
+                                wifiStandardCode = 6,
+                                wifiStandardLabel = "Wi-Fi 6 (11ax)",
+                                securitySummary = "WPA2/WPA3-Ent",
+                                capabilityBadges = listOf("PMF", "11r", "11k", "11v"),
+                                rssiDbm = -61,
+                                signalPercent = 71,
+                                ageSeconds = 1.4f,
+                            ),
+                            com.droid.corewatch.data.SurroundingWifiAp(
+                                ssid = "IoT-24G",
+                                bssid = "02:11:22:33:44:02",
+                                maskedBssid = "02:11:22:••:••:02",
+                                bandGhz = 2,
+                                bandLabel = "2.4 GHz",
+                                primaryFreqMhz = 2437,
+                                channelNumber = 6,
+                                channelWidthMhz = 20,
+                                channelWidthLabel = "20 MHz",
+                                wifiStandardCode = 4,
+                                wifiStandardLabel = "Wi-Fi 4 (11n)",
+                                securitySummary = "WPA2-PSK",
+                                rssiDbm = -74,
+                                signalPercent = 47,
+                                ageSeconds = 2.1f,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        composeRule.waitForIdle()
+
+        // Verify masked BSSID by default and toggle to full BSSID
+        composeRule.onNodeWithText("Lab-WiFi7-6GHz").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("02:11:22:••:••:06").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("wifi_ap_mask_bssid_chip").performScrollTo().performClick()
+        composeRule.onNodeWithText("02:11:22:33:44:06").performScrollTo().assertIsDisplayed()
+
+        // Filter to 6 GHz only and cycle sort order
+        composeRule.onNodeWithTag("wifi_filter_BAND_6_GHZ").performScrollTo().performClick()
+        composeRule.onNodeWithText("Lab-WiFi7-6GHz").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("wifi_ap_sort_chip").performScrollTo().performClick()
+        composeRule.onNodeWithTag("wifi_ap_sort_chip").performScrollTo().performClick()
+        composeRule.onNodeWithTag("wifi_filter_ALL").performScrollTo().performClick()
+
+        // Exercise TelemetryCollector live scan + capabilities collection with ShadowWifiManager & granted permissions
+        val shadowApp = org.robolectric.Shadows.shadowOf(app)
+        shadowApp.grantPermissions(
+            android.Manifest.permission.ACCESS_FINE_LOCATION,
+            android.Manifest.permission.ACCESS_COARSE_LOCATION,
+            android.Manifest.permission.NEARBY_WIFI_DEVICES,
+        )
+        val wm = app.getSystemService(android.net.wifi.WifiManager::class.java)
+        @Suppress("DEPRECATION")
+        wm.isWifiEnabled = true
+        val shadowWm = org.robolectric.Shadows.shadowOf(wm)
+        val sr = android.net.wifi.ScanResult().also { res ->
+            @Suppress("DEPRECATION")
+            res.SSID = "TestBench-6E"
+            res.BSSID = "02:aa:bb:cc:dd:01"
+            res.frequency = 5975
+            res.channelWidth = android.net.wifi.ScanResult.CHANNEL_WIDTH_160MHZ
+            res.centerFreq0 = 6025
+            res.level = -51
+            res.capabilities = "[RSN-SAE-CCMP][MFPR][ESS]"
+            runCatching {
+                val ie = android.net.wifi.ScanResult.InformationElement(
+                    7,
+                    0,
+                    byteArrayOf('C'.code.toByte(), 'A'.code.toByte(), 'I'.code.toByte(), 1, 11, 30),
+                )
+                res.javaClass.getDeclaredField("informationElements").apply {
+                    isAccessible = true
+                    set(res, arrayOf(ie))
+                }
+            }
+        }
+        shadowWm.setScanResults(listOf(sr))
+        vm.onPermissionsUpdated()
+        vm.triggerWifiScan()
+        val liveWifi = vm.state.value.snapshot.wifi
+        assertTrue(liveWifi.capabilities.isCapabilitiesQueried)
+        assertTrue(liveWifi.surroundingScan.hasScanLocationPermission)
+        assertEquals(1, liveWifi.surroundingScan.totalApCount)
+        assertEquals("TestBench-6E", liveWifi.surroundingScan.accessPoints.first().ssid)
+        assertEquals("WPA3-SAE", liveWifi.surroundingScan.accessPoints.first().securitySummary)
     }
 }

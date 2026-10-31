@@ -16,6 +16,8 @@ import com.droid.corewatch.data.DiagnosticReportBuilder
 import com.droid.corewatch.data.FloatRingBuffer
 import com.droid.corewatch.data.SystemTelemetrySnapshot
 import com.droid.corewatch.data.TelemetryCollector
+import com.droid.corewatch.data.WifiApBandFilter
+import com.droid.corewatch.data.WifiApSortOrder
 import com.droid.corewatch.service.CaffeineController
 import com.droid.corewatch.ui.theme.ThemeMode
 import kotlinx.coroutines.Dispatchers
@@ -95,6 +97,9 @@ data class CorewatchUiState(
     val showShortcutsDialog: Boolean = false,
     val themeMode: ThemeMode = ThemeMode.Dark,
     val statusBanner: String? = null,
+    val wifiApBandFilter: WifiApBandFilter = WifiApBandFilter.ALL,
+    val wifiApSortOrder: WifiApSortOrder = WifiApSortOrder.SIGNAL_DBM,
+    val maskApBssids: Boolean = true,
     val caffeineConfig: CaffeineConfig = CaffeineConfig(),
     val snapshot: SystemTelemetrySnapshot = SystemTelemetrySnapshot(),
     val history: TelemetryHistoryStats = TelemetryHistoryStats(),
@@ -355,6 +360,29 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
             bannerMessage = "Copied Markdown Hardware & Thermal Snapshot to clipboard",
         )
         return report
+    }
+
+    fun setWifiApBandFilter(filter: WifiApBandFilter) {
+        _state.update { it.copy(wifiApBandFilter = filter) }
+    }
+
+    fun cycleWifiApSortOrder() {
+        _state.update { it.copy(wifiApSortOrder = it.wifiApSortOrder.next()) }
+    }
+
+    fun toggleMaskApBssids() {
+        _state.update { it.copy(maskApBssids = !it.maskApBssids) }
+    }
+
+    fun triggerWifiScan() {
+        val (_, msg) = collector.triggerActiveWifiScan()
+        sampleNow()
+        _state.update { it.copy(statusBanner = msg) }
+    }
+
+    fun onPermissionsUpdated() {
+        collector.invalidateWifiCaches()
+        sampleNow()
     }
 
     internal fun setSnapshotForTesting(snapshot: SystemTelemetrySnapshot) {

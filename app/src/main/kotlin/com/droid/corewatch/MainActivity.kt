@@ -170,8 +170,17 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(state.activeTab) {
                 if (state.activeTab == CorewatchTab.NetworkBluetooth && Build.VERSION.SDK_INT >= 31) {
                     runCatching {
+                        val needed = ArrayList<String>(2)
                         if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                            requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 1001)
+                            needed += Manifest.permission.BLUETOOTH_CONNECT
+                        }
+                        if (Build.VERSION.SDK_INT >= 33 &&
+                            checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED
+                        ) {
+                            needed += Manifest.permission.NEARBY_WIFI_DEVICES
+                        }
+                        if (needed.isNotEmpty()) {
+                            requestPermissions(needed.toTypedArray(), 1001)
                         }
                     }
                 }
@@ -182,6 +191,9 @@ class MainActivity : ComponentActivity() {
                     vm = vm,
                     canDrawOverlays = canDrawOverlays,
                     onRequestOverlayPermission = { requestOverlayPermissionForPip() },
+                    onRequestWifiScanPermission = { requestWifiScanLocationPermission() },
+                    onRequestNearbyWifiPermission = { requestNearbyWifiDevicesPermission() },
+                    onOpenLocationSettings = { openLocationSettings() },
                     onResizeWindowForMode = { isMini ->
                         val liveOverlay = runCatching { Settings.canDrawOverlays(this) }.getOrDefault(false)
                         canDrawOverlaysState.value = liveOverlay
@@ -337,8 +349,35 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    internal fun requestWifiScanLocationPermission() {
+        runCatching {
+            requestPermissions(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                ),
+                1002,
+            )
+        }
+    }
+
+    internal fun requestNearbyWifiDevicesPermission() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            runCatching {
+                requestPermissions(arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES), 1003)
+            }
+        }
+    }
+
+    internal fun openLocationSettings() {
+        runCatching {
+            startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+        }
+    }
+
     override fun onResume() {
         super.onResume()
+        vm.onPermissionsUpdated()
         val hasOverlay = runCatching { Settings.canDrawOverlays(this) }.getOrDefault(false)
         canDrawOverlaysState.value = hasOverlay
         if (awaitingOverlayPermissionForPip) {
@@ -367,7 +406,7 @@ class MainActivity : ComponentActivity() {
     ) {
         @Suppress("DEPRECATION")
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        vm.sampleNow()
+        vm.onPermissionsUpdated()
     }
 
     override fun onDestroy() {

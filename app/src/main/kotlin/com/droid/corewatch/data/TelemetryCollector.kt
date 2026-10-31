@@ -16,6 +16,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.hardware.display.DisplayManager
+import android.location.LocationManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.net.ConnectivityManager
@@ -24,6 +25,8 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.TrafficStats
+import android.net.wifi.ScanResult
+import android.net.wifi.WifiAvailableChannel
 import android.net.wifi.WifiInfo
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
@@ -32,6 +35,7 @@ import android.os.Environment
 import android.os.PowerManager
 import android.os.SystemClock
 import android.os.StatFs
+import android.telephony.TelephonyManager
 import android.util.DisplayMetrics
 import androidx.core.content.ContextCompat
 import java.io.File
@@ -77,6 +81,21 @@ class TelemetryCollector(
     }
     private var lastLegacyWifiPollElapsedMs: Long = 0L
     private var cachedLegacyWifiInfo: WifiInfo? = null
+    private var wifiScanCallbackRegistered: Boolean = false
+    @Volatile
+    private var wifiScanResultsDirty: Boolean = true
+    private var lastWifiCapSampleElapsedMs: Long = 0L
+    private var cachedWifiCapabilities: WifiRadioCapabilities = WifiRadioCapabilities()
+    private var lastWifiScanSampleElapsedMs: Long = 0L
+    private var cachedWifiScanSnapshot: WifiScanTelemetrySnapshot = WifiScanTelemetrySnapshot()
+    @Volatile
+    private var lastWifiDumpsysSampleElapsedMs: Long = 0L
+    @Volatile
+    private var wifiDumpsysRefreshInFlight: Boolean = false
+    @Volatile
+    private var cachedDumpsysWifiCountry: Pair<String, String>? = null
+    @Volatile
+    private var latestBeaconCountry80211d: String? = null
     @Volatile
     private var a2dpProxy: BluetoothA2dp? = null
     private var a2dpProxyRequested: Boolean = false
@@ -118,6 +137,45 @@ class TelemetryCollector(
 
     fun resetWindowCounters() {
         vrrAndFrameTracker.reset()
+        invalidateWifiCaches()
+    }
+
+    fun invalidateWifiCaches() {
+        lastWifiCapSampleElapsedMs = 0L
+        lastWifiScanSampleElapsedMs = 0L
+        wifiScanResultsDirty = true
+    }
+
+    @Suppress("DEPRECATION")
+    fun triggerActiveWifiScan(): Pair<Boolean, String> {
+        val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            ?: return false to "Wi-Fi service unavailable on this device"
+        val wifiOn = runCatching { wm.isWifiEnabled }.getOrDefault(false)
+        if (!wifiOn) {
+            return false to "Turn on Wi-Fi to scan surrounding access points"
+        }
+        val hasLocPerm = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!hasLocPerm) {
+            return false to "Grant Location permission to read surrounding Wi-Fi scan results"
+        }
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        val locEnabled = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            runCatching { lm?.isLocationEnabled ?: true }.getOrDefault(true)
+        } else {
+            true
+        }
+        if (!locEnabled) {
+            return false to "Enable Location Services in Android Settings to unlock Wi-Fi scan results"
+        }
+        wifiScanResultsDirty = true
+        lastWifiScanSampleElapsedMs = 0L
+        val started = runCatching { wm.startScan() }.getOrDefault(false)
+        return if (started) {
+            true to "Active Wi-Fi scan triggered across supported bands"
+        } else {
+            false to "Refreshed cached AP beacons (Android limits foreground apps to 4 active scans / 2 min)"
+        }
     }
 
     fun sample(caffeineConfig: CaffeineConfig, nowElapsedMs: Long = SystemClock.elapsedRealtime()): SystemTelemetrySnapshot {
@@ -967,6 +1025,21 @@ class TelemetryCollector(
             nowElapsedMs = nowElapsedMs,
         )
 
+        ensureWifiScanCallbackRegistered(wm)
+        val surroundingScan = readSurroundingWifiScan(
+            wm = wm,
+            wifiInfo = wifiInfo,
+            isWifiConnected = isWifiConnected,
+            nowElapsedMs = nowElapsedMs,
+        )
+        val wifiCapabilities = readWifiRadioCapabilities(
+            wm = wm,
+            wifiInfo = wifiInfo,
+            activeStdCode = stdCode,
+            activeFreqMhz = freq,
+            nowElapsedMs = nowElapsedMs,
+        )
+
         val wifiSnapshot = WifiTelemetrySnapshot(
             isConnected = isWifiConnected,
             transportLabel = if (isWifiConnected) "Wi-Fi" else "Disconnected",
@@ -998,6 +1071,8 @@ class TelemetryCollector(
             txSuccessPktsPerSec = if (isWifiConnected) txGood else 0.0,
             rxSuccessPktsPerSec = if (isWifiConnected) rxGood else 0.0,
             throughput = wifiThroughput,
+            capabilities = wifiCapabilities,
+            surroundingScan = surroundingScan,
         )
 
         val vpnSuffix = if (anyVpnActive) " + VPN" else ""
@@ -1017,6 +1092,579 @@ class TelemetryCollector(
             ethernet = ethernetSnapshot,
             activeDefaultRouteSummary = activeDefaultRouteSummary,
         )
+    }
+
+    private fun ensureWifiScanCallbackRegistered(wm: WifiManager?) {
+        if (wifiScanCallbackRegistered || wm == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        wifiScanCallbackRegistered = true
+        runCatching {
+            wm.registerScanResultsCallback(
+                { runnable -> runnable.run() },
+                object : WifiManager.ScanResultsCallback() {
+                    override fun onScanResultsAvailable() {
+                        wifiScanResultsDirty = true
+                    }
+                },
+            )
+        }
+    }
+
+    private fun scheduleWifiCountryDumpsysIfPermitted(nowElapsedMs: Long) {
+        val hasDump = ContextCompat.checkSelfPermission(context, Manifest.permission.DUMP) == PackageManager.PERMISSION_GRANTED
+        if (!hasDump || wifiDumpsysRefreshInFlight) return
+        val dt = nowElapsedMs - lastWifiDumpsysSampleElapsedMs
+        if (lastWifiDumpsysSampleElapsedMs != 0L && dt in 0L until 15_000L) return
+        wifiDumpsysRefreshInFlight = true
+        lastWifiDumpsysSampleElapsedMs = nowElapsedMs
+        runCatching {
+            btStackExecutor.execute {
+                try {
+                    val proc = ProcessBuilder("/system/bin/dumpsys", "wifi")
+                        .redirectErrorStream(true)
+                        .start()
+                    val sb = StringBuilder(4_096)
+                    proc.inputStream.bufferedReader().use { reader ->
+                        var linesRead = 0
+                        while (linesRead < 4_000) {
+                            val line = reader.readLine() ?: break
+                            linesRead++
+                            if (line.contains("CountryCode", ignoreCase = true)) {
+                                sb.appendLine(line)
+                                if (line.contains("mDriverCountryCode:")) break
+                            }
+                        }
+                    }
+                    runCatching { proc.destroy() }
+                    WirelessTelemetryParsers.parseWifiDumpsysCountryCode(sb.toString())?.let {
+                        cachedDumpsysWifiCountry = it
+                    }
+                } catch (_: Throwable) {
+                    // Ignore process failures on restricted sandboxes
+                } finally {
+                    wifiDumpsysRefreshInFlight = false
+                }
+            }
+        }.onFailure {
+            wifiDumpsysRefreshInFlight = false
+        }
+    }
+
+    private fun resolveRegulatoryRegion(
+        wm: WifiManager?,
+        hasLocationPerm: Boolean,
+        nowElapsedMs: Long,
+    ): Pair<String, String> {
+        scheduleWifiCountryDumpsysIfPermitted(nowElapsedMs)
+        cachedDumpsysWifiCountry?.let { return it }
+
+        if (wm != null && hasLocationPerm) {
+            val sysCountry = runCatching {
+                val method = wm.javaClass.getMethod("getCountryCode")
+                (method.invoke(wm) as? String)?.trim()?.uppercase(java.util.Locale.US)
+            }.getOrNull()
+            if (WirelessTelemetryParsers.isValidRegulatoryCountryCode(sysCountry)) {
+                return sysCountry!! to "WifiManager RegDomain"
+            }
+        }
+
+        latestBeaconCountry80211d?.takeIf { WirelessTelemetryParsers.isValidRegulatoryCountryCode(it) }?.let {
+            return it to "802.11d AP Beacon"
+        }
+
+        val tm = runCatching { context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager }.getOrNull()
+        val netIso = runCatching { tm?.networkCountryIso?.trim()?.uppercase(java.util.Locale.US) }.getOrNull()
+        if (WirelessTelemetryParsers.isValidRegulatoryCountryCode(netIso)) {
+            return netIso!! to "Telephony Network"
+        }
+        val simIso = runCatching { tm?.simCountryIso?.trim()?.uppercase(java.util.Locale.US) }.getOrNull()
+        if (WirelessTelemetryParsers.isValidRegulatoryCountryCode(simIso)) {
+            return simIso!! to "SIM Country"
+        }
+
+        val localeIso = java.util.Locale.getDefault().country.trim().uppercase(java.util.Locale.US)
+        if (WirelessTelemetryParsers.isValidRegulatoryCountryCode(localeIso)) {
+            return localeIso to "System Locale (Fallback)"
+        }
+        return "Unknown" to "Unavailable"
+    }
+
+    @Suppress("MissingPermission", "DEPRECATION")
+    private fun readWifiRadioCapabilities(
+        wm: WifiManager?,
+        wifiInfo: WifiInfo?,
+        activeStdCode: Int,
+        activeFreqMhz: Int,
+        nowElapsedMs: Long,
+    ): WifiRadioCapabilities {
+        if (wm == null) return WifiRadioCapabilities()
+
+        val hasNearbyPerm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+        val hasLocationPerm = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+        val maxTxPhy = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching { wifiInfo?.maxSupportedTxLinkSpeedMbps?.coerceAtLeast(0) ?: 0 }.getOrDefault(0)
+        } else {
+            0
+        }
+        val maxRxPhy = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching { wifiInfo?.maxSupportedRxLinkSpeedMbps?.coerceAtLeast(0) ?: 0 }.getOrDefault(0)
+        } else {
+            0
+        }
+
+        val dt = nowElapsedMs - lastWifiCapSampleElapsedMs
+        if (cachedWifiCapabilities.isCapabilitiesQueried &&
+            lastWifiCapSampleElapsedMs != 0L &&
+            dt in 0L until 5_000L &&
+            hasNearbyPerm == cachedWifiCapabilities.hasNearbyWifiPermission
+        ) {
+            val (cc, ccSrc) = resolveRegulatoryRegion(wm, hasLocationPerm, nowElapsedMs)
+            return cachedWifiCapabilities.copy(
+                maxTxLinkSpeedMbps = maxTxPhy,
+                maxRxLinkSpeedMbps = maxRxPhy,
+                countryCode = cc,
+                countryCodeSource = ccSrc,
+            )
+        }
+        lastWifiCapSampleElapsedMs = nowElapsedMs
+
+        val sup24 = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching { wm.is24GHzBandSupported }.getOrDefault(true)
+        } else {
+            true
+        } || (activeFreqMhz in 2401..2495)
+        val sup5 = runCatching { wm.is5GHzBandSupported }.getOrDefault(false) || (activeFreqMhz in 5150..5895)
+        val sup6 = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching { wm.is6GHzBandSupported }.getOrDefault(false)
+        } else {
+            false
+        } || (activeFreqMhz in 5925..7125)
+        val sup60 = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching { wm.is60GHzBandSupported }.getOrDefault(false)
+        } else {
+            false
+        }
+
+        val sup11abg = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching { wm.isWifiStandardSupported(ScanResult.WIFI_STANDARD_LEGACY) }.getOrDefault(true)
+        } else {
+            true
+        } || activeStdCode >= 1
+        val sup11n = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching { wm.isWifiStandardSupported(ScanResult.WIFI_STANDARD_11N) }.getOrDefault(true)
+        } else {
+            true
+        } || activeStdCode >= 4
+        val sup11ac = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching { wm.isWifiStandardSupported(ScanResult.WIFI_STANDARD_11AC) }.getOrDefault(sup5)
+        } else {
+            sup5
+        } || activeStdCode in listOf(5, 6, 8)
+        val sup11ax = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching { wm.isWifiStandardSupported(ScanResult.WIFI_STANDARD_11AX) }.getOrDefault(false)
+        } else {
+            false
+        } || activeStdCode in listOf(6, 8) || sup6
+        val sup11ad = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching { wm.isWifiStandardSupported(ScanResult.WIFI_STANDARD_11AD) }.getOrDefault(false)
+        } else {
+            false
+        } || activeStdCode == 7
+        val sup11be = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            runCatching { wm.isWifiStandardSupported(ScanResult.WIFI_STANDARD_11BE) }.getOrDefault(false)
+        } else {
+            false
+        } || activeStdCode == 8
+
+        val supSae = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching { wm.isWpa3SaeSupported }.getOrDefault(false)
+        } else {
+            false
+        }
+        val supSaeH2e = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching { wm.isWpa3SaeH2eSupported }.getOrDefault(false)
+        } else {
+            false
+        }
+        val supSaePk = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching { wm.isWpa3SaePublicKeySupported }.getOrDefault(false)
+        } else {
+            false
+        }
+        val supOwe = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching { wm.isEnhancedOpenSupported }.getOrDefault(false)
+        } else {
+            false
+        }
+        val supSuiteB = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching { wm.isWpa3SuiteBSupported }.getOrDefault(false)
+        } else {
+            false
+        }
+        val supTls13 = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            runCatching { wm.isTlsV13Supported }.getOrDefault(false)
+        } else {
+            false
+        }
+        val supTofu = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            runCatching { wm.isTrustOnFirstUseSupported }.getOrDefault(false)
+        } else {
+            false
+        }
+        val supDpp = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching { wm.isEasyConnectSupported }.getOrDefault(false)
+        } else {
+            false
+        }
+        val supWpa2 = if (Build.VERSION.SDK_INT >= 35) {
+            runCatching { wm.isWpaPersonalSupported }.getOrDefault(true)
+        } else {
+            true
+        }
+
+        val supDbs = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            runCatching { wm.isDualBandSimultaneousSupported }.getOrDefault(false)
+        } else {
+            false
+        }
+        val supT2lm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            runCatching { wm.isTidToLinkMappingNegotiationSupported }.getOrDefault(false)
+        } else {
+            false
+        }
+        val supMbb = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching { wm.isMakeBeforeBreakWifiSwitchingSupported }.getOrDefault(false)
+        } else {
+            false
+        }
+        val supStaAp = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching { wm.isStaApConcurrencySupported }.getOrDefault(false)
+        } else {
+            false
+        }
+        val scanThrottle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching { wm.isScanThrottleEnabled }.getOrDefault(true)
+        } else {
+            true
+        }
+
+        var channelQueryOk = false
+        var allowed24: List<Pair<Int, Int>> = emptyList()
+        var usable24: List<Int> = emptyList()
+        var allowed5: List<Pair<Int, Int>> = emptyList()
+        var usable5: List<Int> = emptyList()
+        var allowed6: List<Pair<Int, Int>> = emptyList()
+        var usable6: List<Int> = emptyList()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && (hasNearbyPerm || hasLocationPerm)) {
+            val opSta = WifiAvailableChannel.OP_MODE_STA
+            fun extractFreqWidths(list: List<WifiAvailableChannel>): List<Pair<Int, Int>> = list.map { ch ->
+                val w = if (Build.VERSION.SDK_INT >= 36) {
+                    runCatching { ch.channelWidth }.getOrDefault(0)
+                } else {
+                    0
+                }
+                ch.frequencyMhz to w
+            }
+
+            if (sup24) {
+                runCatching {
+                    allowed24 = extractFreqWidths(wm.getAllowedChannels(1, opSta))
+                    usable24 = wm.getUsableChannels(1, opSta).map { it.frequencyMhz }
+                    channelQueryOk = true
+                }
+            }
+            if (sup5) {
+                // WifiManager.getAllowedChannels requires WIFI_BAND_5_GHZ_WITH_DFS = 6 (passing 2 throws IllegalArgumentException)
+                runCatching {
+                    val rawAllowed = wm.getAllowedChannels(6, opSta)
+                    val rawUsable = wm.getUsableChannels(6, opSta)
+                    allowed5 = extractFreqWidths(rawAllowed)
+                    usable5 = rawUsable.map { it.frequencyMhz }
+                    channelQueryOk = true
+                }.onFailure {
+                    runCatching {
+                        allowed5 = extractFreqWidths(wm.getAllowedChannels(2, opSta))
+                        usable5 = wm.getUsableChannels(2, opSta).map { it.frequencyMhz }
+                        channelQueryOk = true
+                    }
+                }
+            }
+            if (sup6) {
+                runCatching {
+                    allowed6 = extractFreqWidths(wm.getAllowedChannels(8, opSta))
+                    usable6 = wm.getUsableChannels(8, opSta).map { it.frequencyMhz }
+                    channelQueryOk = true
+                }
+            }
+        }
+
+        val summary24 = WirelessTelemetryParsers.summarizeAllowedBandChannels(
+            bandGhz = 2,
+            allowedFreqsWidths = allowed24,
+            usableFreqs = usable24,
+            isBandSupported = sup24,
+            supports11be = sup11be,
+            supports11axOrAc = sup11ax || sup11ac,
+            supports11n = sup11n,
+        )
+        val summary5 = WirelessTelemetryParsers.summarizeAllowedBandChannels(
+            bandGhz = 5,
+            allowedFreqsWidths = allowed5,
+            usableFreqs = usable5,
+            isBandSupported = sup5,
+            supports11be = sup11be,
+            supports11axOrAc = sup11ax || sup11ac,
+            supports11n = sup11n,
+        )
+        val summary6 = WirelessTelemetryParsers.summarizeAllowedBandChannels(
+            bandGhz = 6,
+            allowedFreqsWidths = allowed6,
+            usableFreqs = usable6,
+            isBandSupported = sup6,
+            supports11be = sup11be,
+            supports11axOrAc = sup11ax || sup11ac,
+            supports11n = sup11n,
+        )
+
+        val (cc, ccSrc) = resolveRegulatoryRegion(wm, hasLocationPerm, nowElapsedMs)
+
+        return WifiRadioCapabilities(
+            isCapabilitiesQueried = true,
+            hasNearbyWifiPermission = hasNearbyPerm,
+            channelQuerySucceeded = channelQueryOk,
+            supports11beWifi7 = sup11be,
+            supports11axWifi6 = sup11ax,
+            supports11acWifi5 = sup11ac,
+            supports11nWifi4 = sup11n,
+            supports11abgLegacy = sup11abg,
+            supports11adWigig = sup11ad,
+            supports24Ghz = sup24,
+            supports5Ghz = sup5,
+            supports6Ghz = sup6,
+            supports60Ghz = sup60,
+            maxTxLinkSpeedMbps = maxTxPhy,
+            maxRxLinkSpeedMbps = maxRxPhy,
+            supportsWpa3Sae = supSae,
+            supportsSaeH2e = supSaeH2e,
+            supportsSaePk = supSaePk,
+            supportsOwe = supOwe,
+            supportsWpa3SuiteB192 = supSuiteB,
+            supportsTlsV13 = supTls13,
+            supportsTrustOnFirstUse = supTofu,
+            supportsEasyConnectDpp = supDpp,
+            supportsWpa2Personal = supWpa2,
+            supportsDualBandSimultaneous = supDbs,
+            supportsMloTidToLinkMapping = supT2lm,
+            supportsMakeBeforeBreak = supMbb,
+            supportsStaApConcurrency = supStaAp,
+            isScanThrottleEnabled = scanThrottle,
+            countryCode = cc,
+            countryCodeSource = ccSrc,
+            band24Ghz = summary24,
+            band5Ghz = summary5,
+            band6Ghz = summary6,
+        ).also { cachedWifiCapabilities = it }
+    }
+
+    @Suppress("MissingPermission", "DEPRECATION")
+    private fun readSurroundingWifiScan(
+        wm: WifiManager?,
+        wifiInfo: WifiInfo?,
+        isWifiConnected: Boolean,
+        nowElapsedMs: Long,
+    ): WifiScanTelemetrySnapshot {
+        val wifiEnabled = runCatching { wm?.isWifiEnabled ?: false }.getOrDefault(false) || isWifiConnected
+        val hasScanPerm = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        val locEnabled = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            runCatching { lm?.isLocationEnabled ?: true }.getOrDefault(true)
+        } else {
+            true
+        }
+
+        if (wm == null || !wifiEnabled || !hasScanPerm || !locEnabled) {
+            return WifiScanTelemetrySnapshot(
+                hasScanLocationPermission = hasScanPerm,
+                isLocationEnabled = locEnabled,
+                isWifiEnabled = wifiEnabled,
+            ).also { cachedWifiScanSnapshot = it }
+        }
+
+        val dt = nowElapsedMs - lastWifiScanSampleElapsedMs
+        if (!wifiScanResultsDirty &&
+            lastWifiScanSampleElapsedMs != 0L &&
+            dt in 0L until 4_000L &&
+            cachedWifiScanSnapshot.hasScanLocationPermission == hasScanPerm &&
+            cachedWifiScanSnapshot.isLocationEnabled == locEnabled
+        ) {
+            return cachedWifiScanSnapshot
+        }
+        wifiScanResultsDirty = false
+        lastWifiScanSampleElapsedMs = nowElapsedMs
+
+        val rawResults: List<ScanResult> = runCatching { wm.scanResults.orEmpty() }.getOrDefault(emptyList())
+        val activeBssid = runCatching { wifiInfo?.bssid?.trim()?.lowercase(java.util.Locale.US) }.getOrNull()
+            ?.takeIf { it.isNotEmpty() && it != "02:00:00:00:00:00" && it != "00:00:00:00:00:00" }
+
+        val refElapsedUs = maxOf(nowElapsedMs * 1_000L, SystemClock.elapsedRealtime() * 1_000L)
+        var c24 = 0
+        var c5 = 0
+        var c6 = 0
+        var minAgeSec = Float.MAX_VALUE
+        var bestBeaconCountry: String? = null
+
+        val parsedAps = ArrayList<SurroundingWifiAp>(rawResults.size.coerceAtMost(80))
+        val sortedRaw = rawResults.sortedWith(
+            compareByDescending<ScanResult> { sr ->
+                val b = sr.BSSID?.trim()?.lowercase(java.util.Locale.US)
+                isWifiConnected && activeBssid != null && b == activeBssid
+            }.thenByDescending { it.level },
+        )
+
+        for (sr in sortedRaw) {
+            val freq = sr.frequency
+            val band = WirelessTelemetryParsers.bandGhzForFrequency(freq)
+            when (band) {
+                2 -> c24++
+                5 -> c5++
+                6 -> c6++
+            }
+            if (parsedAps.size >= 80) continue
+
+            val rawSsidStr = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                runCatching { sr.wifiSsid?.toString() }.getOrNull() ?: sr.SSID
+            } else {
+                sr.SSID
+            }
+            val (ssidLabel, isHidden) = WirelessTelemetryParsers.sanitizeSsidDisplay(rawSsidStr)
+            val cleanBssid = sr.BSSID?.trim()?.lowercase(java.util.Locale.US)?.ifBlank { "00:00:00:00:00:00" }
+                ?: "00:00:00:00:00:00"
+            val isConnectedAp = isWifiConnected && activeBssid != null && cleanBssid == activeBssid
+            val (bwMhz, bwLabel) = WirelessTelemetryParsers.formatChannelBandwidth(sr.channelWidth)
+            val stdCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                runCatching { sr.wifiStandard }.getOrDefault(0)
+            } else {
+                0
+            }
+            val secTypes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                runCatching { sr.securityTypes }.getOrDefault(IntArray(0))
+            } else {
+                IntArray(0)
+            }
+            val (secSummary, baseBadges) = WirelessTelemetryParsers.formatScanCapabilitiesSecurity(
+                capabilitiesRaw = sr.capabilities.orEmpty(),
+                securityTypes = secTypes,
+            )
+
+            val ies = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                runCatching {
+                    val rawIes = sr.informationElements.orEmpty()
+                    val pairs = ArrayList<Pair<Int, ByteArray>>(rawIes.size)
+                    for (ie in rawIes) {
+                        val buf = ie.bytes.duplicate()
+                        val len = buf.remaining().coerceIn(0, 255)
+                        val arr = ByteArray(len)
+                        buf.get(arr)
+                        pairs += ie.id to arr
+                    }
+                    WirelessTelemetryParsers.parse80211InformationElements(pairs)
+                }.getOrDefault(ParsedBeaconIes())
+            } else {
+                ParsedBeaconIes()
+            }
+
+            if (ies.countryCode80211d != null && (isConnectedAp || bestBeaconCountry == null)) {
+                bestBeaconCountry = ies.countryCode80211d
+            }
+
+            val mloCount = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                runCatching { sr.affiliatedMloLinks.size }.getOrDefault(0)
+            } else {
+                0
+            }
+            val hasTwt = if (Build.VERSION.SDK_INT >= 35) {
+                runCatching { sr.isTwtResponder }.getOrDefault(false)
+            } else {
+                false
+            }
+            val has11az = if (Build.VERSION.SDK_INT >= 35) {
+                runCatching { sr.is80211azNtbResponder }.getOrDefault(false)
+            } else {
+                false
+            }
+            val has11mc = runCatching { sr.is80211mcResponder }.getOrDefault(false)
+            val isPasspoint = runCatching { sr.isPasspointNetwork }.getOrDefault(false)
+
+            val badges = LinkedHashSet<String>(baseBadges.size + 6).apply {
+                addAll(baseBadges)
+                if (ies.fastTransition11r) add("11r")
+                if (ies.neighborReport11k) add("11k")
+                if (ies.bssTransition11v) add("11v")
+                if (mloCount > 1) add("MLO (${mloCount}L)")
+                if (hasTwt) add("TWT")
+                if (has11az) add("11az")
+                else if (has11mc) add("11mc")
+                if (isPasspoint) add("Passpoint")
+            }.toList()
+
+            val ageSec = if (sr.timestamp > 0L && refElapsedUs >= sr.timestamp) {
+                ((refElapsedUs - sr.timestamp) / 1_000_000f).coerceIn(0f, 3_600f)
+            } else {
+                0f
+            }
+            if (ageSec < minAgeSec) minAgeSec = ageSec
+
+            parsedAps += SurroundingWifiAp(
+                ssid = ssidLabel,
+                isHiddenSsid = isHidden,
+                bssid = cleanBssid,
+                maskedBssid = WirelessTelemetryParsers.maskBssid(cleanBssid),
+                isConnectedAp = isConnectedAp,
+                bandGhz = band,
+                bandLabel = WirelessTelemetryParsers.bandLabelForFrequency(freq),
+                primaryFreqMhz = freq,
+                centerFreq0Mhz = sr.centerFreq0.coerceAtLeast(0),
+                channelNumber = WirelessTelemetryParsers.frequencyMhzToChannel(freq),
+                channelWidthMhz = bwMhz,
+                channelWidthLabel = bwLabel,
+                isDfsChannel = WirelessTelemetryParsers.is5GhzDfsChannel(freq),
+                isPscChannel = WirelessTelemetryParsers.is6GhzPscChannel(freq),
+                wifiStandardCode = stdCode,
+                wifiStandardLabel = WirelessTelemetryParsers.formatWifiStandardForBand(stdCode, freq),
+                securitySummary = secSummary,
+                capabilityBadges = badges,
+                rssiDbm = sr.level,
+                signalPercent = WirelessTelemetryParsers.computeRssiQualityPercent(sr.level),
+                mloAffiliatedLinkCount = mloCount,
+                countryCode80211d = ies.countryCode80211d,
+                qbssStationCount = ies.qbssStationCount,
+                qbssChannelUtilizationPct = ies.qbssChannelUtilizationPct,
+                ageSeconds = ageSec,
+            )
+        }
+
+        if (bestBeaconCountry != null) {
+            latestBeaconCountry80211d = bestBeaconCountry
+        }
+
+        return WifiScanTelemetrySnapshot(
+            hasScanLocationPermission = hasScanPerm,
+            isLocationEnabled = locEnabled,
+            isWifiEnabled = wifiEnabled,
+            totalApCount = rawResults.size,
+            count24Ghz = c24,
+            count5Ghz = c5,
+            count6Ghz = c6,
+            lastScanAgeSeconds = if (minAgeSec < Float.MAX_VALUE) minAgeSec else -1f,
+            accessPoints = parsedAps,
+        ).also { cachedWifiScanSnapshot = it }
     }
 
     @Suppress("MissingPermission")

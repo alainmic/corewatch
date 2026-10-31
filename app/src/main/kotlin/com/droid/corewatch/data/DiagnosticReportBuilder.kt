@@ -206,6 +206,26 @@ object DiagnosticReportBuilder {
                     snapshot.wifi.throughput.txMbps,
                 ),
             )
+            val wifiCap = snapshot.wifi.capabilities
+            val regChannelsSummary = if (wifiCap.channelQuerySucceeded) {
+                "2.4G `${wifiCap.band24Ghz.usableCount}/${wifiCap.band24Ghz.allowedCount}` · 5G `${wifiCap.band5Ghz.usableCount}/${wifiCap.band5Ghz.allowedCount}` · 6G `${wifiCap.band6Ghz.usableCount}/${wifiCap.band6Ghz.allowedCount}`"
+            } else {
+                "Channels `Unqueried`"
+            }
+            val sixGhzWarnFlag = if (wifiCap.sixGhzRegulatoryWarning != null) " ⚠️ 6 GHz RegDomain Blocked" else ""
+            appendLine(
+                String.format(
+                    Locale.US,
+                    "| **Wi-Fi Radio & RegDomain** | Max `%s` (`%s` · Max PHY `%s` · Region `%s` [%s] · %s)%s |",
+                    SysfsParsers.sanitizeSensorName(wifiCap.maxGenerationLabel, "Unknown"),
+                    SysfsParsers.sanitizeSensorName(wifiCap.supportedBandsSummary, "Unknown"),
+                    SysfsParsers.sanitizeSensorName(wifiCap.maxPhySpeedSummary, "N/A"),
+                    SysfsParsers.sanitizeSensorName(wifiCap.countryCode, "Unknown"),
+                    SysfsParsers.sanitizeSensorName(wifiCap.countryCodeSource, "Unavailable"),
+                    regChannelsSummary,
+                    sixGhzWarnFlag,
+                ),
+            )
             val ethSummary = if (snapshot.ethernet.isConnected) {
                 val warnSuffix = if (snapshot.ethernet.dockBottleneckWarning != null) " ⚠️ 100BASE-TX Ceiling" else ""
                 String.format(
