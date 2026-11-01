@@ -44,8 +44,9 @@ enum class CorewatchTab(
     BatteryPower(1, "Battery & W", "Battery", "Battery", "Battery & Power", "Ctrl+2"),
     MemoryStorage(2, "Memory & Swap", "Memory", "Memory", "Memory & Storage", "Ctrl+3"),
     Displays(3, "Display", "Display", "Display", "Displays", "Ctrl+4"),
-    NetworkBluetooth(4, "Network & Bluetooth", "Net & Bluetooth", "Net & BT", "Network & Bluetooth", "Ctrl+5"),
-    UsbPeripherals(5, "USB & Peripherals", "USB & I/O", "USB", "USB & Peripherals", "Ctrl+6");
+    Network(4, "Network", "Network", "Net", "Network (Wi-Fi & Ethernet)", "Ctrl+5"),
+    Bluetooth(5, "Bluetooth", "Bluetooth", "BT", "Bluetooth Audio & Peripherals", "Ctrl+6"),
+    UsbPeripherals(6, "USB & Peripherals", "USB & I/O", "USB", "USB & Peripherals", "Ctrl+7");
 
     fun labelForDisplayCount(displayCount: Int, compact: Boolean, ultraCompact: Boolean = false): String = when (this) {
         Displays -> if (displayCount > 1) "Displays" else "Display"

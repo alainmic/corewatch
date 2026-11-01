@@ -98,7 +98,7 @@ class CorewatchUiTest {
         composeRule.onNodeWithText("Internal User Storage (/data)").assertIsDisplayed()
         composeRule.onNodeWithTag("lmkd_monitor_card").assertIsDisplayed()
 
-        // 4. Switch to Tab 4 (Display / Displays) and Tab 5 (Network & Bluetooth)
+        // 4. Switch to Tab 4 (Display / Displays), Tab 5 (Network), and Tab 6 (Bluetooth)
         assertEquals("Display", CorewatchTab.Displays.labelForDisplayCount(1, compact = false))
         assertEquals("Displays", CorewatchTab.Displays.labelForDisplayCount(2, compact = false))
         composeRule.onNodeWithTag("tab_3").performClick()
@@ -106,16 +106,25 @@ class CorewatchUiTest {
         composeRule.onNodeWithTag("frame_jank_card").assertIsDisplayed()
 
         composeRule.onNodeWithTag("tab_4").performClick()
-        assertEquals(CorewatchTab.NetworkBluetooth, vm.state.value.activeTab)
+        assertEquals(CorewatchTab.Network, vm.state.value.activeTab)
+        composeRule.onNodeWithTag("network_tab").assertIsDisplayed()
         composeRule.onNodeWithTag("wifi_link_card").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("ethernet_link_card").assertDoesNotExist()
+        composeRule.onNodeWithTag("bluetooth_card").assertDoesNotExist()
         composeRule.onNodeWithTag("network_throughput_card").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("Network Throughput (TrafficStats RX / TX)").assertIsDisplayed()
         composeRule.onNodeWithTag("wifi_regulatory_card").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("surrounding_wifi_aps_card").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithTag("bluetooth_card").performScrollTo().assertIsDisplayed()
 
-        // 5. Copy Markdown Diagnostic Snapshot AND verify switching all 5 tabs works while the notification bar is visible
+        composeRule.onNodeWithTag("tab_5").performClick()
+        assertEquals(CorewatchTab.Bluetooth, vm.state.value.activeTab)
+        composeRule.onNodeWithTag("bluetooth_tab").assertIsDisplayed()
+        composeRule.onNodeWithTag("wifi_link_card").assertDoesNotExist()
+        composeRule.onNodeWithTag("bluetooth_card").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("bluetooth_drops_card").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("bluetooth_peripherals_card").performScrollTo().assertIsDisplayed()
+
+        // 5. Copy Markdown Diagnostic Snapshot AND verify switching tabs works while the notification bar is visible
         composeRule.onNodeWithTag("btn_copy_markdown").performClick()
         composeRule.onNodeWithTag("status_banner").assertIsDisplayed()
         assertTrue(vm.state.value.statusBanner!!.contains("Copied Markdown"))
@@ -141,8 +150,13 @@ class CorewatchUiTest {
         composeRule.onNodeWithTag("status_banner").assertIsDisplayed()
 
         composeRule.onNodeWithTag("tab_4").performClick()
-        assertEquals(CorewatchTab.NetworkBluetooth, vm.state.value.activeTab)
+        assertEquals(CorewatchTab.Network, vm.state.value.activeTab)
         composeRule.onNodeWithText("Network Throughput (TrafficStats RX / TX)").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("status_banner").assertIsDisplayed()
+
+        composeRule.onNodeWithTag("tab_5").performClick()
+        assertEquals(CorewatchTab.Bluetooth, vm.state.value.activeTab)
+        composeRule.onNodeWithText("Bluetooth Radio & Audio Codec").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("status_banner").assertIsDisplayed()
 
         composeRule.onNodeWithContentDescription("Dismiss notification").performClick()
@@ -262,7 +276,7 @@ class CorewatchUiTest {
         }
 
         // At 758dp window width with desktop caption insets (usableCaptionWidth = 473dp),
-        // all 5 compact tabs ("CPU", "Battery", "Memory", "Display(s)", "Net & Bluetooth") must be visible and clickable
+        // all 7 ultra-compact tabs ("Compute", "Battery", "Memory", "Display(s)", "Net", "BT", "USB") must be visible and clickable
         composeRule.onNodeWithTag("btn_copy_markdown").performClick()
         assertTrue(vm.state.value.statusBanner!!.contains("Copied Markdown"))
         composeRule.onNodeWithTag("tab_1").assertIsDisplayed().performClick()
@@ -272,14 +286,16 @@ class CorewatchUiTest {
         composeRule.onNodeWithTag("tab_3").assertIsDisplayed().performClick()
         assertEquals(CorewatchTab.Displays, vm.state.value.activeTab)
         composeRule.onNodeWithTag("tab_4").assertIsDisplayed().performClick()
-        assertEquals(CorewatchTab.NetworkBluetooth, vm.state.value.activeTab)
+        assertEquals(CorewatchTab.Network, vm.state.value.activeTab)
         composeRule.onNodeWithTag("tab_5").assertIsDisplayed().performClick()
+        assertEquals(CorewatchTab.Bluetooth, vm.state.value.activeTab)
+        composeRule.onNodeWithTag("tab_6").assertIsDisplayed().performClick()
         assertEquals(CorewatchTab.UsbPeripherals, vm.state.value.activeTab)
         composeRule.onNodeWithTag("tab_0").assertIsDisplayed().performClick()
         assertEquals(CorewatchTab.OverviewThermals, vm.state.value.activeTab)
 
         // At 560dp window width with desktop caption insets (usableCaptionWidth = 275dp < 465dp),
-        // splitTwoRowHeader activates so all 6 tabs and pills remain visible and clickable on row 2
+        // splitTwoRowHeader activates so all 7 tabs and pills remain visible and clickable on row 2
         composeRule.runOnUiThread {
             simulatedWidth.value = 560.dp
         }
@@ -288,9 +304,11 @@ class CorewatchUiTest {
         assertEquals(CorewatchTab.BatteryPower, vm.state.value.activeTab)
         composeRule.onNodeWithTag("tab_3").assertIsDisplayed().performClick()
         assertEquals(CorewatchTab.Displays, vm.state.value.activeTab)
-        composeRule.onNodeWithTag("tab_4").assertIsDisplayed().performClick()
-        assertEquals(CorewatchTab.NetworkBluetooth, vm.state.value.activeTab)
+        composeRule.onNodeWithTag("tab_4").performScrollTo().assertIsDisplayed().performClick()
+        assertEquals(CorewatchTab.Network, vm.state.value.activeTab)
         composeRule.onNodeWithTag("tab_5").performScrollTo().assertIsDisplayed().performClick()
+        assertEquals(CorewatchTab.Bluetooth, vm.state.value.activeTab)
+        composeRule.onNodeWithTag("tab_6").performScrollTo().assertIsDisplayed().performClick()
         assertEquals(CorewatchTab.UsbPeripherals, vm.state.value.activeTab)
         composeRule.onNodeWithTag("pill_thermal").assertIsDisplayed().performClick()
         composeRule.onNodeWithTag("pill_wattage").assertIsDisplayed()
@@ -435,10 +453,15 @@ class CorewatchUiTest {
         root.performKeyInput {
             withKeyDown(Key.CtrlLeft) { pressKey(Key.Five) }
         }
-        assertEquals(CorewatchTab.NetworkBluetooth, vm.state.value.activeTab)
+        assertEquals(CorewatchTab.Network, vm.state.value.activeTab)
 
         root.performKeyInput {
             withKeyDown(Key.CtrlLeft) { pressKey(Key.Six) }
+        }
+        assertEquals(CorewatchTab.Bluetooth, vm.state.value.activeTab)
+
+        root.performKeyInput {
+            withKeyDown(Key.CtrlLeft) { pressKey(Key.Seven) }
         }
         assertEquals(CorewatchTab.UsbPeripherals, vm.state.value.activeTab)
 
@@ -828,8 +851,9 @@ class CorewatchUiTest {
             }
         }
 
-        // 1. Retail ungranted DUMP state on Tab 5 shows honest locked card + Copy ADB Command chip
-        composeRule.onNodeWithTag("tab_4").performClick()
+        // 1. Retail ungranted DUMP state on Tab 6 (Bluetooth) shows honest locked card + Copy ADB Command chip
+        composeRule.onNodeWithTag("tab_5").performClick()
+        assertEquals(CorewatchTab.Bluetooth, vm.state.value.activeTab)
         composeRule.onNodeWithText("Per-Profile Stack Drop Counters Locked (A2DP · HFP/SCO · LE Audio)")
             .performScrollTo()
             .assertIsDisplayed()
@@ -837,13 +861,25 @@ class CorewatchUiTest {
         assertTrue(vm.state.value.statusBanner!!.contains("ADB DUMP"))
         vm.dismissBanner()
 
-        // 2. Once DUMP is granted (hasStackCounters = true), live-switches to the 3-column counter grid
+        // 2. Once DUMP is granted (hasStackCounters = true), live-switches to the 3-column counter grid + peripheral list
         vm.setSnapshotForTesting(
             vm.state.value.snapshot.copy(
                 bluetooth = BluetoothTelemetrySnapshot(
                     isAdapterEnabled = true,
                     hasConnectPermission = true,
+                    connectedCount = 1,
+                    bondedCount = 1,
                     connectionStateLabel = "Connected (1 active)",
+                    peripherals = listOf(
+                        com.droid.corewatch.data.BluetoothPeripheralReading(
+                            name = "Pixel Buds Pro 2",
+                            transportTypeLabel = "Dual BR/EDR + LE",
+                            categoryLabel = "Audio / Headset",
+                            isConnected = true,
+                            profilesSummary = "A2DP · LE Audio",
+                            batteryPercent = 85,
+                        ),
+                    ),
                     audioDrops = BluetoothAudioDropStats(
                         sourceLabel = "BT STACK DUMPSYS (LIVE)",
                         hasStackCounters = true,
@@ -860,8 +896,11 @@ class CorewatchUiTest {
         composeRule.onNodeWithText("A2DP MEDIA STREAM").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("HFP / SCO VOICE").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("LE AUDIO (CIS / BIS)").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("Pixel Buds Pro 2").performScrollTo().assertIsDisplayed()
 
-        // 3. Undocked has no Wired Ethernet card; docking dynamically reveals Wired Ethernet beside Wi-Fi 7 (Standby)
+        // 3. Switch to Tab 5 (Network): undocked has no Wired Ethernet card; docking dynamically reveals Wired Ethernet beside Wi-Fi 7 (Standby)
+        composeRule.onNodeWithTag("tab_4").performClick()
+        assertEquals(CorewatchTab.Network, vm.state.value.activeTab)
         composeRule.onNodeWithTag("ethernet_link_card").assertDoesNotExist()
         vm.setSnapshotForTesting(
             vm.state.value.snapshot.copy(
@@ -1369,6 +1408,35 @@ class CorewatchUiTest {
                 removableRaw = "fixed",
                 category = com.droid.corewatch.data.UsbNodeCategory.VideoWebcam,
             ),
+            com.droid.corewatch.data.UsbTopologyNode(
+                id = "1-10",
+                parentId = "usb1",
+                depth = 1,
+                busNumber = 1,
+                portChain = "1-10",
+                pciControllerLabel = "PCI 00:0d.0",
+                vendorId = 0x8087,
+                productId = 0x0037,
+                vidPidHex = "8087:0037",
+                productName = "Intel BE201 Bluetooth Adapter",
+                vendorName = "Intel",
+                usbVersionBcd = "2.01",
+                deviceClassCode = 0xe0,
+                negotiatedSpeedMbps = 12f,
+                speedBadgeLabel = "12 Mbps",
+                speedTierDescription = "USB 1.1 Full-Speed (12 Mbps)",
+                txLanes = 1,
+                rxLanes = 1,
+                lanesLabel = "1×1 Lane",
+                maxPowerMa = 100,
+                isSelfPowered = true,
+                isInternal = true,
+                removableRaw = "fixed",
+                category = com.droid.corewatch.data.UsbNodeCategory.WirelessController,
+                interfaces = listOf(
+                    com.droid.corewatch.data.UsbInterfaceSummary(0, 0xe0, 0x01, 0x01, "Wireless / Bluetooth", "btusb", "Bluetooth HCI", 3),
+                ),
+            ),
         )
 
         composeRule.setContent {
@@ -1384,7 +1452,7 @@ class CorewatchUiTest {
                     nodes = usbNodes,
                     externalPeripheralCount = 3,
                     externalHubCount = 2,
-                    internalDeviceCount = 1,
+                    internalDeviceCount = 2,
                     warningCount = 1,
                     maxExternalSpeedMbps = 10_000f,
                     maxExternalSpeedLabel = "10 Gbps",
@@ -1406,7 +1474,7 @@ class CorewatchUiTest {
                 ),
             ),
         )
-        composeRule.onNodeWithTag("tab_5").performClick()
+        composeRule.onNodeWithTag("tab_6").performClick()
         assertEquals(CorewatchTab.UsbPeripherals, vm.state.value.activeTab)
         composeRule.onNodeWithTag("usb_summary_typec_card").assertIsDisplayed()
         composeRule.onNodeWithTag("usb_typec_locked_banner").performScrollTo().assertIsDisplayed()
@@ -1448,20 +1516,27 @@ class CorewatchUiTest {
         composeRule.onNodeWithTag("usb_jump_companion_btn").performClick()
         assertEquals("usb1", vm.state.value.selectedUsbNodeId)
 
-        // Select Dell Dock (1-3) -> jump to Displays; then return & select 2.5G NIC (2-4.1) -> jump to Network & Bluetooth
+        // Select Dell Dock (1-3) -> jump to Displays; 2.5G NIC (2-4.1) -> jump to Network; Bluetooth (1-10) -> jump to Bluetooth
         composeRule.onNodeWithTag("usb_node_1-3").performScrollTo().performClick()
         composeRule.onNodeWithTag("usb_node_details_card").performScrollTo()
         composeRule.onNodeWithTag("usb_jump_displays_tab_btn").performClick()
         assertEquals(CorewatchTab.Displays, vm.state.value.activeTab)
 
-        composeRule.onNodeWithTag("tab_5").performClick()
+        composeRule.onNodeWithTag("tab_6").performClick()
         composeRule.onNodeWithTag("usb_node_2-4.1").performScrollTo().performClick()
         composeRule.onNodeWithTag("usb_node_details_card").performScrollTo()
         composeRule.onNodeWithTag("usb_jump_network_tab_btn").performClick()
-        assertEquals(CorewatchTab.NetworkBluetooth, vm.state.value.activeTab)
+        assertEquals(CorewatchTab.Network, vm.state.value.activeTab)
+
+        composeRule.onNodeWithTag("tab_6").performClick()
+        composeRule.onNodeWithTag("usb_toggle_internal_chip").performScrollTo().performClick()
+        composeRule.onNodeWithTag("usb_node_1-10").performScrollTo().performClick()
+        composeRule.onNodeWithTag("usb_node_details_card").performScrollTo()
+        composeRule.onNodeWithTag("usb_jump_bluetooth_tab_btn").performClick()
+        assertEquals(CorewatchTab.Bluetooth, vm.state.value.activeTab)
 
         // 5. Granted DUMP state renders live Type-C port tiles
-        composeRule.onNodeWithTag("tab_5").performClick()
+        composeRule.onNodeWithTag("tab_6").performClick()
         vm.setSnapshotForTesting(
             vm.state.value.snapshot.copy(
                 usbPeripherals = vm.state.value.snapshot.usbPeripherals.copy(
@@ -1501,6 +1576,15 @@ class CorewatchUiTest {
         vm.selectTab(CorewatchTab.UsbPeripherals)
         vm.setSnapshotForTesting(
             SystemTelemetrySnapshot(
+                bluetooth = BluetoothTelemetrySnapshot(
+                    isAdapterEnabled = true,
+                    hasConnectPermission = true,
+                    audioDrops = BluetoothAudioDropStats(
+                        sourceLabel = "BT STACK DUMPSYS (LIVE)",
+                        hasStackCounters = true,
+                        a2dpExpectedFrames = 1_000L,
+                    ),
+                ),
                 usbPeripherals = com.droid.corewatch.data.UsbPeripheralTelemetrySnapshot(
                     nodes = listOf(
                         com.droid.corewatch.data.UsbTopologyNode(
@@ -1553,5 +1637,10 @@ class CorewatchUiTest {
         composeRule.onNodeWithTag("usb_search_input").performTextReplacement("Integrated 5M")
         composeRule.onNodeWithTag("usb_node_1-5").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("usb_node_details_card").performScrollTo().assertIsDisplayed()
+
+        // Also verify compact stacked Bluetooth audio drop cards on 560dp (< 680dp)
+        vm.selectTab(CorewatchTab.Bluetooth)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("bluetooth_audio_drops_section").performScrollTo().assertIsDisplayed()
     }
 }

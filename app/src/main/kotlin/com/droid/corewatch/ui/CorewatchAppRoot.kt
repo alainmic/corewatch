@@ -36,6 +36,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.BatteryChargingFull
+import androidx.compose.material.icons.outlined.Bluetooth
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Cable
 import androidx.compose.material.icons.outlined.Close
@@ -292,9 +293,12 @@ fun CorewatchAppRoot(
                         vm.selectTab(CorewatchTab.Displays); true
                     }
                     ev.isCtrlPressed && ev.key == Key.Five -> {
-                        vm.selectTab(CorewatchTab.NetworkBluetooth); true
+                        vm.selectTab(CorewatchTab.Network); true
                     }
                     ev.isCtrlPressed && ev.key == Key.Six -> {
+                        vm.selectTab(CorewatchTab.Bluetooth); true
+                    }
+                    ev.isCtrlPressed && ev.key == Key.Seven -> {
                         vm.selectTab(CorewatchTab.UsbPeripherals); true
                     }
                     !textInputFocused && !ev.isCtrlPressed && ev.key == Key.Spacebar -> {
@@ -333,12 +337,16 @@ fun CorewatchAppRoot(
                             CorewatchTab.BatteryPower -> BatteryPowerTab(state = state, vm = vm)
                             CorewatchTab.MemoryStorage -> MemoryStorageTab(state = state)
                             CorewatchTab.Displays -> DisplaysTab(state = state)
-                            CorewatchTab.NetworkBluetooth -> NetworkBluetoothTab(
+                            CorewatchTab.Network -> NetworkTab(
                                 state = state,
                                 vm = vm,
                                 onRequestWifiScanPermission = onRequestWifiScanPermission,
                                 onRequestNearbyWifiPermission = onRequestNearbyWifiPermission,
                                 onOpenLocationSettings = onOpenLocationSettings,
+                            )
+                            CorewatchTab.Bluetooth -> BluetoothTab(
+                                state = state,
+                                vm = vm,
                             )
                             CorewatchTab.UsbPeripherals -> UsbPeripheralsTab(
                                 state = state,
@@ -393,8 +401,8 @@ internal fun CorewatchTitleBar(state: CorewatchUiState, vm: CorewatchViewModel, 
         // or when the caption width is narrow, preventing Embedded{Caption} pointer-stealing and minimize-button overlap.
         val splitTwoRowHeader = hasDesktopCaption || usableCaptionWidth < 520.dp
         val showBrandText = usableCaptionWidth >= 560.dp || cap.start == 0.dp || splitTwoRowHeader
-        val useFullTabTitles = if (splitTwoRowHeader) totalWidth >= 960.dp else usableCaptionWidth >= 980.dp
-        val useUltraCompactTabTitles = if (splitTwoRowHeader) totalWidth < 680.dp else usableCaptionWidth < 720.dp
+        val useFullTabTitles = if (splitTwoRowHeader) totalWidth >= 980.dp else usableCaptionWidth >= 1000.dp
+        val useUltraCompactTabTitles = if (splitTwoRowHeader) totalWidth < 780.dp else usableCaptionWidth < 800.dp
         val showWattagePill = usableCaptionWidth >= 880.dp || splitTwoRowHeader
         val showThermalPill = usableCaptionWidth >= 420.dp || splitTwoRowHeader
         val showCaffeineLabel = if (splitTwoRowHeader) totalWidth >= 720.dp else usableCaptionWidth >= 780.dp
@@ -2116,10 +2124,10 @@ private fun DisplaysTab(state: CorewatchUiState) {
     }
 }
 
-// ------------------------------------------------------------------------ Tab 5: Network & Bluetooth
+// ------------------------------------------------------------------------ Tab 5: Network (Wi-Fi & Ethernet)
 
 @Composable
-private fun NetworkBluetoothTab(
+private fun NetworkTab(
     state: CorewatchUiState,
     vm: CorewatchViewModel,
     onRequestWifiScanPermission: (() -> Unit)? = null,
@@ -2131,9 +2139,8 @@ private fun NetworkBluetoothTab(
     val hist = state.history
     val wifi = snap.wifi
     val eth = snap.ethernet
-    val bt = snap.bluetooth
 
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().testTag("network_tab")) {
         val sideBySideLinks = maxWidth >= 760.dp
         val threeColumnBands = maxWidth >= 680.dp
         Column(
@@ -2279,325 +2286,396 @@ private fun NetworkBluetoothTab(
                 onRequestWifiScanPermission = onRequestWifiScanPermission,
                 onOpenLocationSettings = onOpenLocationSettings,
             )
+        }
+    }
+}
 
-        // Bluetooth Audio Codec & Peripherals Card
-        Surface(
-            shape = RoundedCornerShape(14.dp),
-            color = cs.surfaceContainer,
-            modifier = Modifier.fillMaxWidth().testTag("bluetooth_card"),
+// ------------------------------------------------------------------------ Tab 6: Bluetooth Audio & Peripherals
+
+@Composable
+private fun BluetoothTab(
+    state: CorewatchUiState,
+    vm: CorewatchViewModel,
+) {
+    val cs = MaterialTheme.colorScheme
+    val bt = state.snapshot.bluetooth
+    val drops = bt.audioDrops
+
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().testTag("bluetooth_tab")) {
+        val threeColumnDrops = maxWidth >= 680.dp
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text("Bluetooth Audio Codec & Peripherals", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            text = "Controller Capabilities: ${bt.controllerCapabilitiesSummary} · Max Concurrent Audio Sinks: ${bt.maxConnectedAudioDevices}",
-                            style = CorewatchMonoTypography.hudSmall,
-                            color = cs.onSurfaceVariant,
-                        )
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = if (bt.connectedCount > 0) cs.secondaryContainer else cs.surfaceContainerHigh,
-                        ) {
-                            Text(
-                                text = bt.connectionStateLabel,
-                                style = CorewatchMonoTypography.hudSmall,
-                                color = if (bt.connectedCount > 0) cs.onSecondaryContainer else cs.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                            )
-                        }
-                    }
-                }
-
-                // Active Audio Route & Negotiated Bluetooth Codec Sub-Card
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = cs.surfaceContainerHigh,
-                    modifier = Modifier.fillMaxWidth().testTag("bluetooth_codec_section"),
-                ) {
-                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = "Active Audio Route & Bluetooth Codec",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = cs.onSurface,
-                            )
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = if (bt.audioCodec.isBluetoothAudioActive) cs.primaryContainer else cs.surfaceVariant,
-                            ) {
-                                Text(
-                                    text = "Codec: ${bt.audioCodec.activeCodecName}",
-                                    style = CorewatchMonoTypography.hudSmall,
-                                    color = if (bt.audioCodec.isBluetoothAudioActive) cs.onPrimaryContainer else cs.primary,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                                )
-                            }
-                        }
-                        Text(
-                            text = "Output Route: ${bt.audioCodec.activeRouteLabel} · Audio Mode: ${bt.audioCodec.communicationModeLabel}",
-                            style = CorewatchMonoTypography.hudSmall,
-                            color = cs.onSurface,
-                        )
-                        Text(
-                            text = "Stream Format: ${bt.audioCodec.sampleRateLabel} · ${bt.audioCodec.bitsPerSampleLabel} · ${bt.audioCodec.channelModeLabel} · Bitrate / Quality: ${bt.audioCodec.bitrateOrQualityLabel}",
-                            style = CorewatchMonoTypography.hudSmall,
-                            color = cs.onSurfaceVariant,
-                        )
-                        Text(
-                            text = "Headset Selectable Codecs: ${bt.audioCodec.selectableCodecsSummary}",
-                            style = CorewatchMonoTypography.hudSmall,
-                            color = cs.primary,
-                        )
-                    }
-                }
-
-                // Bluetooth Audio Dropped Frames & Underflow Counters (A2DP · HFP/SCO · LE Audio)
-                val drops = bt.audioDrops
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = "BLUETOOTH AUDIO DROPPED FRAMES & BUFFER UNDERFLOWS",
-                        style = CorewatchMonoTypography.hudSmall,
-                        color = cs.onSurfaceVariant,
-                    )
-                    Text(
-                        text = drops.sourceLabel,
-                        style = CorewatchMonoTypography.hudSmall,
-                        color = if (drops.hasStackCounters) cs.primary else cs.onSurfaceVariant,
-                    )
-                }
-                if (drops.hasStackCounters) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().testTag("bluetooth_audio_drops_section"),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        // 1. A2DP Media
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = cs.surfaceContainerHigh,
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Text(
-                                    text = "A2DP MEDIA STREAM",
-                                    style = CorewatchMonoTypography.hudSmall,
-                                    color = cs.onSurfaceVariant,
-                                )
-                                Text(
-                                    text = drops.a2dpPrimaryCounterLabel,
-                                    style = CorewatchMonoTypography.hudValue,
-                                    color = if (drops.a2dpDroppedFrames > 0L || drops.a2dpUnderflows > 0L) cs.error else cs.onSurface,
-                                )
-                                Text(
-                                    text = drops.a2dpDetailSummary,
-                                    style = CorewatchMonoTypography.hudSmall,
-                                    color = cs.onSurfaceVariant,
-                                )
-                            }
-                        }
-
-                        // 2. HFP / SCO Hands-Free Voice
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = cs.surfaceContainerHigh,
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Text(
-                                    text = "HFP / SCO VOICE",
-                                    style = CorewatchMonoTypography.hudSmall,
-                                    color = cs.onSurfaceVariant,
-                                )
-                                Text(
-                                    text = drops.hfpPrimaryCounterLabel,
-                                    style = CorewatchMonoTypography.hudValue,
-                                    color = if (drops.hfpDroppedPackets > 0L || drops.hfpUnderflows > 0L) cs.error else cs.onSurface,
-                                )
-                                Text(
-                                    text = drops.hfpDetailSummary,
-                                    style = CorewatchMonoTypography.hudSmall,
-                                    color = cs.onSurfaceVariant,
-                                )
-                            }
-                        }
-
-                        // 3. LE Audio (CIS / BIS Isochronous)
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = cs.surfaceContainerHigh,
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Text(
-                                    text = "LE AUDIO (CIS / BIS)",
-                                    style = CorewatchMonoTypography.hudSmall,
-                                    color = cs.onSurfaceVariant,
-                                )
-                                Text(
-                                    text = drops.leAudioPrimaryCounterLabel,
-                                    style = CorewatchMonoTypography.hudValue,
-                                    color = if (drops.leAudioUnderflows > 0L || drops.leIsoDroppedPackets > 0L) cs.error else cs.onSurface,
-                                )
-                                Text(
-                                    text = drops.leAudioDetailSummary,
-                                    style = CorewatchMonoTypography.hudSmall,
-                                    color = cs.onSurfaceVariant,
-                                )
-                            }
-                        }
-                    }
-                } else {
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = cs.surfaceContainerHigh,
-                        modifier = Modifier.fillMaxWidth().testTag("bluetooth_audio_drops_section"),
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(10.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(3.dp),
-                            ) {
-                                Text(
-                                    text = "Per-Profile Stack Drop Counters Locked (A2DP · HFP/SCO · LE Audio)",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = cs.onSurface,
-                                )
-                                Text(
-                                    text = "Android isolates Bluetooth encoder frame drops, PLC packet loss, and ISO underflows behind android.permission.DUMP. Grant once via ADB (persists across reboots):",
-                                    style = CorewatchMonoTypography.hudSmall,
-                                    color = cs.onSurfaceVariant,
-                                )
-                                Text(
-                                    text = "adb shell pm grant --user current com.droid.corewatch android.permission.DUMP",
-                                    style = CorewatchMonoTypography.hudSmall,
-                                    color = cs.primary,
-                                )
-                            }
-                            Spacer(Modifier.width(12.dp))
-                            FilterChip(
-                                selected = false,
-                                onClick = {
-                                    vm.copyTextToClipboard(
-                                        label = "ADB Grant DUMP",
-                                        text = "adb shell pm grant --user current com.droid.corewatch android.permission.DUMP",
-                                        bannerMessage = "Copied ADB DUMP permission command to clipboard",
-                                    )
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        Icons.Outlined.ContentCopy,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(14.dp),
-                                    )
-                                },
-                                label = { Text("Copy ADB Command") },
-                                modifier = Modifier.testTag("copy_bt_dump_adb_btn"),
-                            )
-                        }
-                    }
-                }
-
-                // Connected & Paired Bluetooth Peripherals Table
-                Text(
-                    text = "CONNECTED & PAIRED BLUETOOTH PERIPHERALS (${bt.connectedCount} ACTIVE · ${bt.bondedCount} PAIRED)",
-                    style = CorewatchMonoTypography.hudSmall,
-                    color = cs.onSurfaceVariant,
-                )
-
-                if (bt.peripherals.isEmpty()) {
-                    val viewCtx = LocalView.current.context
+            // Card 1: Bluetooth Radio, Active Audio Route & Negotiated Codec
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = cs.surfaceContainer,
+                modifier = Modifier.fillMaxWidth().testTag("bluetooth_card"),
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            text = if (bt.hasConnectPermission) {
-                                "No paired Bluetooth peripherals reported by BluetoothAdapter."
-                            } else {
-                                "Grant BLUETOOTH_CONNECT permission to inspect paired Bluetooth peripherals and battery levels."
-                            },
-                            style = CorewatchMonoTypography.hudSmall,
-                            color = cs.onSurfaceVariant,
+                        Column(
                             modifier = Modifier.weight(1f),
-                        )
-                        if (!bt.hasConnectPermission) {
-                            Spacer(Modifier.width(8.dp))
-                            FilterChip(
-                                selected = false,
-                                onClick = {
-                                    runCatching {
-                                        val act = viewCtx as? android.app.Activity
-                                        if (act != null && Build.VERSION.SDK_INT >= 31) {
-                                            act.requestPermissions(arrayOf(android.Manifest.permission.BLUETOOTH_CONNECT), 1001)
-                                        }
-                                    }
-                                },
-                                label = { Text("Grant Bluetooth Permission") },
-                                modifier = Modifier.testTag("grant_bluetooth_permission_btn"),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text("Bluetooth Radio & Audio Codec", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                text = "Controller Capabilities: ${bt.controllerCapabilitiesSummary} · Max Concurrent Audio Sinks: ${bt.maxConnectedAudioDevices}",
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSurfaceVariant,
                             )
                         }
+                        Spacer(Modifier.width(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (bt.isAdapterEnabled) cs.surfaceContainerHigh else cs.errorContainer,
+                            ) {
+                                Text(
+                                    text = if (bt.isAdapterEnabled) "Radio ON" else "Radio OFF",
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = if (bt.isAdapterEnabled) cs.primary else cs.onErrorContainer,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                )
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (bt.connectedCount > 0) cs.secondaryContainer else cs.surfaceContainerHigh,
+                            ) {
+                                Text(
+                                    text = bt.connectionStateLabel,
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = if (bt.connectedCount > 0) cs.onSecondaryContainer else cs.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                )
+                            }
+                        }
                     }
-                } else {
-                    for (dev in bt.peripherals) {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = cs.surfaceContainerHigh,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
+
+                    // Active Audio Route & Negotiated Bluetooth Codec Sub-Card
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = cs.surfaceContainerHigh,
+                        modifier = Modifier.fillMaxWidth().testTag("bluetooth_codec_section"),
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Row(
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 7.dp),
+                                modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    text = "Active Audio Route & Bluetooth Codec",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = cs.onSurface,
+                                )
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = if (bt.audioCodec.isBluetoothAudioActive) cs.primaryContainer else cs.surfaceVariant,
+                                ) {
                                     Text(
-                                        text = dev.name,
-                                        style = CorewatchMonoTypography.hudValue,
-                                        color = if (dev.isConnected) cs.secondary else cs.onSurface,
+                                        text = "Codec: ${bt.audioCodec.activeCodecName}",
+                                        style = CorewatchMonoTypography.hudSmall,
+                                        color = if (bt.audioCodec.isBluetoothAudioActive) cs.onPrimaryContainer else cs.primary,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                    )
+                                }
+                            }
+                            Text(
+                                text = "Output Route: ${bt.audioCodec.activeRouteLabel} · Audio Mode: ${bt.audioCodec.communicationModeLabel}",
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSurface,
+                            )
+                            Text(
+                                text = "Stream Format: ${bt.audioCodec.sampleRateLabel} · ${bt.audioCodec.bitsPerSampleLabel} · ${bt.audioCodec.channelModeLabel} · Bitrate / Quality: ${bt.audioCodec.bitrateOrQualityLabel}",
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSurfaceVariant,
+                            )
+                            Text(
+                                text = "Headset Selectable Codecs: ${bt.audioCodec.selectableCodecsSummary}",
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.primary,
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Card 2: Bluetooth Audio Dropped Frames & Buffer Underflow Counters (A2DP · HFP/SCO · LE Audio)
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = cs.surfaceContainer,
+                modifier = Modifier.fillMaxWidth().testTag("bluetooth_drops_card"),
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text("Bluetooth Audio Dropped Frames & Buffer Underflows", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                text = "Per-profile encoder frame drops, HFP/SCO packet loss concealment (PLC), and LE Audio ISO underflows",
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = cs.surfaceContainerHigh,
+                        ) {
+                            Text(
+                                text = drops.sourceLabel,
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = if (drops.hasStackCounters) cs.primary else cs.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            )
+                        }
+                    }
+
+                    if (drops.hasStackCounters) {
+                        if (threeColumnDrops) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().testTag("bluetooth_audio_drops_section"),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                BluetoothProfileDropTile(
+                                    title = "A2DP MEDIA STREAM",
+                                    primaryLabel = drops.a2dpPrimaryCounterLabel,
+                                    detailSummary = drops.a2dpDetailSummary,
+                                    hasError = drops.a2dpDroppedFrames > 0L || drops.a2dpUnderflows > 0L,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                BluetoothProfileDropTile(
+                                    title = "HFP / SCO VOICE",
+                                    primaryLabel = drops.hfpPrimaryCounterLabel,
+                                    detailSummary = drops.hfpDetailSummary,
+                                    hasError = drops.hfpDroppedPackets > 0L || drops.hfpUnderflows > 0L,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                BluetoothProfileDropTile(
+                                    title = "LE AUDIO (CIS / BIS)",
+                                    primaryLabel = drops.leAudioPrimaryCounterLabel,
+                                    detailSummary = drops.leAudioDetailSummary,
+                                    hasError = drops.leAudioUnderflows > 0L || drops.leIsoDroppedPackets > 0L,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        } else {
+                            Column(
+                                modifier = Modifier.fillMaxWidth().testTag("bluetooth_audio_drops_section"),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                BluetoothProfileDropTile(
+                                    title = "A2DP MEDIA STREAM",
+                                    primaryLabel = drops.a2dpPrimaryCounterLabel,
+                                    detailSummary = drops.a2dpDetailSummary,
+                                    hasError = drops.a2dpDroppedFrames > 0L || drops.a2dpUnderflows > 0L,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                BluetoothProfileDropTile(
+                                    title = "HFP / SCO VOICE",
+                                    primaryLabel = drops.hfpPrimaryCounterLabel,
+                                    detailSummary = drops.hfpDetailSummary,
+                                    hasError = drops.hfpDroppedPackets > 0L || drops.hfpUnderflows > 0L,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                BluetoothProfileDropTile(
+                                    title = "LE AUDIO (CIS / BIS)",
+                                    primaryLabel = drops.leAudioPrimaryCounterLabel,
+                                    detailSummary = drops.leAudioDetailSummary,
+                                    hasError = drops.leAudioUnderflows > 0L || drops.leIsoDroppedPackets > 0L,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+                        }
+                    } else {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = cs.surfaceContainerHigh,
+                            modifier = Modifier.fillMaxWidth().testTag("bluetooth_audio_drops_section"),
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                                ) {
+                                    Text(
+                                        text = "Per-Profile Stack Drop Counters Locked (A2DP · HFP/SCO · LE Audio)",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = cs.onSurface,
                                     )
                                     Text(
-                                        text = "${dev.categoryLabel} · Transport: ${dev.transportTypeLabel}",
+                                        text = "Android isolates Bluetooth encoder frame drops, PLC packet loss, and ISO underflows behind android.permission.DUMP. Grant once via ADB (persists across reboots):",
                                         style = CorewatchMonoTypography.hudSmall,
                                         color = cs.onSurfaceVariant,
                                     )
+                                    Text(
+                                        text = "adb shell pm grant --user current com.droid.corewatch android.permission.DUMP",
+                                        style = CorewatchMonoTypography.hudSmall,
+                                        color = cs.primary,
+                                    )
                                 }
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    if (dev.batteryPercent in 0..100) {
-                                        Text(
-                                            text = "Battery: ${dev.batteryLabel}",
-                                            style = CorewatchMonoTypography.hudValue,
-                                            color = if (dev.batteryPercent <= 20) cs.error else cs.primary,
+                                Spacer(Modifier.width(12.dp))
+                                FilterChip(
+                                    selected = false,
+                                    onClick = {
+                                        vm.copyTextToClipboard(
+                                            label = "ADB Grant DUMP",
+                                            text = "adb shell pm grant --user current com.droid.corewatch android.permission.DUMP",
+                                            bannerMessage = "Copied ADB DUMP permission command to clipboard",
                                         )
-                                    }
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = if (dev.isConnected) cs.secondaryContainer else cs.surfaceVariant,
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Outlined.ContentCopy,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(14.dp),
+                                        )
+                                    },
+                                    label = { Text("Copy ADB Command") },
+                                    modifier = Modifier.testTag("copy_bt_dump_adb_btn"),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Card 3: Connected & Paired Bluetooth Peripherals
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = cs.surfaceContainer,
+                modifier = Modifier.fillMaxWidth().testTag("bluetooth_peripherals_card"),
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text("Connected & Paired Bluetooth Peripherals", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                text = "BLE GATT / HID & Classic BR/EDR bonded devices, negotiated profiles, and live battery levels",
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (bt.connectedCount > 0) cs.secondaryContainer else cs.surfaceContainerHigh,
+                        ) {
+                            Text(
+                                text = "${bt.connectedCount} Active · ${bt.bondedCount} Paired",
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = if (bt.connectedCount > 0) cs.onSecondaryContainer else cs.primary,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            )
+                        }
+                    }
+
+                    if (bt.peripherals.isEmpty()) {
+                        val viewCtx = LocalView.current.context
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = if (bt.hasConnectPermission) {
+                                    "No paired Bluetooth peripherals reported by BluetoothAdapter."
+                                } else {
+                                    "Grant BLUETOOTH_CONNECT permission to inspect paired Bluetooth peripherals and battery levels."
+                                },
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (!bt.hasConnectPermission) {
+                                Spacer(Modifier.width(8.dp))
+                                FilterChip(
+                                    selected = false,
+                                    onClick = {
+                                        runCatching {
+                                            val act = viewCtx as? android.app.Activity
+                                            if (act != null && Build.VERSION.SDK_INT >= 31) {
+                                                act.requestPermissions(arrayOf(android.Manifest.permission.BLUETOOTH_CONNECT), 1001)
+                                            }
+                                        }
+                                    },
+                                    label = { Text("Grant Bluetooth Permission") },
+                                    modifier = Modifier.testTag("grant_bluetooth_permission_btn"),
+                                )
+                            }
+                        }
+                    } else {
+                        for (dev in bt.peripherals) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = cs.surfaceContainerHigh,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp),
                                     ) {
                                         Text(
-                                            text = dev.profilesSummary,
-                                            style = CorewatchMonoTypography.hudSmall,
-                                            color = if (dev.isConnected) cs.onSecondaryContainer else cs.onSurfaceVariant,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                            text = dev.name,
+                                            style = CorewatchMonoTypography.hudValue,
+                                            color = if (dev.isConnected) cs.secondary else cs.onSurface,
                                         )
+                                        Text(
+                                            text = "${dev.categoryLabel} · Transport: ${dev.transportTypeLabel}",
+                                            style = CorewatchMonoTypography.hudSmall,
+                                            color = cs.onSurfaceVariant,
+                                        )
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        if (dev.batteryPercent in 0..100) {
+                                            Text(
+                                                text = "Battery: ${dev.batteryLabel}",
+                                                style = CorewatchMonoTypography.hudValue,
+                                                color = if (dev.batteryPercent <= 20) cs.error else cs.primary,
+                                            )
+                                        }
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = if (dev.isConnected) cs.secondaryContainer else cs.surfaceVariant,
+                                        ) {
+                                            Text(
+                                                text = dev.profilesSummary,
+                                                style = CorewatchMonoTypography.hudSmall,
+                                                color = if (dev.isConnected) cs.onSecondaryContainer else cs.onSurfaceVariant,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -2606,6 +2684,39 @@ private fun NetworkBluetoothTab(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun BluetoothProfileDropTile(
+    title: String,
+    primaryLabel: String,
+    detailSummary: String,
+    hasError: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val cs = MaterialTheme.colorScheme
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = cs.surfaceContainerHigh,
+        modifier = modifier,
+    ) {
+        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(
+                text = title,
+                style = CorewatchMonoTypography.hudSmall,
+                color = cs.onSurfaceVariant,
+            )
+            Text(
+                text = primaryLabel,
+                style = CorewatchMonoTypography.hudValue,
+                color = if (hasError) cs.error else cs.onSurface,
+            )
+            Text(
+                text = detailSummary,
+                style = CorewatchMonoTypography.hudSmall,
+                color = cs.onSurfaceVariant,
+            )
         }
     }
 }
@@ -4677,9 +4788,15 @@ private fun UsbNodeDetailsCard(
 
                 // Companion Hub / Bus & Cross-Tab Jump Actions
                 val companionNode = node.companionNodeId?.let { cid -> allNodes.firstOrNull { it.id == cid } }
-                val showNetJump = node.category == UsbNodeCategory.NetworkAdapter || node.category == UsbNodeCategory.WirelessController
+                val isBluetoothUsbController = node.category == UsbNodeCategory.WirelessController && (
+                    node.displayTitle.contains("bluetooth", ignoreCase = true) ||
+                        node.interfaces.any { it.classCode == 0xe0 || it.driverName.contains("btusb", ignoreCase = true) }
+                    )
+                val showNetJump = node.category == UsbNodeCategory.NetworkAdapter ||
+                    (node.category == UsbNodeCategory.WirelessController && !isBluetoothUsbController)
+                val showBtJump = isBluetoothUsbController
                 val showDispJump = node.category == UsbNodeCategory.Dock || node.category == UsbNodeCategory.Billboard
-                if (companionNode != null || showNetJump || showDispJump) {
+                if (companionNode != null || showNetJump || showBtJump || showDispJump) {
                     Row(
                         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -4700,12 +4817,23 @@ private fun UsbNodeDetailsCard(
                         if (showNetJump) {
                             FilterChip(
                                 selected = false,
-                                onClick = { onJumpToTab(CorewatchTab.NetworkBluetooth) },
+                                onClick = { onJumpToTab(CorewatchTab.Network) },
                                 leadingIcon = {
                                     Icon(Icons.Outlined.SettingsEthernet, contentDescription = null, modifier = Modifier.size(14.dp))
                                 },
-                                label = { Text("Inspect on Network & Bluetooth ->") },
+                                label = { Text("Inspect on Network ->") },
                                 modifier = Modifier.testTag("usb_jump_network_tab_btn"),
+                            )
+                        }
+                        if (showBtJump) {
+                            FilterChip(
+                                selected = false,
+                                onClick = { onJumpToTab(CorewatchTab.Bluetooth) },
+                                leadingIcon = {
+                                    Icon(Icons.Outlined.Bluetooth, contentDescription = null, modifier = Modifier.size(14.dp))
+                                },
+                                label = { Text("Inspect on Bluetooth ->") },
+                                modifier = Modifier.testTag("usb_jump_bluetooth_tab_btn"),
                             )
                         }
                         if (showDispJump) {
@@ -4979,11 +5107,11 @@ private fun usbCategoryIcon(category: UsbNodeCategory) = when (category) {
 private fun ShortcutsDialog(onDismiss: () -> Unit) {
     val shortcuts = listOf(
         "Ctrl+M" to "Toggle between Full Workbench and Compact Mini-HUD mode",
-        "Ctrl+1 .. Ctrl+6" to "Switch tabs (Compute, Battery, Memory, Display(s), Net & BT, USB & Peripherals)",
+        "Ctrl+1 .. Ctrl+7" to "Switch tabs (Compute, Battery, Memory, Display(s), Network, Bluetooth, USB & Peripherals)",
         "Ctrl+K" to "Toggle Caffeine Keep-Awake active state",
         "Space" to "Pause / Resume live telemetry graph scrolling",
         "Ctrl+Shift+C" to "Copy Markdown Hardware & Thermal Diagnostic Snapshot",
-        "Ctrl+Shift+S" to "Trigger an active Wi-Fi scan on Network & Bluetooth",
+        "Ctrl+Shift+S" to "Trigger an active Wi-Fi scan on Network",
         "Ctrl+Shift+B" to "Toggle surrounding AP BSSID MAC privacy masking",
         "Ctrl+Shift+I" to "Toggle internal motherboard USB devices on USB & Peripherals",
         "F5 / Ctrl+R" to "Reset session min/max/average & USB hotplug counters",

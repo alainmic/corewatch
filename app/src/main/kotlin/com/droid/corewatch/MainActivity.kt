@@ -168,21 +168,26 @@ class MainActivity : ComponentActivity() {
                 updatePipOverlayAlpha(state.miniHudAlpha)
             }
             LaunchedEffect(state.activeTab) {
-                if (state.activeTab == CorewatchTab.NetworkBluetooth && Build.VERSION.SDK_INT >= 31) {
-                    runCatching {
-                        val needed = ArrayList<String>(2)
-                        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                            needed += Manifest.permission.BLUETOOTH_CONNECT
-                        }
-                        if (Build.VERSION.SDK_INT >= 33 &&
-                            checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED
-                        ) {
-                            needed += Manifest.permission.NEARBY_WIFI_DEVICES
-                        }
-                        if (needed.isNotEmpty()) {
-                            requestPermissions(needed.toTypedArray(), 1001)
+                when (state.activeTab) {
+                    CorewatchTab.Network -> {
+                        if (Build.VERSION.SDK_INT >= 33) {
+                            runCatching {
+                                if (checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
+                                    requestPermissions(arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES), 1003)
+                                }
+                            }
                         }
                     }
+                    CorewatchTab.Bluetooth -> {
+                        if (Build.VERSION.SDK_INT >= 31) {
+                            runCatching {
+                                if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                                    requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 1001)
+                                }
+                            }
+                        }
+                    }
+                    else -> Unit
                 }
             }
             val canDrawOverlays by canDrawOverlaysState
