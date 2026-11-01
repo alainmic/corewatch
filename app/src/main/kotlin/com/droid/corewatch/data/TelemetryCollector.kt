@@ -11,13 +11,20 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.hardware.display.DisplayManager
+import android.hardware.input.InputManager
+import android.hardware.usb.UsbManager
 import android.location.LocationManager
+import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
+import android.media.AudioFormat
 import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.net.LinkProperties
@@ -35,13 +42,16 @@ import android.os.Environment
 import android.os.PowerManager
 import android.os.SystemClock
 import android.os.StatFs
+import android.os.storage.StorageManager
 import android.telephony.TelephonyManager
 import android.util.DisplayMetrics
+import android.view.InputDevice
 import androidx.core.content.ContextCompat
 import java.io.File
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.NetworkInterface
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -60,6 +70,7 @@ class TelemetryCollector(
     private val accelSysfsRoot: File = File("/sys/class/accel"),
     private val procCpuInfoFile: File = File("/proc/cpuinfo"),
     private val procPsiMemoryFile: File = File("/proc/pressure/memory"),
+    private val usbSysfsRoot: File = File("/sys/bus/usb/devices"),
     val vrrAndFrameTracker: VrrAndFrameWindowTracker = VrrAndFrameWindowTracker(),
 ) {
     private val totalNetRateTracker = InterfaceRateTracker()
@@ -132,18 +143,38 @@ class TelemetryCollector(
     private var thermalSysfsReadable: Boolean? = null
     private var hwmonSysfsReadable: Boolean? = null
     private var cachedCpuModelName: String? = null
+    private val usbHotplugTracker = UsbHotplugTracker()
+    private var usbListenersRegistered: Boolean = false
+    @Volatile
+    private var usbTopologyDirty: Boolean = true
+    private var lastUsbSampleElapsedMs: Long = 0L
+    private var cachedUsbSnapshot: UsbPeripheralTelemetrySnapshot = UsbPeripheralTelemetrySnapshot()
+    @Volatile
+    private var lastUsbDumpsysSampleElapsedMs: Long = 0L
+    @Volatile
+    private var usbDumpsysRefreshInFlight: Boolean = false
+    @Volatile
+    private var cachedUsbDumpsysText: String = ""
     @Volatile
     var lastTrimLevelLabel: String = "Normal"
 
     fun resetWindowCounters() {
         vrrAndFrameTracker.reset()
+        usbHotplugTracker.reset()
         invalidateWifiCaches()
+        invalidateUsbCaches()
     }
 
     fun invalidateWifiCaches() {
         lastWifiCapSampleElapsedMs = 0L
         lastWifiScanSampleElapsedMs = 0L
         wifiScanResultsDirty = true
+    }
+
+    fun invalidateUsbCaches() {
+        lastUsbSampleElapsedMs = 0L
+        lastUsbDumpsysSampleElapsedMs = 0L
+        usbTopologyDirty = true
     }
 
     @Suppress("DEPRECATION")
@@ -204,6 +235,7 @@ class TelemetryCollector(
         val lmkd = readLmkd(am)
         val netBundle = readConnectivityBundle(nowElapsedMs)
         val bluetooth = readBluetooth(nowElapsedMs)
+        val usbPeripherals = readUsbPeripherals(nowElapsedMs)
 
         val caffeineEval = CaffeinePolicy.evaluate(
             config = caffeineConfig,
@@ -236,6 +268,7 @@ class TelemetryCollector(
             ethernet = netBundle.ethernet,
             activeDefaultRouteSummary = netBundle.activeDefaultRouteSummary,
             bluetooth = bluetooth,
+            usbPeripherals = usbPeripherals,
             caffeineEvaluation = caffeineEval,
         )
     }
@@ -2196,6 +2229,323 @@ class TelemetryCollector(
             busyDeltaFraction = busyFraction,
             heartbeatActive = heartbeatActive,
         )
+    }
+
+    private fun ensureUsbListenersRegistered() {
+        if (usbListenersRegistered) return
+        usbListenersRegistered = true
+        val appCtx = context.applicationContext
+
+        runCatching {
+            val filter = IntentFilter().apply {
+                addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+                addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+            }
+            ContextCompat.registerReceiver(
+                appCtx,
+                object : BroadcastReceiver() {
+                    override fun onReceive(ctx: Context?, intent: Intent?) {
+                        usbTopologyDirty = true
+                    }
+                },
+                filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+        }
+
+        runCatching {
+            val im = appCtx.getSystemService(Context.INPUT_SERVICE) as? InputManager
+            im?.registerInputDeviceListener(
+                object : InputManager.InputDeviceListener {
+                    override fun onInputDeviceAdded(deviceId: Int) {
+                        usbTopologyDirty = true
+                    }
+
+                    override fun onInputDeviceRemoved(deviceId: Int) {
+                        usbTopologyDirty = true
+                    }
+
+                    override fun onInputDeviceChanged(deviceId: Int) {
+                        usbTopologyDirty = true
+                    }
+                },
+                null,
+            )
+        }
+
+        runCatching {
+            val audioMgr = appCtx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            audioMgr?.registerAudioDeviceCallback(
+                object : AudioDeviceCallback() {
+                    override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
+                        usbTopologyDirty = true
+                    }
+
+                    override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
+                        usbTopologyDirty = true
+                    }
+                },
+                null,
+            )
+        }
+    }
+
+    private fun scheduleUsbDumpsysIfPermitted(hasDump: Boolean, nowElapsedMs: Long) {
+        if (!hasDump) {
+            cachedUsbDumpsysText = ""
+            return
+        }
+        if (usbDumpsysRefreshInFlight) return
+        val dt = nowElapsedMs - lastUsbDumpsysSampleElapsedMs
+        if (!usbTopologyDirty && lastUsbDumpsysSampleElapsedMs != 0L && dt in 0L until 5_000L && cachedUsbDumpsysText.isNotEmpty()) {
+            return
+        }
+        usbDumpsysRefreshInFlight = true
+        lastUsbDumpsysSampleElapsedMs = nowElapsedMs
+        runCatching {
+            btStackExecutor.execute {
+                try {
+                    val proc = ProcessBuilder("/system/bin/dumpsys", "usb")
+                        .redirectErrorStream(true)
+                        .start()
+                    val sb = StringBuilder(16_384)
+                    proc.inputStream.bufferedReader().use { reader ->
+                        var linesRead = 0
+                        var insidePortManager = false
+                        var braceDepth = 0
+                        while (linesRead < 3_500 && sb.length < 131_072) {
+                            val line = reader.readLine() ?: break
+                            linesRead++
+                            val trimmed = line.trim()
+                            if (!insidePortManager) {
+                                if (trimmed.startsWith("port_manager={")) {
+                                    insidePortManager = true
+                                    braceDepth = line.count { it == '{' } - line.count { it == '}' }
+                                    sb.appendLine(line)
+                                    if (braceDepth <= 0) break
+                                }
+                            } else {
+                                sb.appendLine(line)
+                                braceDepth += line.count { it == '{' } - line.count { it == '}' }
+                                if (braceDepth <= 0) break
+                            }
+                        }
+                    }
+                    runCatching { proc.destroy() }
+                    cachedUsbDumpsysText = sb.toString()
+                } catch (_: Throwable) {
+                    // Ignore process sandbox failures
+                } finally {
+                    usbDumpsysRefreshInFlight = false
+                }
+            }
+        }.onFailure {
+            usbDumpsysRefreshInFlight = false
+        }
+    }
+
+    private fun readUsbPeripherals(nowElapsedMs: Long): UsbPeripheralTelemetrySnapshot {
+        ensureUsbListenersRegistered()
+        val hasDump = ContextCompat.checkSelfPermission(context, Manifest.permission.DUMP) == PackageManager.PERMISSION_GRANTED
+        scheduleUsbDumpsysIfPermitted(hasDump, nowElapsedMs)
+
+        val dt = nowElapsedMs - lastUsbSampleElapsedMs
+        if (!usbTopologyDirty &&
+            lastUsbSampleElapsedMs != 0L &&
+            dt in 0L until 2_500L &&
+            cachedUsbSnapshot.hasDumpPermission == hasDump &&
+            (cachedUsbSnapshot.hasTypeCPorts || cachedUsbDumpsysText.isEmpty())
+        ) {
+            return cachedUsbSnapshot
+        }
+        lastUsbSampleElapsedMs = nowElapsedMs
+        usbTopologyDirty = false
+
+        val rawSysfs = UsbPeripheralParsers.readSysfsUsbDirectory(usbSysfsRoot)
+        val correlated = collectCorrelatedUsbCapabilities(rawSysfs)
+        val typeCPorts = if (hasDump && cachedUsbDumpsysText.isNotEmpty()) {
+            UsbPeripheralParsers.parseUsbDumpsysPorts(cachedUsbDumpsysText, nowElapsedMs)
+        } else {
+            emptyList()
+        }
+
+        val prelim = UsbPeripheralParsers.buildUsbTopologySnapshot(
+            rawDevices = rawSysfs,
+            correlatedByVidPid = correlated,
+            hasDumpPermission = hasDump,
+            typeCPorts = typeCPorts,
+        )
+        val events = usbHotplugTracker.recordSample(prelim.nodes, nowElapsedMs)
+        val snap = prelim.copy(hotplugEvents = events)
+        cachedUsbSnapshot = snap
+        return snap
+    }
+
+    private fun collectCorrelatedUsbCapabilities(
+        rawSysfs: List<UsbPeripheralParsers.RawSysfsUsbDevice>,
+    ): Map<Pair<Int, Int>, UsbCorrelatedInfo> {
+        val map = HashMap<Pair<Int, Int>, UsbCorrelatedInfo>()
+
+        // 1. UsbManager host devices (endpoint & configuration counts)
+        runCatching {
+            val usbMgr = context.getSystemService(Context.USB_SERVICE) as? UsbManager
+            val devMap = usbMgr?.deviceList.orEmpty()
+            for (uDev in devMap.values) {
+                val key = (uDev.vendorId and 0xFFFF) to (uDev.productId and 0xFFFF)
+                var epTotal = 0
+                for (i in 0 until uDev.interfaceCount) {
+                    epTotal += runCatching { uDev.getInterface(i).endpointCount }.getOrDefault(0)
+                }
+                val prev = map[key] ?: UsbCorrelatedInfo()
+                map[key] = prev.copy(
+                    usbManagerEndpointTotal = maxOf(prev.usbManagerEndpointTotal, epTotal),
+                    usbManagerConfigCount = maxOf(prev.usbManagerConfigCount, uDev.configurationCount),
+                    isPresentInUsbManager = true,
+                )
+            }
+        }
+
+        // 2. InputManager external USB HID devices (keyboard type, pointer/gamepad/stylus sources, API 31+ battery %)
+        runCatching {
+            val im = context.getSystemService(Context.INPUT_SERVICE) as? InputManager
+            val ids = im?.inputDeviceIds ?: IntArray(0)
+            for (id in ids) {
+                val dev = im?.getInputDevice(id) ?: continue
+                if (dev.isVirtual) continue
+                val vid = dev.vendorId and 0xFFFF
+                val pid = dev.productId and 0xFFFF
+                if (vid == 0 && pid == 0) continue
+                val isExt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    runCatching { dev.isExternal }.getOrDefault(true)
+                } else {
+                    true
+                }
+                val srcLabels = ArrayList<String>(4)
+                val sources = dev.sources
+                if ((sources and InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD &&
+                    dev.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC
+                ) {
+                    srcLabels += "Alphabetic Keyboard"
+                }
+                if ((sources and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE) {
+                    srcLabels += "Mouse"
+                }
+                if ((sources and InputDevice.SOURCE_TOUCHPAD) == InputDevice.SOURCE_TOUCHPAD) {
+                    srcLabels += "Touchpad"
+                }
+                if ((sources and InputDevice.SOURCE_STYLUS) == InputDevice.SOURCE_STYLUS) {
+                    srcLabels += "Stylus"
+                }
+                if ((sources and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+                    (sources and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
+                ) {
+                    srcLabels += "Gamepad / Joystick"
+                }
+                if (srcLabels.isEmpty()) continue
+
+                val battPct = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    runCatching {
+                        val bs = dev.batteryState
+                        if (bs.isPresent && bs.capacity in 0f..1f) (bs.capacity * 100f).toInt() else -1
+                    }.getOrDefault(-1)
+                } else {
+                    -1
+                }
+                val key = vid to pid
+                val prev = map[key] ?: UsbCorrelatedInfo()
+                val mergedSrc = listOfNotNull(prev.inputSourcesSummary, srcLabels.joinToString(" · "))
+                    .flatMap { it.split(" · ") }
+                    .distinct()
+                    .joinToString(" · ")
+                map[key] = prev.copy(
+                    inputSourcesSummary = mergedSrc,
+                    inputBatteryPercent = if (battPct in 0..100) battPct else prev.inputBatteryPercent,
+                    isExternalInputDevice = prev.isExternalInputDevice || isExt,
+                )
+            }
+        }
+
+        // 3. AudioManager USB DAC / Headset sample rates, bit depths & channels
+        runCatching {
+            val audioMgr = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            val usbAudioDevices = audioMgr?.getDevices(
+                AudioManager.GET_DEVICES_INPUTS or AudioManager.GET_DEVICES_OUTPUTS,
+            ).orEmpty().filter { info ->
+                info.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
+                    info.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
+                    info.type == AudioDeviceInfo.TYPE_USB_ACCESSORY
+            }
+            if (usbAudioDevices.isNotEmpty()) {
+                val audioCandidates = rawSysfs.filter { r ->
+                    r.interfaces.any { it.classCode == 0x01 || it.driverName.equals("snd-usb-audio", ignoreCase = true) }
+                }
+                for (aInfo in usbAudioDevices) {
+                    val prodName = aInfo.productName?.toString()?.trim().orEmpty()
+                    val matchedRaw = audioCandidates.firstOrNull { r ->
+                        prodName.isNotEmpty() && (
+                            r.product.contains(prodName, ignoreCase = true) ||
+                                prodName.contains(r.product.trim(), ignoreCase = true)
+                            )
+                    } ?: audioCandidates.singleOrNull()
+                    if (matchedRaw != null) {
+                        val maxHz = aInfo.sampleRates.maxOrNull() ?: 48_000
+                        val maxCh = aInfo.channelCounts.maxOrNull() ?: 2
+                        val bitLabel = when {
+                            aInfo.encodings.contains(AudioFormat.ENCODING_PCM_32BIT) ||
+                                aInfo.encodings.contains(AudioFormat.ENCODING_PCM_FLOAT) -> "32-bit"
+                            aInfo.encodings.contains(AudioFormat.ENCODING_PCM_24BIT_PACKED) -> "24-bit"
+                            else -> "16-bit"
+                        }
+                        val typeStr = if (aInfo.type == AudioDeviceInfo.TYPE_USB_HEADSET) "USB Headset" else "USB Audio DAC"
+                        val summary = String.format(Locale.US, "%s · Up to %.1f kHz · %s · %dch", typeStr, maxHz / 1000f, bitLabel, maxCh)
+                        val key = (matchedRaw.vendorId and 0xFFFF) to (matchedRaw.productId and 0xFFFF)
+                        val prev = map[key] ?: UsbCorrelatedInfo()
+                        map[key] = prev.copy(audioCapabilitiesSummary = summary)
+                    }
+                }
+            }
+        }
+
+        // 4. CameraManager external UVC cameras
+        runCatching {
+            val camMgr = context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
+            val extCamIds = camMgr?.cameraIdList.orEmpty().filter { id ->
+                val chars = runCatching { camMgr?.getCameraCharacteristics(id) }.getOrNull()
+                chars?.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_EXTERNAL
+            }
+            if (extCamIds.isNotEmpty()) {
+                val uvcNodes = rawSysfs.filter { r ->
+                    r.removable != "fixed" && r.interfaces.any { it.classCode == 0x0e || it.driverName == "uvcvideo" }
+                }
+                for (uvc in uvcNodes) {
+                    val key = (uvc.vendorId and 0xFFFF) to (uvc.productId and 0xFFFF)
+                    val prev = map[key] ?: UsbCorrelatedInfo()
+                    map[key] = prev.copy(cameraSummary = "External UVC Camera (${extCamIds.size} stream(s) registered)")
+                }
+            }
+        }
+
+        // 5. StorageManager removable USB volumes
+        runCatching {
+            val sm = context.getSystemService(Context.STORAGE_SERVICE) as? StorageManager
+            val removableVols = sm?.storageVolumes.orEmpty().filter { it.isRemovable }
+            if (removableVols.isNotEmpty()) {
+                val storageNodes = rawSysfs.filter { r ->
+                    r.interfaces.any { it.classCode == 0x08 || it.driverName in setOf("usb-storage", "uas") }
+                }
+                val volDesc = removableVols.joinToString(", ") { v ->
+                    val desc = SysfsParsers.sanitizeSensorName(v.getDescription(context), "USB Drive")
+                    "$desc (${v.state})"
+                }
+                for (st in storageNodes) {
+                    val key = (st.vendorId and 0xFFFF) to (st.productId and 0xFFFF)
+                    val prev = map[key] ?: UsbCorrelatedInfo()
+                    map[key] = prev.copy(storageVolumeSummary = volDesc)
+                }
+            }
+        }
+
+        return map
     }
 
     private fun readSystemProperty(key: String): String? {

@@ -950,4 +950,218 @@ class CorewatchDataUnitTest {
         assertFalse(reportWithAps.contains("PrivateHomeCorpSSID"))
         assertFalse(reportWithAps.contains("02:aa:bb"))
     }
+
+    @Test
+    fun usbPeripheralParsersReconstructMultiTierDockTreeDetectBottlenecksAndParseTypeCDumpsys() {
+        val tempDir = java.nio.file.Files.createTempDirectory("corewatch_usb_sysfs_test").toFile()
+        try {
+            fun writeUsbDev(
+                name: String,
+                vid: String,
+                pid: String,
+                speed: String,
+                version: String,
+                devClass: String = "00",
+                removable: String = "removable",
+                maxPower: String = "0mA",
+                bmAttr: String = "e0",
+                txLanes: String = "1",
+                rxLanes: String = "1",
+                mfg: String = "",
+                product: String = "",
+            ) {
+                val d = java.io.File(tempDir, name).apply { mkdirs() }
+                java.io.File(d, "idVendor").writeText("$vid\n")
+                java.io.File(d, "idProduct").writeText("$pid\n")
+                java.io.File(d, "speed").writeText("$speed\n")
+                java.io.File(d, "version").writeText(" $version\n")
+                java.io.File(d, "bDeviceClass").writeText("$devClass\n")
+                java.io.File(d, "removable").writeText("$removable\n")
+                java.io.File(d, "bMaxPower").writeText("$maxPower\n")
+                java.io.File(d, "bmAttributes").writeText("$bmAttr\n")
+                java.io.File(d, "tx_lanes").writeText("$txLanes\n")
+                java.io.File(d, "rx_lanes").writeText("$rxLanes\n")
+                if (mfg.isNotEmpty()) java.io.File(d, "manufacturer").writeText("$mfg\n")
+                if (product.isNotEmpty()) java.io.File(d, "product").writeText("$product\n")
+            }
+
+            fun writeUsbIface(
+                devName: String,
+                ifaceIdx: Int,
+                cls: String,
+                sub: String = "00",
+                pro: String = "00",
+                eps: String = "01",
+                ifaceStr: String = "",
+            ) {
+                val d = java.io.File(tempDir, "$devName:1.$ifaceIdx").apply { mkdirs() }
+                java.io.File(d, "bInterfaceClass").writeText("$cls\n")
+                java.io.File(d, "bInterfaceSubClass").writeText("$sub\n")
+                java.io.File(d, "bInterfaceProtocol").writeText("$pro\n")
+                java.io.File(d, "bNumEndpoints").writeText("$eps\n")
+                if (ifaceStr.isNotEmpty()) java.io.File(d, "interface").writeText("$ifaceStr\n")
+            }
+
+            // Root xHCI buses
+            writeUsbDev("usb1", "1d6b", "0002", "480", "2.00", devClass = "09", product = "xHCI Host Controller")
+            writeUsbDev("usb2", "1d6b", "0003", "20000", "3.10", devClass = "09", txLanes = "2", rxLanes = "2", product = "xHCI Host Controller")
+
+            // External TBT4 dock SuperSpeed subtree (2-4 removable -> 2-4.4 fixed internal dock hub -> 2-4.4.1 fixed 2.5G NIC)
+            writeUsbDev("2-4", "8087", "0b40", "10000", "3.20", devClass = "09", removable = "removable", product = "USB3.0 Hub")
+            writeUsbIface("2-4", 0, "09")
+            writeUsbDev("2-4.4", "0bda", "0481", "5000", "3.20", devClass = "09", removable = "fixed", product = "USB3.2 Hub")
+            writeUsbIface("2-4.4", 0, "09")
+            writeUsbDev("2-4.4.1", "0bda", "8156", "5000", "3.20", removable = "fixed", maxPower = "256mA", bmAttr = "a0", mfg = "Realtek", product = "USB 10/100/1G/2.5G LAN")
+            writeUsbIface("2-4.4.1", 0, "ff", "ff", "00", eps = "03")
+
+            // Companion USB 2.0 hub that is BUS-POWERED (bmAttr=80) and over-subscribed (300mA + 300mA = 600mA > 500mA)
+            writeUsbDev("1-1", "2109", "2817", "480", "2.10", devClass = "09", removable = "removable", bmAttr = "80", product = "USB2.0 Hub")
+            writeUsbIface("1-1", 0, "09")
+            // Child 1: SuperSpeed NVMe SSD downgraded to 480 Mbps on USB 2.0 cable/hub
+            writeUsbDev("1-1.1", "0781", "5583", "480", "3.20", removable = "removable", maxPower = "300mA", bmAttr = "80", product = "Extreme Portable SSD")
+            writeUsbIface("1-1.1", 0, "08", "06", "62", eps = "04")
+            // Child 2: Standalone USB Billboard fallback device (Class 0x11)
+            writeUsbDev("1-1.2", "413c", "b0ff", "480", "2.01", devClass = "11", removable = "removable", maxPower = "300mA", bmAttr = "80", product = "USB-C Alt-Mode Adapter")
+            writeUsbIface("1-1.2", 0, "11")
+
+            // Composite Dell Dock MCU (HID 0x03 + Passive Billboard 0x11) -> must be Healthy Dock, NOT BillboardFallback!
+            writeUsbDev("1-2", "413c", "b0a2", "480", "2.01", removable = "removable", maxPower = "100mA", bmAttr = "c0", mfg = "Dell", product = "Dell Pro TBT4 Smart SD25TB4")
+            writeUsbIface("1-2", 0, "03", "00", "00", eps = "01", ifaceStr = "Dock HID")
+            writeUsbIface("1-2", 1, "11", "00", "00", eps = "00", ifaceStr = "Billboard")
+
+            // CH341 Serial UART with empty manufacturer (resolved via UsbVendorLookup 0x1a86 -> QinHeng Electronics (WCH))
+            writeUsbDev("1-3", "1a86", "7523", "12", "1.10", devClass = "ff", removable = "removable", maxPower = "98mA", bmAttr = "80", product = "USB Serial")
+            writeUsbIface("1-3", 0, "ff", "01", "02", eps = "03")
+
+            // Internal fixed motherboard webcam & FPMCU -> must be marked isInternal = true
+            writeUsbDev("1-5", "04f2", "b890", "480", "2.01", devClass = "ef", removable = "fixed", maxPower = "500mA", bmAttr = "80", mfg = "Chicony", product = "Integrated 5M Camera")
+            writeUsbIface("1-5", 0, "0e", "01", "00")
+            writeUsbDev("1-6", "18d1", "5401", "12", "2.00", devClass = "00", removable = "fixed", maxPower = "500mA", bmAttr = "a0", mfg = "Google", product = "FPMCU")
+            writeUsbIface("1-6", 0, "ff", "5a", "00")
+
+            val rawSysfs = UsbPeripheralParsers.readSysfsUsbDirectory(tempDir)
+            assertTrue(rawSysfs.size >= 11)
+
+            val dumpsysSample = """
+                USB Manager State:
+                  port_manager={
+                    is_simulation_active=false
+                    usb_ports=[
+                      {
+                        port={
+                          id=port0
+                          supported_modes=dual
+                        }
+                        status={
+                          connected=true
+                          current_mode=dfp
+                          power_role=sink
+                          data_role=host
+                          role_combinations=[
+                            {
+                              power_role=source
+                              data_role=device
+                            }
+                          ]
+                          usb_data_status=enabled
+                          is_power_transfer_limited=false
+                          usb_power_brick_status=connected
+                          compliance_warning_status=[]
+                          displayport_alt_mode_status=DisplayPortAltModeInfo{partnerSink=detected, cable=passive, numLanes=4, hotPlugDetect=true, linkTrainingStatus=success}
+                        }
+                        connected_at_millis=10000
+                      }
+                      {
+                        port={
+                          id=port1
+                          supported_modes=dual
+                        }
+                        status={
+                          connected=true
+                          current_mode=ufp
+                          power_role=sink
+                          data_role=device
+                          usb_data_status=disabled-contaminant
+                          is_power_transfer_limited=true
+                          compliance_warning_status=[unreliable-cable, debug-accessory]
+                        }
+                        connected_at_millis=65000
+                      }
+                    ]
+                  }
+            """.trimIndent()
+
+            val ports = UsbPeripheralParsers.parseUsbDumpsysPorts(dumpsysSample, nowElapsedMs = 75_000L)
+            assertEquals(2, ports.size)
+            assertEquals("port0", ports[0].portId)
+            // Verify role_combinations=[source/device] did NOT overwrite status's Sink/Host!
+            assertEquals("Sink", ports[0].powerRole)
+            assertEquals("Host", ports[0].dataRole)
+            assertEquals("Host · Sink (PD In)", ports[0].roleBadgeLabel)
+            assertEquals("DP Alt-Mode (4-Lane) · Link: Success", ports[0].displayPortAltModeSummary)
+            assertEquals("1m 5s", ports[0].connectedDurationLabel)
+            assertFalse(ports[0].hasWarning)
+
+            assertTrue(ports[1].hasWarning)
+            assertTrue(ports[1].isPowerTransferLimited)
+            assertEquals(listOf("unreliable-cable", "debug-accessory"), ports[1].complianceWarnings)
+
+            val snap = UsbPeripheralParsers.buildUsbTopologySnapshot(
+                rawDevices = rawSysfs,
+                hasDumpPermission = true,
+                typeCPorts = ports,
+            )
+            val byId = snap.nodes.associateBy { it.id }
+
+            // Root-port removable inheritance: 2-4.4.1 (Realtek 2.5G LAN inside external dock) is external!
+            val nic = byId.getValue("2-4.4.1")
+            assertFalse("Soldered NIC inside external dock must inherit external visibility", nic.isInternal)
+            assertEquals(UsbNodeCategory.NetworkAdapter, nic.category)
+            assertEquals(UsbHealthStatus.Healthy, nic.healthStatus)
+            assertEquals("5 Gbps", nic.speedBadgeLabel)
+
+            // Fixed motherboard devices are internal
+            assertTrue(byId.getValue("1-5").isInternal)
+            assertEquals(UsbNodeCategory.VideoWebcam, byId.getValue("1-5").category)
+            assertTrue(byId.getValue("1-6").isInternal)
+            assertEquals(UsbNodeCategory.SecurityBiometric, byId.getValue("1-6").category)
+            assertEquals(2, snap.internalDeviceCount)
+
+            // Bottleneck, Billboard & Hub Power Budget warnings
+            assertEquals(UsbHealthStatus.PowerBudgetWarning, byId.getValue("1-1").healthStatus)
+            assertEquals(600, byId.getValue("1-1").downstreamRequestedMa)
+            assertEquals(UsbHealthStatus.SpeedBottleneck, byId.getValue("1-1.1").healthStatus)
+            assertEquals(UsbHealthStatus.BillboardFallback, byId.getValue("1-1.2").healthStatus)
+
+            // Composite Dell Dock MCU is Healthy Dock with passiveNote
+            val dockMcu = byId.getValue("1-2")
+            assertEquals(UsbNodeCategory.Dock, dockMcu.category)
+            assertEquals(UsbHealthStatus.Healthy, dockMcu.healthStatus)
+            assertNotNull(dockMcu.passiveNote)
+
+            // QinHeng WCH vendor lookup fallback when sysfs manufacturer is blank
+            val serial = byId.getValue("1-3")
+            assertEquals(UsbNodeCategory.SerialAdapter, serial.category)
+            assertEquals("QinHeng Electronics (WCH)", serial.vendorName)
+
+            // Hotplug tracker records baseline warnings, then detach & attach transitions
+            val tracker = UsbHotplugTracker(capacity = 8)
+            val initialEvents = tracker.recordSample(snap.nodes, nowElapsedMs = 1_000L, wallClockMs = 1_700_000_000_000L)
+            assertEquals(3, initialEvents.size) // PowerBudgetWarning + SpeedBottleneck + BillboardFallback
+
+            val afterDetachNodes = snap.nodes.filterNot { it.id == "1-3" }
+            val afterDetachEvents = tracker.recordSample(afterDetachNodes, nowElapsedMs = 2_000L, wallClockMs = 1_700_000_001_000L)
+            assertEquals(UsbHotplugAction.Detached, afterDetachEvents.first().action)
+            assertEquals("1-3", afterDetachEvents.first().nodeId)
+
+            val afterReattachEvents = tracker.recordSample(snap.nodes, nowElapsedMs = 3_000L, wallClockMs = 1_700_000_002_000L)
+            assertEquals(UsbHotplugAction.Attached, afterReattachEvents.first().action)
+            assertEquals("1-3", afterReattachEvents.first().nodeId)
+
+            tracker.reset()
+            assertTrue(tracker.recordSample(emptyList(), nowElapsedMs = 4_000L).isEmpty())
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
 }

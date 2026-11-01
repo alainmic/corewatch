@@ -67,6 +67,7 @@ data class SystemTelemetrySnapshot(
     val ethernet: EthernetTelemetrySnapshot = EthernetTelemetrySnapshot(),
     val activeDefaultRouteSummary: String = "Disconnected",
     val bluetooth: BluetoothTelemetrySnapshot = BluetoothTelemetrySnapshot(),
+    val usbPeripherals: UsbPeripheralTelemetrySnapshot = UsbPeripheralTelemetrySnapshot(),
     val caffeineEvaluation: CaffeineEvaluation = CaffeineEvaluation(false, "Off", null, false),
 ) {
     val avgCpuUtilizationFraction: Float
@@ -277,6 +278,26 @@ object DiagnosticReportBuilder {
                     btDropsSummary,
                     snapshot.bluetooth.connectedCount,
                     snapshot.bluetooth.bondedCount,
+                ),
+            )
+            val usb = snapshot.usbPeripherals
+            val typeCSummary = if (usb.hasTypeCPorts) {
+                val activePorts = usb.typeCPorts.count { it.isConnected }
+                "${activePorts}/${usb.typeCPorts.size} Type-C active"
+            } else {
+                "Type-C roles `Locked (grant DUMP)`"
+            }
+            val usbWarnSuffix = if (usb.warningCount > 0) " ⚠️ ${usb.warningCount} bottleneck/Alt-Mode warning(s)" else ""
+            appendLine(
+                String.format(
+                    Locale.US,
+                    "| **USB & Peripherals** | `%d` external peripheral(s) · `%d` hub/dock(s) · Peak Link `%s` (Host Max `%s`) · %s%s |",
+                    usb.externalPeripheralCount,
+                    usb.externalHubCount,
+                    SysfsParsers.sanitizeSensorName(usb.maxExternalSpeedLabel, "No External USB"),
+                    SysfsParsers.sanitizeSensorName(usb.maxControllerSpeedLabel, "N/A"),
+                    typeCSummary,
+                    usbWarnSuffix,
                 ),
             )
             appendLine("| **Caffeine Keep-Awake** | `${SysfsParsers.sanitizeSensorName(snapshot.caffeineEvaluation.activeReason, "Off")}` |")

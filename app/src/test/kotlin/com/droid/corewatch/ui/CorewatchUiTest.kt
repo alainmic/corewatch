@@ -18,6 +18,7 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.withKeyDown
 import androidx.compose.ui.unit.Density
@@ -272,11 +273,13 @@ class CorewatchUiTest {
         assertEquals(CorewatchTab.Displays, vm.state.value.activeTab)
         composeRule.onNodeWithTag("tab_4").assertIsDisplayed().performClick()
         assertEquals(CorewatchTab.NetworkBluetooth, vm.state.value.activeTab)
+        composeRule.onNodeWithTag("tab_5").assertIsDisplayed().performClick()
+        assertEquals(CorewatchTab.UsbPeripherals, vm.state.value.activeTab)
         composeRule.onNodeWithTag("tab_0").assertIsDisplayed().performClick()
         assertEquals(CorewatchTab.OverviewThermals, vm.state.value.activeTab)
 
         // At 560dp window width with desktop caption insets (usableCaptionWidth = 275dp < 465dp),
-        // splitTwoRowHeader activates so all 5 tabs and pills remain visible and clickable on row 2
+        // splitTwoRowHeader activates so all 6 tabs and pills remain visible and clickable on row 2
         composeRule.runOnUiThread {
             simulatedWidth.value = 560.dp
         }
@@ -287,6 +290,8 @@ class CorewatchUiTest {
         assertEquals(CorewatchTab.Displays, vm.state.value.activeTab)
         composeRule.onNodeWithTag("tab_4").assertIsDisplayed().performClick()
         assertEquals(CorewatchTab.NetworkBluetooth, vm.state.value.activeTab)
+        composeRule.onNodeWithTag("tab_5").performScrollTo().assertIsDisplayed().performClick()
+        assertEquals(CorewatchTab.UsbPeripherals, vm.state.value.activeTab)
         composeRule.onNodeWithTag("pill_thermal").assertIsDisplayed().performClick()
         composeRule.onNodeWithTag("pill_wattage").assertIsDisplayed()
     }
@@ -431,6 +436,18 @@ class CorewatchUiTest {
             withKeyDown(Key.CtrlLeft) { pressKey(Key.Five) }
         }
         assertEquals(CorewatchTab.NetworkBluetooth, vm.state.value.activeTab)
+
+        root.performKeyInput {
+            withKeyDown(Key.CtrlLeft) { pressKey(Key.Six) }
+        }
+        assertEquals(CorewatchTab.UsbPeripherals, vm.state.value.activeTab)
+
+        root.performKeyInput {
+            withKeyDown(Key.CtrlLeft) {
+                withKeyDown(Key.ShiftLeft) { pressKey(Key.I) }
+            }
+        }
+        assertTrue(vm.state.value.showInternalUsbDevices)
 
         root.performKeyInput {
             withKeyDown(Key.CtrlLeft) { pressKey(Key.One) }
@@ -661,6 +678,28 @@ class CorewatchUiTest {
             java.io.File(npuDev, "npu_current_frequency_mhz").writeText("1400\n")
             java.io.File(npuDev, "npu_max_frequency_mhz").writeText("2000\n")
 
+            val usbRoot = java.io.File(tempRoot, "usb").apply { mkdirs() }
+            val usb2 = java.io.File(usbRoot, "usb2").apply { mkdirs() }
+            java.io.File(usb2, "idVendor").writeText("1d6b\n")
+            java.io.File(usb2, "idProduct").writeText("0003\n")
+            java.io.File(usb2, "speed").writeText("20000\n")
+            java.io.File(usb2, "version").writeText(" 3.10\n")
+            java.io.File(usb2, "bDeviceClass").writeText("09\n")
+            java.io.File(usb2, "tx_lanes").writeText("2\n")
+            java.io.File(usb2, "rx_lanes").writeText("2\n")
+            val usbNic = java.io.File(usbRoot, "2-1").apply { mkdirs() }
+            java.io.File(usbNic, "idVendor").writeText("0bda\n")
+            java.io.File(usbNic, "idProduct").writeText("8156\n")
+            java.io.File(usbNic, "speed").writeText("5000\n")
+            java.io.File(usbNic, "version").writeText(" 3.20\n")
+            java.io.File(usbNic, "removable").writeText("removable\n")
+            java.io.File(usbNic, "bMaxPower").writeText("256mA\n")
+            java.io.File(usbNic, "bmAttributes").writeText("a0\n")
+            java.io.File(usbNic, "product").writeText("USB 2.5G LAN\n")
+            val usbNicIf = java.io.File(usbRoot, "2-1:1.0").apply { mkdirs() }
+            java.io.File(usbNicIf, "bInterfaceClass").writeText("ff\n")
+            java.io.File(usbNicIf, "bNumEndpoints").writeText("03\n")
+
             com.droid.corewatch.data.AccelIoctlBridge.testDrmVersionProvider = { path ->
                 if (path.contains("accel")) "intel_vpu|Driver for Intel NPU|1.0.0"
                 else "xe|Intel Xe2 Graphics|1.1.0"
@@ -727,6 +766,7 @@ class CorewatchUiTest {
                 procMemInfoFile = memInfo,
                 drmSysfsRoot = drmRoot,
                 accelSysfsRoot = accelRoot,
+                usbSysfsRoot = usbRoot,
             )
             val snap1 = populatedCollector.sample(CaffeineConfig(), nowElapsedMs = 1_000L)
             // Advance 1,000 ms (1,000,000 us): cpu0 sleeps 940,000 us (6% active), cpu1 sleeps 950,000 us (5% active)
@@ -1129,5 +1169,389 @@ class CorewatchUiTest {
         assertEquals(1, liveWifi.surroundingScan.totalApCount)
         assertEquals("TestBench-6E", liveWifi.surroundingScan.accessPoints.first().ssid)
         assertEquals("WPA3-SAE", liveWifi.surroundingScan.accessPoints.first().securitySummary)
+    }
+
+    @Test
+    @Config(qualifiers = "w1280dp-h900dp")
+    fun usbPeripheralsTabMasterDetailTreeFiltersWarningsAndCrossTabJumpsWorkEndToEnd() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = CorewatchViewModel(app)
+
+        val usbNodes = listOf(
+            com.droid.corewatch.data.UsbTopologyNode(
+                id = "usb2",
+                parentId = null,
+                depth = 0,
+                busNumber = 2,
+                portChain = "Bus 2",
+                pciControllerLabel = "PCI 00:0d.0",
+                vendorId = 0x1d6b,
+                productId = 0x0003,
+                vidPidHex = "1d6b:0003",
+                productName = "xHCI Host Controller",
+                vendorName = "Linux Foundation (xHCI)",
+                usbVersionBcd = "3.10",
+                deviceClassCode = 0x09,
+                negotiatedSpeedMbps = 20_000f,
+                speedBadgeLabel = "20 Gbps",
+                speedTierDescription = "USB 3.2 Gen 2×2 (20 Gbps)",
+                txLanes = 2,
+                rxLanes = 2,
+                lanesLabel = "2×2 Lanes",
+                maxPowerMa = 0,
+                isSelfPowered = true,
+                category = com.droid.corewatch.data.UsbNodeCategory.RootController,
+                companionNodeId = "usb1",
+            ),
+            com.droid.corewatch.data.UsbTopologyNode(
+                id = "usb1",
+                parentId = null,
+                depth = 0,
+                busNumber = 1,
+                portChain = "Bus 1",
+                pciControllerLabel = "PCI 00:0d.0",
+                vendorId = 0x1d6b,
+                productId = 0x0002,
+                vidPidHex = "1d6b:0002",
+                productName = "xHCI Host Controller",
+                vendorName = "Linux Foundation (xHCI)",
+                usbVersionBcd = "2.00",
+                deviceClassCode = 0x09,
+                negotiatedSpeedMbps = 480f,
+                speedBadgeLabel = "480 Mbps",
+                speedTierDescription = "USB 2.0 High-Speed (480 Mbps)",
+                txLanes = 1,
+                rxLanes = 1,
+                lanesLabel = "1×1 Lane",
+                maxPowerMa = 0,
+                isSelfPowered = true,
+                category = com.droid.corewatch.data.UsbNodeCategory.RootController,
+                companionNodeId = "usb2",
+            ),
+            com.droid.corewatch.data.UsbTopologyNode(
+                id = "2-4",
+                parentId = "usb2",
+                depth = 1,
+                busNumber = 2,
+                portChain = "2-4",
+                pciControllerLabel = "PCI 00:0d.0",
+                vendorId = 0x8087,
+                productId = 0x0b40,
+                vidPidHex = "8087:0b40",
+                productName = "Thunderbolt 4 Dock Hub",
+                vendorName = "Intel",
+                usbVersionBcd = "3.20",
+                deviceClassCode = 0x09,
+                negotiatedSpeedMbps = 10_000f,
+                speedBadgeLabel = "10 Gbps",
+                speedTierDescription = "USB 3.2 Gen 2 (10 Gbps)",
+                txLanes = 1,
+                rxLanes = 1,
+                lanesLabel = "1×1 Lane",
+                maxPowerMa = 0,
+                isSelfPowered = true,
+                downstreamRequestedMa = 256,
+                removableRaw = "removable",
+                category = com.droid.corewatch.data.UsbNodeCategory.Hub,
+            ),
+            com.droid.corewatch.data.UsbTopologyNode(
+                id = "2-4.1",
+                parentId = "2-4",
+                depth = 2,
+                busNumber = 2,
+                portChain = "2-4.1",
+                pciControllerLabel = "PCI 00:0d.0",
+                vendorId = 0x0bda,
+                productId = 0x8156,
+                vidPidHex = "0bda:8156",
+                productName = "USB 10/100/1G/2.5G LAN",
+                vendorName = "Realtek Semiconductor",
+                usbVersionBcd = "3.20",
+                deviceClassCode = 0x00,
+                negotiatedSpeedMbps = 5_000f,
+                speedBadgeLabel = "5 Gbps",
+                speedTierDescription = "USB 3.2 Gen 1 (5 Gbps)",
+                txLanes = 1,
+                rxLanes = 1,
+                lanesLabel = "1×1 Lane",
+                maxPowerMa = 256,
+                isSelfPowered = false,
+                removableRaw = "fixed",
+                category = com.droid.corewatch.data.UsbNodeCategory.NetworkAdapter,
+                interfaces = listOf(
+                    com.droid.corewatch.data.UsbInterfaceSummary(0, 0xff, 0xff, 0x00, "Vendor Specific", "r8152", "2.5G Ethernet", 3),
+                ),
+                correlatedInfo = com.droid.corewatch.data.UsbCorrelatedInfo(
+                    usbManagerEndpointTotal = 3,
+                    usbManagerConfigCount = 2,
+                    isPresentInUsbManager = true,
+                ),
+            ),
+            com.droid.corewatch.data.UsbTopologyNode(
+                id = "1-2",
+                parentId = "usb1",
+                depth = 1,
+                busNumber = 1,
+                portChain = "1-2",
+                pciControllerLabel = "PCI 00:0d.0",
+                vendorId = 0x0781,
+                productId = 0x5583,
+                vidPidHex = "0781:5583",
+                productName = "Extreme NVMe SSD",
+                vendorName = "SanDisk / Western Digital",
+                usbVersionBcd = "3.20",
+                deviceClassCode = 0x00,
+                negotiatedSpeedMbps = 480f,
+                speedBadgeLabel = "480 Mbps",
+                speedTierDescription = "USB 2.0 High-Speed (480 Mbps)",
+                txLanes = 1,
+                rxLanes = 1,
+                lanesLabel = "1×1 Lane",
+                maxPowerMa = 500,
+                isSelfPowered = false,
+                removableRaw = "removable",
+                category = com.droid.corewatch.data.UsbNodeCategory.Storage,
+                healthStatus = com.droid.corewatch.data.UsbHealthStatus.SpeedBottleneck,
+                healthMessage = "SuperSpeed Downgrade: Device supports USB 3.20 (5+ Gbps) but negotiated 480 Mbps.",
+                correlatedInfo = com.droid.corewatch.data.UsbCorrelatedInfo(
+                    storageVolumeSummary = "SanDisk Extreme (mounted)",
+                ),
+            ),
+            com.droid.corewatch.data.UsbTopologyNode(
+                id = "1-3",
+                parentId = "usb1",
+                depth = 1,
+                busNumber = 1,
+                portChain = "1-3",
+                pciControllerLabel = "PCI 00:0d.0",
+                vendorId = 0x413c,
+                productId = 0xb0a2,
+                vidPidHex = "413c:b0a2",
+                productName = "Dell Pro TBT4 Smart SD25TB4",
+                vendorName = "Dell",
+                usbVersionBcd = "2.01",
+                deviceClassCode = 0x00,
+                negotiatedSpeedMbps = 480f,
+                speedBadgeLabel = "480 Mbps",
+                speedTierDescription = "USB 2.0 High-Speed (480 Mbps)",
+                txLanes = 1,
+                rxLanes = 1,
+                lanesLabel = "1×1 Lane",
+                maxPowerMa = 100,
+                isSelfPowered = true,
+                removableRaw = "removable",
+                category = com.droid.corewatch.data.UsbNodeCategory.Dock,
+                passiveNote = "Dock exposes a passive USB Billboard (0x11) management descriptor.",
+            ),
+            com.droid.corewatch.data.UsbTopologyNode(
+                id = "1-5",
+                parentId = "usb1",
+                depth = 1,
+                busNumber = 1,
+                portChain = "1-5",
+                pciControllerLabel = "PCI 00:0d.0",
+                vendorId = 0x04f2,
+                productId = 0xb890,
+                vidPidHex = "04f2:b890",
+                productName = "Integrated 5M Webcam",
+                vendorName = "Chicony Electronics",
+                usbVersionBcd = "2.01",
+                deviceClassCode = 0xef,
+                negotiatedSpeedMbps = 480f,
+                speedBadgeLabel = "480 Mbps",
+                speedTierDescription = "USB 2.0 High-Speed (480 Mbps)",
+                txLanes = 1,
+                rxLanes = 1,
+                lanesLabel = "1×1 Lane",
+                maxPowerMa = 500,
+                isSelfPowered = false,
+                isInternal = true,
+                removableRaw = "fixed",
+                category = com.droid.corewatch.data.UsbNodeCategory.VideoWebcam,
+            ),
+        )
+
+        composeRule.setContent {
+            CorewatchTheme(dark = true) {
+                CorewatchAppRoot(vm = vm)
+            }
+        }
+
+        // 1. Ungranted DUMP state shows locked Type-C banner + Copy ADB Command chip while full USB tree works!
+        vm.setSnapshotForTesting(
+            SystemTelemetrySnapshot(
+                usbPeripherals = com.droid.corewatch.data.UsbPeripheralTelemetrySnapshot(
+                    nodes = usbNodes,
+                    externalPeripheralCount = 3,
+                    externalHubCount = 2,
+                    internalDeviceCount = 1,
+                    warningCount = 1,
+                    maxExternalSpeedMbps = 10_000f,
+                    maxExternalSpeedLabel = "10 Gbps",
+                    maxControllerSpeedLabel = "20 Gbps",
+                    hasDumpPermission = false,
+                    hasTypeCPorts = false,
+                    hotplugEvents = listOf(
+                        com.droid.corewatch.data.UsbHotplugEvent(
+                            timestampLabel = "15:40:12",
+                            elapsedRealtimeMs = 1_000L,
+                            nodeId = "1-2",
+                            deviceName = "Extreme NVMe SSD",
+                            vidPidHex = "0781:5583",
+                            speedBadgeLabel = "480 Mbps",
+                            action = com.droid.corewatch.data.UsbHotplugAction.BottleneckDetected,
+                            detail = "SuperSpeed Downgrade on port 1-2",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        composeRule.onNodeWithTag("tab_5").performClick()
+        assertEquals(CorewatchTab.UsbPeripherals, vm.state.value.activeTab)
+        composeRule.onNodeWithTag("usb_summary_typec_card").assertIsDisplayed()
+        composeRule.onNodeWithTag("usb_typec_locked_banner").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("copy_usb_dump_adb_btn").performScrollTo().performClick()
+        assertTrue(vm.state.value.statusBanner!!.contains("ADB DUMP"))
+
+        // 2. External Only hides Integrated 5M Webcam (1-5) by default; Include Internal reveals it
+        composeRule.onNodeWithTag("usb_node_2-4.1").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("usb_node_1-5").assertDoesNotExist()
+        composeRule.onNodeWithTag("usb_toggle_internal_chip").performScrollTo().performClick()
+        assertTrue(vm.state.value.showInternalUsbDevices)
+        composeRule.onNodeWithTag("usb_node_1-5").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("usb_toggle_internal_chip").performScrollTo().performClick()
+        assertFalse(vm.state.value.showInternalUsbDevices)
+
+        // 3. Select Bottlenecked NVMe SSD (1-2) and verify warning banner & StorageManager correlation
+        composeRule.onNodeWithTag("usb_node_1-2").performScrollTo().performClick()
+        composeRule.onNodeWithTag("usb_node_warning_banner").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("usb_correlated_capabilities_box").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("StorageManager: SanDisk Extreme (mounted)").performScrollTo().assertIsDisplayed()
+
+        // 4. Filter by WarningsOnly, then All, collapse/expand hub 2-4, and jump across companion & tabs
+        composeRule.onNodeWithTag("usb_search_input").performScrollTo()
+        composeRule.onNodeWithTag("usb_filter_WarningsOnly").performClick()
+        composeRule.onNodeWithTag("usb_node_1-2").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("usb_node_2-4.1").assertDoesNotExist()
+        composeRule.onNodeWithTag("usb_search_input").performScrollTo()
+        composeRule.onNodeWithTag("usb_filter_All").performClick()
+
+        composeRule.onNodeWithTag("usb_collapse_2-4").performScrollTo().performClick()
+        composeRule.onNodeWithTag("usb_node_2-4.1").assertDoesNotExist()
+        composeRule.onNodeWithTag("usb_collapse_2-4").performScrollTo().performClick()
+        composeRule.onNodeWithTag("usb_node_2-4.1").performScrollTo().assertIsDisplayed()
+
+        // Select root bus usb2 -> click companion usb1 jump chip
+        composeRule.onNodeWithTag("usb_node_usb2").performScrollTo().performClick()
+        assertEquals("usb2", vm.state.value.selectedUsbNodeId)
+        composeRule.onNodeWithTag("usb_node_details_card").performScrollTo()
+        composeRule.onNodeWithTag("usb_jump_companion_btn").performClick()
+        assertEquals("usb1", vm.state.value.selectedUsbNodeId)
+
+        // Select Dell Dock (1-3) -> jump to Displays; then return & select 2.5G NIC (2-4.1) -> jump to Network & Bluetooth
+        composeRule.onNodeWithTag("usb_node_1-3").performScrollTo().performClick()
+        composeRule.onNodeWithTag("usb_node_details_card").performScrollTo()
+        composeRule.onNodeWithTag("usb_jump_displays_tab_btn").performClick()
+        assertEquals(CorewatchTab.Displays, vm.state.value.activeTab)
+
+        composeRule.onNodeWithTag("tab_5").performClick()
+        composeRule.onNodeWithTag("usb_node_2-4.1").performScrollTo().performClick()
+        composeRule.onNodeWithTag("usb_node_details_card").performScrollTo()
+        composeRule.onNodeWithTag("usb_jump_network_tab_btn").performClick()
+        assertEquals(CorewatchTab.NetworkBluetooth, vm.state.value.activeTab)
+
+        // 5. Granted DUMP state renders live Type-C port tiles
+        composeRule.onNodeWithTag("tab_5").performClick()
+        vm.setSnapshotForTesting(
+            vm.state.value.snapshot.copy(
+                usbPeripherals = vm.state.value.snapshot.usbPeripherals.copy(
+                    hasDumpPermission = true,
+                    hasTypeCPorts = true,
+                    typeCPorts = listOf(
+                        com.droid.corewatch.data.TypeCPortStatus(
+                            portId = "port0",
+                            supportedModes = "Dual-Role (DRP)",
+                            isConnected = true,
+                            currentMode = "DFP",
+                            powerRole = "Sink",
+                            dataRole = "Host",
+                            usbDataStatus = "Enabled",
+                            displayPortAltModeSummary = "DP Alt-Mode (4-Lane)",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("typec_port_port0").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("usb_hotplug_timeline_card").performScrollTo().assertIsDisplayed()
+    }
+
+    @OptIn(ExperimentalTestApi::class)
+    @Test
+    @Config(qualifiers = "w560dp-h800dp")
+    fun usbPeripheralsTabCompactStackedLayoutSearchSpacebarGuardAndEmptyStateWork() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = CorewatchViewModel(app)
+        composeRule.setContent {
+            CorewatchTheme(dark = false) {
+                CorewatchAppRoot(vm = vm)
+            }
+        }
+        vm.selectTab(CorewatchTab.UsbPeripherals)
+        vm.setSnapshotForTesting(
+            SystemTelemetrySnapshot(
+                usbPeripherals = com.droid.corewatch.data.UsbPeripheralTelemetrySnapshot(
+                    nodes = listOf(
+                        com.droid.corewatch.data.UsbTopologyNode(
+                            id = "1-5",
+                            parentId = null,
+                            depth = 0,
+                            busNumber = 1,
+                            portChain = "1-5",
+                            pciControllerLabel = "PCI 00:0d.0",
+                            vendorId = 0x04f2,
+                            productId = 0xb890,
+                            vidPidHex = "04f2:b890",
+                            productName = "Integrated 5M Webcam",
+                            vendorName = "Chicony Electronics",
+                            usbVersionBcd = "2.01",
+                            deviceClassCode = 0xef,
+                            negotiatedSpeedMbps = 480f,
+                            speedBadgeLabel = "480 Mbps",
+                            speedTierDescription = "USB 2.0 High-Speed (480 Mbps)",
+                            txLanes = 1,
+                            rxLanes = 1,
+                            lanesLabel = "1×1 Lane",
+                            maxPowerMa = 500,
+                            isSelfPowered = false,
+                            isInternal = true,
+                            removableRaw = "fixed",
+                            category = com.droid.corewatch.data.UsbNodeCategory.VideoWebcam,
+                        ),
+                    ),
+                    internalDeviceCount = 1,
+                    hasDumpPermission = true,
+                    hasTypeCPorts = false,
+                ),
+            ),
+        )
+        composeRule.waitForIdle()
+        // External Only empty state explains hidden internal devices
+        composeRule.onNodeWithTag("usb_empty_tree_state").performScrollTo().assertIsDisplayed()
+
+        // Reveal internal device and type a search query containing Spacebar without pausing telemetry
+        vm.toggleShowInternalUsbDevices()
+        composeRule.waitForIdle()
+        assertFalse(vm.state.value.isPaused)
+        composeRule.onNodeWithTag("usb_search_input").performScrollTo().performClick()
+        composeRule.onNodeWithTag("usb_search_input").performKeyInput {
+            pressKey(Key.Spacebar)
+        }
+        composeRule.waitForIdle()
+        assertFalse("Spacebar inside focused USB search bar must not pause telemetry", vm.state.value.isPaused)
+        composeRule.onNodeWithTag("usb_search_input").performTextReplacement("Integrated 5M")
+        composeRule.onNodeWithTag("usb_node_1-5").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("usb_node_details_card").performScrollTo().assertIsDisplayed()
     }
 }

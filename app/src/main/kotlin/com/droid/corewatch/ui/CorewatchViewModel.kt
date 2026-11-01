@@ -16,6 +16,7 @@ import com.droid.corewatch.data.DiagnosticReportBuilder
 import com.droid.corewatch.data.FloatRingBuffer
 import com.droid.corewatch.data.SystemTelemetrySnapshot
 import com.droid.corewatch.data.TelemetryCollector
+import com.droid.corewatch.data.UsbCategoryFilter
 import com.droid.corewatch.data.WifiApBandFilter
 import com.droid.corewatch.data.WifiApSortOrder
 import com.droid.corewatch.service.CaffeineController
@@ -35,18 +36,24 @@ enum class CorewatchTab(
     val index: Int,
     val shortTitle: String,
     val compactTitle: String,
+    val ultraCompactTitle: String,
     val fullTitle: String,
     val shortcutLabel: String,
 ) {
-    OverviewThermals(0, "Thermals & Compute", "Compute", "Thermals & Compute", "Ctrl+1"),
-    BatteryPower(1, "Battery & W", "Battery", "Battery & Power", "Ctrl+2"),
-    MemoryStorage(2, "Memory & Swap", "Memory", "Memory & Storage", "Ctrl+3"),
-    Displays(3, "Display", "Display", "Displays", "Ctrl+4"),
-    NetworkBluetooth(4, "Network & Bluetooth", "Net & Bluetooth", "Network & Bluetooth", "Ctrl+5");
+    OverviewThermals(0, "Thermals & Compute", "Compute", "Compute", "Thermals & Compute", "Ctrl+1"),
+    BatteryPower(1, "Battery & W", "Battery", "Battery", "Battery & Power", "Ctrl+2"),
+    MemoryStorage(2, "Memory & Swap", "Memory", "Memory", "Memory & Storage", "Ctrl+3"),
+    Displays(3, "Display", "Display", "Display", "Displays", "Ctrl+4"),
+    NetworkBluetooth(4, "Network & Bluetooth", "Net & Bluetooth", "Net & BT", "Network & Bluetooth", "Ctrl+5"),
+    UsbPeripherals(5, "USB & Peripherals", "USB & I/O", "USB", "USB & Peripherals", "Ctrl+6");
 
-    fun labelForDisplayCount(displayCount: Int, compact: Boolean): String = when (this) {
+    fun labelForDisplayCount(displayCount: Int, compact: Boolean, ultraCompact: Boolean = false): String = when (this) {
         Displays -> if (displayCount > 1) "Displays" else "Display"
-        else -> if (compact) compactTitle else shortTitle
+        else -> when {
+            ultraCompact -> ultraCompactTitle
+            compact -> compactTitle
+            else -> shortTitle
+        }
     }
 }
 
@@ -100,6 +107,11 @@ data class CorewatchUiState(
     val wifiApBandFilter: WifiApBandFilter = WifiApBandFilter.ALL,
     val wifiApSortOrder: WifiApSortOrder = WifiApSortOrder.SIGNAL_DBM,
     val maskApBssids: Boolean = true,
+    val selectedUsbNodeId: String? = null,
+    val usbSearchQuery: String = "",
+    val usbCategoryFilter: UsbCategoryFilter = UsbCategoryFilter.All,
+    val showInternalUsbDevices: Boolean = false,
+    val collapsedUsbNodeIds: Set<String> = emptySet(),
     val caffeineConfig: CaffeineConfig = CaffeineConfig(),
     val snapshot: SystemTelemetrySnapshot = SystemTelemetrySnapshot(),
     val history: TelemetryHistoryStats = TelemetryHistoryStats(),
@@ -119,6 +131,8 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
     private val wifiSignalRing = FloatRingBuffer(60)
     private val jankRing = FloatRingBuffer(60)
     private var lastWindowNarrow: Boolean = false
+    @Volatile
+    private var testingSnapshotPinned: Boolean = false
 
     private val _state = MutableStateFlow(CorewatchUiState())
     val state: StateFlow<CorewatchUiState> = _state.asStateFlow()
@@ -134,7 +148,7 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             while (isActive) {
                 delay(_state.value.samplingInterval.delayMs)
-                if (!_state.value.isPaused) {
+                if (!_state.value.isPaused && !testingSnapshotPinned) {
                     withContext(Dispatchers.Default) {
                         sampleNow()
                     }
@@ -380,12 +394,51 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(statusBanner = msg) }
     }
 
+    fun selectUsbNode(nodeId: String?) {
+        _state.update { it.copy(selectedUsbNodeId = nodeId) }
+    }
+
+    fun setUsbSearchQuery(query: String) {
+        _state.update { it.copy(usbSearchQuery = query.take(64)) }
+    }
+
+    fun setUsbCategoryFilter(filter: UsbCategoryFilter) {
+        _state.update { it.copy(usbCategoryFilter = filter) }
+    }
+
+    fun toggleShowInternalUsbDevices() {
+        _state.update {
+            val next = !it.showInternalUsbDevices
+            it.copy(
+                showInternalUsbDevices = next,
+                statusBanner = if (next) {
+                    "Showing external + internal motherboard USB devices"
+                } else {
+                    "Showing external USB peripherals only"
+                },
+            )
+        }
+    }
+
+    fun toggleUsbNodeCollapsed(nodeId: String) {
+        _state.update {
+            val nextSet = if (nodeId in it.collapsedUsbNodeIds) {
+                it.collapsedUsbNodeIds - nodeId
+            } else {
+                it.collapsedUsbNodeIds + nodeId
+            }
+            it.copy(collapsedUsbNodeIds = nextSet)
+        }
+    }
+
     fun onPermissionsUpdated() {
         collector.invalidateWifiCaches()
+        collector.invalidateUsbCaches()
         sampleNow()
     }
 
     internal fun setSnapshotForTesting(snapshot: SystemTelemetrySnapshot) {
+        testingSnapshotPinned = true
         _state.update { it.copy(snapshot = snapshot) }
     }
 }

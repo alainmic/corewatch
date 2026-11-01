@@ -34,22 +34,35 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
+import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.BatteryChargingFull
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.Cable
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Coffee
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.DesktopWindows
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.Headphones
+import androidx.compose.material.icons.outlined.Keyboard
 import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.Mouse
 import androidx.compose.material.icons.outlined.OpenInFull
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PhotoSizeSelectSmall
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.SettingsEthernet
 import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.outlined.SportsEsports
+import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.Thermostat
+import androidx.compose.material.icons.outlined.Usb
+import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.AlertDialog
@@ -60,6 +73,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -67,13 +81,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusTarget
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -106,6 +123,13 @@ import com.droid.corewatch.data.DisplaySpec
 import com.droid.corewatch.data.EthernetTelemetrySnapshot
 import com.droid.corewatch.data.SurroundingWifiAp
 import com.droid.corewatch.data.ThermalLevel
+import com.droid.corewatch.data.TypeCPortStatus
+import com.droid.corewatch.data.UsbCategoryFilter
+import com.droid.corewatch.data.UsbHealthStatus
+import com.droid.corewatch.data.UsbHotplugAction
+import com.droid.corewatch.data.UsbHotplugEvent
+import com.droid.corewatch.data.UsbNodeCategory
+import com.droid.corewatch.data.UsbTopologyNode
 import com.droid.corewatch.data.WifiApBandFilter
 import com.droid.corewatch.data.WifiApSortOrder
 import com.droid.corewatch.data.WifiRadioCapabilities
@@ -201,6 +225,7 @@ fun CorewatchAppRoot(
 ) {
     val state by vm.state.collectAsState()
     val focusRequester = remember { FocusRequester() }
+    var textInputFocused by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         runCatching { focusRequester.requestFocus() }
@@ -242,6 +267,9 @@ fun CorewatchAppRoot(
                     ev.isCtrlPressed && ev.isShiftPressed && ev.key == Key.B -> {
                         vm.toggleMaskApBssids(); true
                     }
+                    ev.isCtrlPressed && ev.isShiftPressed && ev.key == Key.I -> {
+                        vm.toggleShowInternalUsbDevices(); true
+                    }
                     ev.isCtrlPressed && ev.key == Key.M -> {
                         vm.toggleMiniHud(); true
                     }
@@ -266,7 +294,10 @@ fun CorewatchAppRoot(
                     ev.isCtrlPressed && ev.key == Key.Five -> {
                         vm.selectTab(CorewatchTab.NetworkBluetooth); true
                     }
-                    !ev.isCtrlPressed && ev.key == Key.Spacebar -> {
+                    ev.isCtrlPressed && ev.key == Key.Six -> {
+                        vm.selectTab(CorewatchTab.UsbPeripherals); true
+                    }
+                    !textInputFocused && !ev.isCtrlPressed && ev.key == Key.Spacebar -> {
                         vm.togglePaused(); true
                     }
                     !ev.isCtrlPressed && ev.key == Key.F5 -> {
@@ -308,6 +339,11 @@ fun CorewatchAppRoot(
                                 onRequestWifiScanPermission = onRequestWifiScanPermission,
                                 onRequestNearbyWifiPermission = onRequestNearbyWifiPermission,
                                 onOpenLocationSettings = onOpenLocationSettings,
+                            )
+                            CorewatchTab.UsbPeripherals -> UsbPeripheralsTab(
+                                state = state,
+                                vm = vm,
+                                onSearchFocusChanged = { textInputFocused = it },
                             )
                         }
                     }
@@ -357,10 +393,11 @@ internal fun CorewatchTitleBar(state: CorewatchUiState, vm: CorewatchViewModel, 
         // or when the caption width is narrow, preventing Embedded{Caption} pointer-stealing and minimize-button overlap.
         val splitTwoRowHeader = hasDesktopCaption || usableCaptionWidth < 520.dp
         val showBrandText = usableCaptionWidth >= 560.dp || cap.start == 0.dp || splitTwoRowHeader
-        val useFullTabTitles = if (splitTwoRowHeader) totalWidth >= 780.dp else usableCaptionWidth >= 820.dp
-        val showWattagePill = usableCaptionWidth >= 820.dp || splitTwoRowHeader
+        val useFullTabTitles = if (splitTwoRowHeader) totalWidth >= 960.dp else usableCaptionWidth >= 980.dp
+        val useUltraCompactTabTitles = if (splitTwoRowHeader) totalWidth < 680.dp else usableCaptionWidth < 720.dp
+        val showWattagePill = usableCaptionWidth >= 880.dp || splitTwoRowHeader
         val showThermalPill = usableCaptionWidth >= 420.dp || splitTwoRowHeader
-        val showCaffeineLabel = if (splitTwoRowHeader) totalWidth >= 560.dp else usableCaptionWidth >= 640.dp
+        val showCaffeineLabel = if (splitTwoRowHeader) totalWidth >= 720.dp else usableCaptionWidth >= 780.dp
         val btnSize = if (totalWidth >= 540.dp) 28.dp else 25.dp
 
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -379,6 +416,7 @@ internal fun CorewatchTitleBar(state: CorewatchUiState, vm: CorewatchViewModel, 
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Row(
+                    modifier = if (!splitTwoRowHeader) Modifier.weight(1f, fill = false) else Modifier,
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(if (useFullTabTitles) 6.dp else 3.dp),
                 ) {
@@ -430,16 +468,24 @@ internal fun CorewatchTitleBar(state: CorewatchUiState, vm: CorewatchViewModel, 
                             }
                         }
                     } else {
-                        CorewatchTabStrip(
-                            activeTab = state.activeTab,
-                            displayCount = snap.displays.size,
-                            useFullTabTitles = useFullTabTitles,
-                            onSelectTab = vm::selectTab,
-                        )
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(if (useFullTabTitles) 4.dp else 2.dp),
+                        ) {
+                            CorewatchTabStrip(
+                                activeTab = state.activeTab,
+                                displayCount = snap.displays.size,
+                                useFullTabTitles = useFullTabTitles,
+                                useUltraCompactTabTitles = useUltraCompactTabTitles,
+                                onSelectTab = vm::selectTab,
+                            )
+                        }
                     }
                 }
 
                 if (!splitTwoRowHeader) {
+                    Spacer(Modifier.width(6.dp))
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(if (usableCaptionWidth >= 560.dp) 4.dp else 2.dp),
@@ -481,6 +527,9 @@ internal fun CorewatchTitleBar(state: CorewatchUiState, vm: CorewatchViewModel, 
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     Row(
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .horizontalScroll(rememberScrollState()),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(if (useFullTabTitles) 4.dp else 2.dp),
                     ) {
@@ -488,9 +537,11 @@ internal fun CorewatchTitleBar(state: CorewatchUiState, vm: CorewatchViewModel, 
                             activeTab = state.activeTab,
                             displayCount = snap.displays.size,
                             useFullTabTitles = useFullTabTitles,
+                            useUltraCompactTabTitles = useUltraCompactTabTitles,
                             onSelectTab = vm::selectTab,
                         )
                     }
+                    Spacer(Modifier.width(6.dp))
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(if (totalWidth >= 600.dp) 4.dp else 2.dp),
@@ -646,6 +697,7 @@ private fun CorewatchTabStrip(
     activeTab: CorewatchTab,
     displayCount: Int,
     useFullTabTitles: Boolean,
+    useUltraCompactTabTitles: Boolean = false,
     onSelectTab: (CorewatchTab) -> Unit,
 ) {
     val cs = MaterialTheme.colorScheme
@@ -658,13 +710,21 @@ private fun CorewatchTabStrip(
             modifier = Modifier.testTag("tab_${tab.index}"),
         ) {
             Text(
-                text = tab.labelForDisplayCount(displayCount = displayCount, compact = !useFullTabTitles),
+                text = tab.labelForDisplayCount(
+                    displayCount = displayCount,
+                    compact = !useFullTabTitles,
+                    ultraCompact = useUltraCompactTabTitles,
+                ),
                 style = MaterialTheme.typography.labelMedium,
                 color = if (selected) cs.onPrimaryContainer else cs.onSurfaceVariant,
                 maxLines = 1,
                 softWrap = false,
                 modifier = Modifier.padding(
-                    horizontal = if (useFullTabTitles) 9.dp else 7.dp,
+                    horizontal = when {
+                        useFullTabTitles -> 9.dp
+                        useUltraCompactTabTitles -> 5.dp
+                        else -> 7.dp
+                    },
                     vertical = 5.dp,
                 ),
             )
@@ -2426,7 +2486,7 @@ private fun NetworkBluetoothTab(
                                     color = cs.onSurfaceVariant,
                                 )
                                 Text(
-                                    text = "adb shell pm grant com.droid.corewatch android.permission.DUMP",
+                                    text = "adb shell pm grant --user current com.droid.corewatch android.permission.DUMP",
                                     style = CorewatchMonoTypography.hudSmall,
                                     color = cs.primary,
                                 )
@@ -2437,7 +2497,7 @@ private fun NetworkBluetoothTab(
                                 onClick = {
                                     vm.copyTextToClipboard(
                                         label = "ADB Grant DUMP",
-                                        text = "adb shell pm grant com.droid.corewatch android.permission.DUMP",
+                                        text = "adb shell pm grant --user current com.droid.corewatch android.permission.DUMP",
                                         bannerMessage = "Copied ADB DUMP permission command to clipboard",
                                     )
                                 },
@@ -3699,19 +3759,1234 @@ private fun DisplayCard(disp: DisplaySpec) {
     }
 }
 
+// ------------------------------------------------------------------------ Tab 6: USB & Peripherals
+
+private data class VisibleUsbTreeRow(
+    val node: UsbTopologyNode,
+    val treePrefix: String,
+    val hasChildrenInScope: Boolean,
+    val isCollapsed: Boolean,
+)
+
+private fun computeVisibleUsbRows(
+    allNodes: List<UsbTopologyNode>,
+    showInternal: Boolean,
+    categoryFilter: UsbCategoryFilter,
+    rawQuery: String,
+    collapsedIds: Set<String>,
+): List<VisibleUsbTreeRow> {
+    if (allNodes.isEmpty()) return emptyList()
+    val byId = allNodes.associateBy { it.id }
+
+    // 1. Scope nodes by External-Only vs Include-Internal
+    val scoped = allNodes.filter { showInternal || !it.isInternal }
+    if (scoped.isEmpty()) return emptyList()
+
+    val query = rawQuery.trim().lowercase(Locale.US)
+    val hasActiveFilterOrQuery = categoryFilter != UsbCategoryFilter.All || query.isNotEmpty()
+
+    fun matchesFilterAndQuery(node: UsbTopologyNode): Boolean {
+        val filterOk = when (categoryFilter) {
+            UsbCategoryFilter.All -> true
+            UsbCategoryFilter.WarningsOnly -> node.healthStatus.isWarning
+            else -> node.category.filterGroup == categoryFilter
+        }
+        if (!filterOk) return false
+        if (query.isEmpty()) return true
+        return node.displayTitle.lowercase(Locale.US).contains(query) ||
+            node.vendorName.lowercase(Locale.US).contains(query) ||
+            node.vidPidHex.lowercase(Locale.US).contains(query) ||
+            node.portChain.lowercase(Locale.US).contains(query) ||
+            node.category.label.lowercase(Locale.US).contains(query) ||
+            node.interfaces.any {
+                it.driverName.lowercase(Locale.US).contains(query) ||
+                    it.classLabel.lowercase(Locale.US).contains(query)
+            }
+    }
+
+    val includedIds = HashSet<String>()
+    if (!hasActiveFilterOrQuery) {
+        // Default view: include all non-root scoped nodes + root controllers that have children (or all roots if showInternal)
+        val nonRoots = scoped.filter { !it.isRootController }
+        for (nr in nonRoots) {
+            includedIds += nr.id
+            var curParent = nr.parentId
+            while (curParent != null) {
+                includedIds += curParent
+                curParent = byId[curParent]?.parentId
+            }
+        }
+        if (showInternal) {
+            scoped.filter { it.isRootController }.forEach { includedIds += it.id }
+        }
+    } else {
+        for (node in scoped) {
+            if (node.isRootController && query.isEmpty() && categoryFilter != UsbCategoryFilter.HubsDocks) continue
+            if (matchesFilterAndQuery(node)) {
+                includedIds += node.id
+                var curParent = node.parentId
+                while (curParent != null) {
+                    includedIds += curParent
+                    curParent = byId[curParent]?.parentId
+                }
+            }
+        }
+    }
+
+    val filteredOrdered = scoped.filter { it.id in includedIds }
+    if (filteredOrdered.isEmpty()) return emptyList()
+
+    val parentsWithChildren = filteredOrdered.mapNotNull { it.parentId }.toSet()
+
+    // 2. Apply collapse state when search query is blank
+    val expandedOrdered = if (query.isNotEmpty()) {
+        filteredOrdered
+    } else {
+        filteredOrdered.filter { node ->
+            var cur = node.parentId
+            var hidden = false
+            while (cur != null) {
+                if (cur in collapsedIds) {
+                    hidden = true
+                    break
+                }
+                cur = byId[cur]?.parentId
+            }
+            !hidden
+        }
+    }
+
+    // 3. Build Unicode box-drawing connector prefixes based on remaining visible siblings
+    return expandedOrdered.mapIndexed { idx, node ->
+        val prefix = if (node.depth <= 0) {
+            ""
+        } else {
+            val ancestorContinuations = ArrayList<Boolean>()
+            var cur: UsbTopologyNode? = node
+            while (cur != null && cur.depth > 1) {
+                val anc = cur.parentId?.let { byId[it] } ?: break
+                val ancHasLaterSibling = expandedOrdered.drop(idx + 1).any { later ->
+                    later.parentId == anc.parentId && later.depth == anc.depth
+                }
+                ancestorContinuations.add(0, ancHasLaterSibling)
+                cur = anc
+            }
+            val hasLaterSibling = expandedOrdered.drop(idx + 1).any { later ->
+                later.parentId == node.parentId && later.depth == node.depth
+            }
+            buildString {
+                for (cont in ancestorContinuations) {
+                    append(if (cont) "│  " else "   ")
+                }
+                append(if (hasLaterSibling) "├─ " else "└─ ")
+            }
+        }
+        VisibleUsbTreeRow(
+            node = node,
+            treePrefix = prefix,
+            hasChildrenInScope = node.id in parentsWithChildren,
+            isCollapsed = query.isEmpty() && node.id in collapsedIds,
+        )
+    }
+}
+
+@Composable
+private fun UsbPeripheralsTab(
+    state: CorewatchUiState,
+    vm: CorewatchViewModel,
+    onSearchFocusChanged: (Boolean) -> Unit = {},
+) {
+    val cs = MaterialTheme.colorScheme
+    val snap = state.snapshot
+    val usb = snap.usbPeripherals
+
+    val visibleRows = remember(
+        usb.nodes,
+        state.showInternalUsbDevices,
+        state.usbCategoryFilter,
+        state.usbSearchQuery,
+        state.collapsedUsbNodeIds,
+    ) {
+        computeVisibleUsbRows(
+            allNodes = usb.nodes,
+            showInternal = state.showInternalUsbDevices,
+            categoryFilter = state.usbCategoryFilter,
+            rawQuery = state.usbSearchQuery,
+            collapsedIds = state.collapsedUsbNodeIds,
+        )
+    }
+
+    val selectedNode: UsbTopologyNode? = remember(visibleRows, state.selectedUsbNodeId, usb.nodes) {
+        visibleRows.firstOrNull { it.node.id == state.selectedUsbNodeId }?.node
+            ?: visibleRows.firstOrNull { !it.node.isRootController && it.node.category != UsbNodeCategory.Hub }?.node
+            ?: visibleRows.firstOrNull()?.node
+            ?: usb.nodes.firstOrNull { !it.isInternal && !it.isRootController }
+    }
+
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("usb_peripherals_tab"),
+    ) {
+        val sideBySideMasterDetail = maxWidth >= 820.dp
+        val fourColumnSummary = maxWidth >= 700.dp
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            // 1. Fleet Summary & Type-C Port Status Card
+            UsbSummaryAndTypeCCard(
+                usb = usb,
+                batterySummary = snap.battery.statusSummary,
+                fourColumnSummary = fourColumnSummary,
+                onCopyAdbDumpCommand = {
+                    vm.copyTextToClipboard(
+                        label = "ADB Grant DUMP",
+                        text = "adb shell pm grant --user current com.droid.corewatch android.permission.DUMP",
+                        bannerMessage = "Copied ADB DUMP permission command to clipboard",
+                    )
+                },
+            )
+
+            // 2. Responsive Master-Detail USB Topology & Node Inspector
+            if (sideBySideMasterDetail) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    UsbTopologyTreeCard(
+                        state = state,
+                        usb = usb,
+                        visibleRows = visibleRows,
+                        selectedNodeId = selectedNode?.id,
+                        onSelectNode = vm::selectUsbNode,
+                        onToggleCollapse = vm::toggleUsbNodeCollapsed,
+                        onSearchQueryChange = vm::setUsbSearchQuery,
+                        onCategoryFilterChange = vm::setUsbCategoryFilter,
+                        onToggleInternal = vm::toggleShowInternalUsbDevices,
+                        onSearchFocusChanged = onSearchFocusChanged,
+                        modifier = Modifier.weight(1.08f),
+                    )
+                    UsbNodeDetailsCard(
+                        node = selectedNode,
+                        allNodes = usb.nodes,
+                        onSelectCompanionNode = { compId ->
+                            val compNode = usb.nodes.firstOrNull { it.id == compId }
+                            if (compNode?.isInternal == true && !state.showInternalUsbDevices) {
+                                vm.toggleShowInternalUsbDevices()
+                            }
+                            vm.selectUsbNode(compId)
+                        },
+                        onJumpToTab = vm::selectTab,
+                        modifier = Modifier.weight(0.92f),
+                    )
+                }
+            } else {
+                UsbTopologyTreeCard(
+                    state = state,
+                    usb = usb,
+                    visibleRows = visibleRows,
+                    selectedNodeId = selectedNode?.id,
+                    onSelectNode = vm::selectUsbNode,
+                    onToggleCollapse = vm::toggleUsbNodeCollapsed,
+                    onSearchQueryChange = vm::setUsbSearchQuery,
+                    onCategoryFilterChange = vm::setUsbCategoryFilter,
+                    onToggleInternal = vm::toggleShowInternalUsbDevices,
+                    onSearchFocusChanged = onSearchFocusChanged,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                UsbNodeDetailsCard(
+                    node = selectedNode,
+                    allNodes = usb.nodes,
+                    onSelectCompanionNode = { compId ->
+                        val compNode = usb.nodes.firstOrNull { it.id == compId }
+                        if (compNode?.isInternal == true && !state.showInternalUsbDevices) {
+                            vm.toggleShowInternalUsbDevices()
+                        }
+                        vm.selectUsbNode(compId)
+                    },
+                    onJumpToTab = vm::selectTab,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            // 3. Session Hotplug & Bottleneck Timeline Card
+            UsbHotplugTimelineCard(
+                events = usb.hotplugEvents,
+                onSelectNode = { nodeId ->
+                    if (usb.nodes.any { it.id == nodeId }) {
+                        vm.selectUsbNode(nodeId)
+                    }
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun UsbSummaryAndTypeCCard(
+    usb: com.droid.corewatch.data.UsbPeripheralTelemetrySnapshot,
+    batterySummary: String,
+    fourColumnSummary: Boolean,
+    onCopyAdbDumpCommand: () -> Unit,
+) {
+    val cs = MaterialTheme.colorScheme
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = cs.surfaceContainer,
+        modifier = Modifier.fillMaxWidth().testTag("usb_summary_typec_card"),
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.Usb, contentDescription = null, tint = cs.primary, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("USB & Type-C Topology Overview", style = MaterialTheme.typography.titleMedium)
+                }
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = if (usb.warningCount > 0) cs.errorContainer else cs.secondaryContainer,
+                ) {
+                    Text(
+                        text = if (usb.warningCount > 0) {
+                            "${usb.warningCount} Bottleneck / Port Warning(s)"
+                        } else {
+                            "All Links Nominal"
+                        },
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = if (usb.warningCount > 0) cs.onErrorContainer else cs.onSecondaryContainer,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    )
+                }
+            }
+
+            if (fourColumnSummary) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    UsbKpiTile(
+                        label = "EXTERNAL PERIPHERALS",
+                        value = "${usb.externalPeripheralCount}",
+                        subLabel = "+${usb.internalDeviceCount} fixed internal",
+                        modifier = Modifier.weight(1f),
+                    )
+                    UsbKpiTile(
+                        label = "EXTERNAL HUBS & DOCKS",
+                        value = "${usb.externalHubCount}",
+                        subLabel = "Multi-tier xHCI tree",
+                        modifier = Modifier.weight(1f),
+                    )
+                    UsbKpiTile(
+                        label = "PEAK NEGOTIATED LINK",
+                        value = usb.maxExternalSpeedLabel,
+                        subLabel = "Host max: ${usb.maxControllerSpeedLabel}",
+                        highlightPrimary = usb.maxExternalSpeedMbps >= 5_000f,
+                        modifier = Modifier.weight(1f),
+                    )
+                    UsbKpiTile(
+                        label = "USB-C PD POWER FLOW",
+                        value = batterySummary.substringBefore(" ("),
+                        subLabel = batterySummary.substringAfter("(", "").removeSuffix(")").ifBlank { "BatteryManager" },
+                        modifier = Modifier.weight(1.2f),
+                    )
+                }
+            } else {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    UsbKpiTile(
+                        label = "EXTERNAL PERIPHERALS",
+                        value = "${usb.externalPeripheralCount}",
+                        subLabel = "+${usb.internalDeviceCount} fixed internal",
+                        modifier = Modifier.weight(1f),
+                    )
+                    UsbKpiTile(
+                        label = "PEAK NEGOTIATED LINK",
+                        value = usb.maxExternalSpeedLabel,
+                        subLabel = "Host max: ${usb.maxControllerSpeedLabel}",
+                        highlightPrimary = usb.maxExternalSpeedMbps >= 5_000f,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+
+            // Type-C Port Roles & Compliance Strip
+            if (usb.hasTypeCPorts) {
+                Text(
+                    text = "TYPE-C PORT ROLES & ALT-MODE TELEMETRY (${usb.typeCPorts.count { it.isConnected }}/${usb.typeCPorts.size} CONNECTED)",
+                    style = CorewatchMonoTypography.hudSmall,
+                    color = cs.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .testTag("usb_typec_ports_row"),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    for (port in usb.typeCPorts) {
+                        TypeCPortTile(port = port)
+                    }
+                }
+            } else if (!usb.hasDumpPermission) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = cs.surfaceContainerHigh,
+                    modifier = Modifier.fillMaxWidth().testTag("usb_typec_locked_banner"),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(
+                                text = "Per-Port Type-C Roles & Cable Compliance Locked (Topology Tree Active)",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = cs.onSurface,
+                            )
+                            Text(
+                                text = "Full /sys/bus/usb/devices dock & speed diagnostics work with zero permissions. Grant android.permission.DUMP once via ADB to unlock UsbPortManager port0..portN power/data roles:",
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        FilterChip(
+                            selected = false,
+                            onClick = onCopyAdbDumpCommand,
+                            leadingIcon = {
+                                Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+                            },
+                            label = { Text("Copy ADB Command") },
+                            modifier = Modifier.testTag("copy_usb_dump_adb_btn"),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UsbKpiTile(
+    label: String,
+    value: String,
+    subLabel: String,
+    modifier: Modifier = Modifier,
+    highlightPrimary: Boolean = false,
+) {
+    val cs = MaterialTheme.colorScheme
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = cs.surfaceContainerHigh,
+        modifier = modifier,
+    ) {
+        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(text = label, style = CorewatchMonoTypography.hudSmall, color = cs.onSurfaceVariant, maxLines = 1)
+            Text(
+                text = value,
+                style = CorewatchMonoTypography.hudValue,
+                color = if (highlightPrimary) cs.primary else cs.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = subLabel,
+                style = CorewatchMonoTypography.hudSmall,
+                color = cs.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun TypeCPortTile(port: TypeCPortStatus) {
+    val cs = MaterialTheme.colorScheme
+    Surface(
+        shape = RoundedCornerShape(9.dp),
+        color = if (port.hasWarning) cs.errorContainer else cs.surfaceContainerHigh,
+        modifier = Modifier.widthIn(min = 210.dp, max = 300.dp).testTag("typec_port_${port.portId}"),
+    ) {
+        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = port.portId.uppercase(Locale.US),
+                    style = CorewatchMonoTypography.hudValue,
+                    color = if (port.hasWarning) cs.onErrorContainer else cs.primary,
+                )
+                Spacer(Modifier.width(8.dp))
+                Surface(
+                    shape = RoundedCornerShape(5.dp),
+                    color = when {
+                        port.hasWarning -> cs.error
+                        port.isConnected -> cs.secondaryContainer
+                        else -> cs.surfaceVariant
+                    },
+                ) {
+                    Text(
+                        text = port.roleBadgeLabel,
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = when {
+                            port.hasWarning -> cs.onError
+                            port.isConnected -> cs.onSecondaryContainer
+                            else -> cs.onSurfaceVariant
+                        },
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
+                }
+            }
+            val metaParts = buildList {
+                add(port.supportedModes)
+                if (port.isConnected) add("Data: ${port.usbDataStatus}")
+                port.connectedDurationLabel?.let { add("Up $it") }
+            }.joinToString(" · ")
+            Text(
+                text = metaParts,
+                style = CorewatchMonoTypography.hudSmall,
+                color = if (port.hasWarning) cs.onErrorContainer else cs.onSurfaceVariant,
+            )
+            port.displayPortAltModeSummary?.let { dp ->
+                Text(
+                    text = dp,
+                    style = CorewatchMonoTypography.hudSmall,
+                    color = cs.primary,
+                )
+            }
+            if (port.isPowerTransferLimited || port.complianceWarnings.isNotEmpty()) {
+                val warnText = buildList {
+                    if (port.isPowerTransferLimited) add("Power Transfer Limited")
+                    addAll(port.complianceWarnings)
+                }.joinToString(" · ")
+                Text(
+                    text = "⚠️ $warnText",
+                    style = CorewatchMonoTypography.hudSmall,
+                    color = cs.onErrorContainer,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun UsbTopologyTreeCard(
+    state: CorewatchUiState,
+    usb: com.droid.corewatch.data.UsbPeripheralTelemetrySnapshot,
+    visibleRows: List<VisibleUsbTreeRow>,
+    selectedNodeId: String?,
+    onSelectNode: (String) -> Unit,
+    onToggleCollapse: (String) -> Unit,
+    onSearchQueryChange: (String) -> Unit,
+    onCategoryFilterChange: (UsbCategoryFilter) -> Unit,
+    onToggleInternal: () -> Unit,
+    onSearchFocusChanged: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val cs = MaterialTheme.colorScheme
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = cs.surfaceContainer,
+        modifier = modifier.testTag("usb_topology_tree_card"),
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.AccountTree, contentDescription = null, tint = cs.primary, modifier = Modifier.size(17.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("USB Bus & Dock Topology", style = MaterialTheme.typography.titleMedium)
+                }
+                FilterChip(
+                    selected = state.showInternalUsbDevices,
+                    onClick = onToggleInternal,
+                    label = {
+                        Text(
+                            if (state.showInternalUsbDevices) {
+                                "Internal Included (${usb.internalDeviceCount})"
+                            } else {
+                                "Include Internal (${usb.internalDeviceCount})"
+                            },
+                        )
+                    },
+                    modifier = Modifier.testTag("usb_toggle_internal_chip"),
+                )
+            }
+
+            OutlinedTextField(
+                value = state.usbSearchQuery,
+                onValueChange = onSearchQueryChange,
+                singleLine = true,
+                leadingIcon = {
+                    Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(16.dp))
+                },
+                trailingIcon = if (state.usbSearchQuery.isNotEmpty()) {
+                    {
+                        IconButton(onClick = { onSearchQueryChange("") }, modifier = Modifier.size(24.dp)) {
+                            Icon(Icons.Outlined.Close, contentDescription = "Clear search", modifier = Modifier.size(14.dp))
+                        }
+                    }
+                } else {
+                    null
+                },
+                placeholder = {
+                    Text(
+                        "Filter by device, vendor, VID:PID, port, or kernel driver...",
+                        style = CorewatchMonoTypography.hudSmall,
+                    )
+                },
+                textStyle = CorewatchMonoTypography.hudValue,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { onSearchFocusChanged(it.isFocused) }
+                    .testTag("usb_search_input"),
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                for (filter in UsbCategoryFilter.entries) {
+                    FilterChip(
+                        selected = state.usbCategoryFilter == filter,
+                        onClick = { onCategoryFilterChange(filter) },
+                        label = { Text(filter.label) },
+                        modifier = Modifier.testTag("usb_filter_${filter.name}"),
+                    )
+                }
+            }
+
+            if (visibleRows.isEmpty()) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = cs.surfaceContainerHigh,
+                    modifier = Modifier.fillMaxWidth().testTag("usb_empty_tree_state"),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            text = if (!state.showInternalUsbDevices && usb.internalDeviceCount > 0 && state.usbCategoryFilter == UsbCategoryFilter.All && state.usbSearchQuery.isBlank()) {
+                                "No external USB peripherals currently attached."
+                            } else {
+                                "No USB nodes match the active filter."
+                            },
+                            style = MaterialTheme.typography.labelLarge,
+                            color = cs.onSurface,
+                        )
+                        Text(
+                            text = if (!state.showInternalUsbDevices && usb.internalDeviceCount > 0) {
+                                "${usb.internalDeviceCount} fixed internal motherboard USB device(s) (such as webcam or security MCU) are hidden by External Only mode. Toggle Include Internal (Ctrl+Shift+I) to inspect them."
+                            } else {
+                                "Connect a USB-C dock, hub, storage drive, Ethernet adapter, DAC, or input peripheral to inspect its live bus tree."
+                            },
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onSurfaceVariant,
+                        )
+                    }
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    for (row in visibleRows) {
+                        val node = row.node
+                        val isSelected = node.id == selectedNodeId
+                        val rowBg = when {
+                            isSelected -> cs.primaryContainer.copy(alpha = 0.65f)
+                            node.healthStatus.isWarning -> cs.errorContainer.copy(alpha = 0.45f)
+                            else -> cs.surfaceContainerHigh
+                        }
+                        val borderMod = if (isSelected) {
+                            Modifier.border(1.dp, cs.primary, RoundedCornerShape(8.dp))
+                        } else if (node.healthStatus.isWarning) {
+                            Modifier.border(1.dp, cs.error, RoundedCornerShape(8.dp))
+                        } else {
+                            Modifier
+                        }
+                        Surface(
+                            onClick = { onSelectNode(node.id) },
+                            shape = RoundedCornerShape(8.dp),
+                            color = rowBg,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .then(borderMod)
+                                .testTag("usb_node_${node.id}"),
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 7.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Row(
+                                    modifier = Modifier.weight(1f),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    if (row.treePrefix.isNotEmpty()) {
+                                        Text(
+                                            text = row.treePrefix,
+                                            style = CorewatchMonoTypography.hudValue,
+                                            color = cs.outline,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                        )
+                                    }
+                                    if (row.hasChildrenInScope) {
+                                        IconButton(
+                                            onClick = { onToggleCollapse(node.id) },
+                                            modifier = Modifier.size(20.dp).testTag("usb_collapse_${node.id}"),
+                                        ) {
+                                            Icon(
+                                                imageVector = if (row.isCollapsed) Icons.Outlined.ExpandMore else Icons.Outlined.ExpandLess,
+                                                contentDescription = if (row.isCollapsed) "Expand hub" else "Collapse hub",
+                                                tint = cs.onSurfaceVariant,
+                                                modifier = Modifier.size(15.dp),
+                                            )
+                                        }
+                                        Spacer(Modifier.width(2.dp))
+                                    }
+                                    Icon(
+                                        imageVector = usbCategoryIcon(node.category),
+                                        contentDescription = null,
+                                        tint = when {
+                                            node.healthStatus.isWarning -> cs.error
+                                            node.isRootController || node.category == UsbNodeCategory.Dock -> cs.primary
+                                            node.isInternal -> cs.onSurfaceVariant
+                                            else -> cs.secondary
+                                        },
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                    Spacer(Modifier.width(7.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = node.displayTitle,
+                                            style = CorewatchMonoTypography.hudValue,
+                                            color = cs.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        val subText = if (node.isRootController) {
+                                            "${node.speedTierDescription} · ${node.lanesLabel}"
+                                        } else {
+                                            val intTag = if (node.isInternal) " · [Internal]" else ""
+                                            "${node.portChain} · ${node.vidPidHex} · ${node.vendorName}$intTag"
+                                        }
+                                        Text(
+                                            text = subText,
+                                            style = CorewatchMonoTypography.hudSmall,
+                                            color = cs.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+
+                                Spacer(Modifier.width(8.dp))
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                ) {
+                                    if (node.healthStatus.isWarning) {
+                                        Icon(
+                                            Icons.Outlined.WarningAmber,
+                                            contentDescription = node.healthStatus.badgeLabel,
+                                            tint = cs.error,
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(5.dp),
+                                        color = when {
+                                            node.healthStatus.isWarning -> cs.errorContainer
+                                            node.negotiatedSpeedMbps >= 5_000f -> cs.primaryContainer
+                                            else -> cs.surfaceVariant
+                                        },
+                                    ) {
+                                        Text(
+                                            text = node.speedBadgeLabel,
+                                            style = CorewatchMonoTypography.hudSmall,
+                                            color = when {
+                                                node.healthStatus.isWarning -> cs.onErrorContainer
+                                                node.negotiatedSpeedMbps >= 5_000f -> cs.onPrimaryContainer
+                                                else -> cs.onSurfaceVariant
+                                            },
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UsbNodeDetailsCard(
+    node: UsbTopologyNode?,
+    allNodes: List<UsbTopologyNode>,
+    onSelectCompanionNode: (String) -> Unit,
+    onJumpToTab: (CorewatchTab) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val cs = MaterialTheme.colorScheme
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = cs.surfaceContainer,
+        modifier = modifier.testTag("usb_node_details_card"),
+    ) {
+        if (node == null) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Node & Endpoint Inspector", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = "Select any xHCI controller, hub, dock, or peripheral in the topology tree to inspect negotiated lanes, bMaxPower draw, kernel drivers, and correlated Android capabilities.",
+                    style = CorewatchMonoTypography.hudSmall,
+                    color = cs.onSurfaceVariant,
+                )
+            }
+        } else {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                // Header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = node.displayTitle,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = cs.onSurface,
+                        )
+                        Text(
+                            text = "${node.category.label} · VID:PID ${node.vidPidHex} · ${node.vendorName}",
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = if (node.healthStatus.isWarning) cs.errorContainer else cs.secondaryContainer,
+                    ) {
+                        Text(
+                            text = node.healthStatus.badgeLabel,
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = if (node.healthStatus.isWarning) cs.onErrorContainer else cs.onSecondaryContainer,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        )
+                    }
+                }
+
+                // Bottleneck / Billboard / Power Alert Banner
+                node.healthMessage?.let { msg ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(cs.errorContainer)
+                            .border(1.dp, cs.error, RoundedCornerShape(8.dp))
+                            .padding(10.dp)
+                            .testTag("usb_node_warning_banner"),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Outlined.WarningAmber,
+                            contentDescription = null,
+                            tint = cs.onErrorContainer,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(text = msg, style = MaterialTheme.typography.bodySmall, color = cs.onErrorContainer)
+                    }
+                }
+
+                node.passiveNote?.let { note ->
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = cs.surfaceContainerHigh,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = note,
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onSurfaceVariant,
+                            modifier = Modifier.padding(9.dp),
+                        )
+                    }
+                }
+
+                // Link, Lanes & Power Telemetry Box
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = cs.surfaceContainerHigh,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "LINK SPEED, TOPOLOGY & POWER BUDGET",
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.primary,
+                        )
+                        Text(
+                            text = "Negotiated Rate: ${node.speedTierDescription} · Lanes: ${node.lanesLabel}",
+                            style = CorewatchMonoTypography.hudValue,
+                            color = cs.onSurface,
+                        )
+                        val locScope = if (node.isInternal) "Internal Fixed Port" else "External Port"
+                        val pciStr = if (node.pciControllerLabel.isNotBlank()) " · Host ${node.pciControllerLabel}" else ""
+                        Text(
+                            text = "Descriptor USB Spec: bcdUSB ${node.usbVersionBcd} · Path: ${node.portChain}$pciStr",
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onSurfaceVariant,
+                        )
+                        val downstreamPart = if (node.isHubOrRoot && node.downstreamRequestedMa > 0) {
+                            " · Downstream Bus Draw: ${node.downstreamRequestedMa} mA"
+                        } else {
+                            ""
+                        }
+                        Text(
+                            text = "Power: ${node.powerSummaryLabel}$downstreamPart · $locScope (${node.removableRaw})",
+                            style = CorewatchMonoTypography.hudSmall,
+                            color = cs.onSurfaceVariant,
+                        )
+                    }
+                }
+
+                // Companion Hub / Bus & Cross-Tab Jump Actions
+                val companionNode = node.companionNodeId?.let { cid -> allNodes.firstOrNull { it.id == cid } }
+                val showNetJump = node.category == UsbNodeCategory.NetworkAdapter || node.category == UsbNodeCategory.WirelessController
+                val showDispJump = node.category == UsbNodeCategory.Dock || node.category == UsbNodeCategory.Billboard
+                if (companionNode != null || showNetJump || showDispJump) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (companionNode != null) {
+                            FilterChip(
+                                selected = false,
+                                onClick = { onSelectCompanionNode(companionNode.id) },
+                                leadingIcon = {
+                                    Icon(Icons.Outlined.Cable, contentDescription = null, modifier = Modifier.size(14.dp))
+                                },
+                                label = {
+                                    Text("Companion ${companionNode.id} (${companionNode.speedBadgeLabel}) ->")
+                                },
+                                modifier = Modifier.testTag("usb_jump_companion_btn"),
+                            )
+                        }
+                        if (showNetJump) {
+                            FilterChip(
+                                selected = false,
+                                onClick = { onJumpToTab(CorewatchTab.NetworkBluetooth) },
+                                leadingIcon = {
+                                    Icon(Icons.Outlined.SettingsEthernet, contentDescription = null, modifier = Modifier.size(14.dp))
+                                },
+                                label = { Text("Inspect on Network & Bluetooth ->") },
+                                modifier = Modifier.testTag("usb_jump_network_tab_btn"),
+                            )
+                        }
+                        if (showDispJump) {
+                            FilterChip(
+                                selected = false,
+                                onClick = { onJumpToTab(CorewatchTab.Displays) },
+                                leadingIcon = {
+                                    Icon(Icons.Outlined.DesktopWindows, contentDescription = null, modifier = Modifier.size(14.dp))
+                                },
+                                label = { Text("Inspect on Displays ->") },
+                                modifier = Modifier.testTag("usb_jump_displays_tab_btn"),
+                            )
+                        }
+                    }
+                }
+
+                // Correlated Android Subsystem Capabilities (InputManager / AudioManager / CameraManager / StorageManager)
+                val corr = node.correlatedInfo
+                if (corr.hasAnyCorrelation) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = cs.surfaceContainerHigh,
+                        modifier = Modifier.fillMaxWidth().testTag("usb_correlated_capabilities_box"),
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = "ANDROID SUBSYSTEM CORRELATION",
+                                style = CorewatchMonoTypography.hudSmall,
+                                color = cs.secondary,
+                            )
+                            if (corr.isPresentInUsbManager) {
+                                Text(
+                                    text = "UsbManager Host Device: ${corr.usbManagerConfigCount} config(s) · ${corr.usbManagerEndpointTotal} total endpoint(s)",
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = cs.onSurface,
+                                )
+                            }
+                            corr.inputSourcesSummary?.let { src ->
+                                val battSuffix = if (corr.inputBatteryPercent in 0..100) " · Battery: ${corr.inputBatteryPercent}%" else ""
+                                Text(
+                                    text = "InputManager: $src$battSuffix",
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = cs.onSurface,
+                                )
+                            }
+                            corr.audioCapabilitiesSummary?.let { aud ->
+                                Text(
+                                    text = "AudioManager: $aud",
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = cs.onSurface,
+                                )
+                            }
+                            corr.cameraSummary?.let { cam ->
+                                Text(
+                                    text = "CameraManager: $cam",
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = cs.onSurface,
+                                )
+                            }
+                            corr.storageVolumeSummary?.let { vol ->
+                                Text(
+                                    text = "StorageManager: $vol",
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = cs.onSurface,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // USB Interfaces & Kernel Drivers Table
+                Text(
+                    text = "USB INTERFACES & KERNEL DRIVERS (${node.interfaces.size})",
+                    style = CorewatchMonoTypography.hudSmall,
+                    color = cs.onSurfaceVariant,
+                )
+                if (node.interfaces.isEmpty()) {
+                    Text(
+                        text = if (node.isRootController) {
+                            "Root xHCI Host Controller bus hub managed by kernel xhci_hcd."
+                        } else {
+                            "Device-level descriptor (Class 0x${String.format(Locale.US, "%02x", node.deviceClassCode)})."
+                        },
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurfaceVariant,
+                    )
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        for (iface in node.interfaces) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = cs.surfaceContainerHigh,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        val lblSuffix = if (iface.interfaceLabel.isNotBlank()) " · ${iface.interfaceLabel}" else ""
+                                        Text(
+                                            text = "If #${iface.interfaceNumber} · ${iface.classLabel}$lblSuffix",
+                                            style = CorewatchMonoTypography.hudValue,
+                                            color = cs.onSurface,
+                                        )
+                                        Text(
+                                            text = "Class ${iface.classTripleHex} · Endpoints: ${iface.endpointCount}",
+                                            style = CorewatchMonoTypography.hudSmall,
+                                            color = cs.onSurfaceVariant,
+                                        )
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(5.dp),
+                                        color = cs.surfaceVariant,
+                                    ) {
+                                        Text(
+                                            text = "drv=${iface.driverName}",
+                                            style = CorewatchMonoTypography.hudSmall,
+                                            color = cs.primary,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UsbHotplugTimelineCard(
+    events: List<UsbHotplugEvent>,
+    onSelectNode: (String) -> Unit,
+) {
+    val cs = MaterialTheme.colorScheme
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = cs.surfaceContainer,
+        modifier = Modifier.fillMaxWidth().testTag("usb_hotplug_timeline_card"),
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Session USB Hotplug & Bottleneck Log", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = "In-memory 64-event ring buffer (zero disk persistence · cleared via F5 / Ctrl+R)",
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.onSurfaceVariant,
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = cs.surfaceContainerHigh,
+                ) {
+                    Text(
+                        text = "${events.size} Event(s)",
+                        style = CorewatchMonoTypography.hudSmall,
+                        color = cs.primary,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    )
+                }
+            }
+
+            if (events.isEmpty()) {
+                Text(
+                    text = "No hotplug transitions or bottleneck warnings recorded since launch. Plug or unplug any USB peripheral or dock to capture live enumeration events.",
+                    style = CorewatchMonoTypography.hudSmall,
+                    color = cs.onSurfaceVariant,
+                )
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for (ev in events.take(16)) {
+                        Surface(
+                            onClick = { onSelectNode(ev.nodeId) },
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (ev.action.isAlert) cs.errorContainer.copy(alpha = 0.45f) else cs.surfaceContainerHigh,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 7.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    ) {
+                                        Text(
+                                            text = ev.timestampLabel,
+                                            style = CorewatchMonoTypography.hudSmall,
+                                            color = cs.onSurfaceVariant,
+                                        )
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = when {
+                                                ev.action.isAlert -> cs.error
+                                                ev.action == UsbHotplugAction.Attached -> cs.secondaryContainer
+                                                else -> cs.surfaceVariant
+                                            },
+                                        ) {
+                                            Text(
+                                                text = ev.action.badgeLabel,
+                                                style = CorewatchMonoTypography.hudSmall,
+                                                color = when {
+                                                    ev.action.isAlert -> cs.onError
+                                                    ev.action == UsbHotplugAction.Attached -> cs.onSecondaryContainer
+                                                    else -> cs.onSurfaceVariant
+                                                },
+                                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                                            )
+                                        }
+                                        Text(
+                                            text = ev.deviceName,
+                                            style = CorewatchMonoTypography.hudValue,
+                                            color = cs.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                    Text(
+                                        text = ev.detail,
+                                        style = CorewatchMonoTypography.hudSmall,
+                                        color = if (ev.action.isAlert) cs.onErrorContainer else cs.onSurfaceVariant,
+                                    )
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = ev.speedBadgeLabel,
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = cs.primary,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun usbCategoryIcon(category: UsbNodeCategory) = when (category) {
+    UsbNodeCategory.RootController, UsbNodeCategory.Hub -> Icons.Outlined.AccountTree
+    UsbNodeCategory.Dock -> Icons.Outlined.Cable
+    UsbNodeCategory.NetworkAdapter -> Icons.Outlined.SettingsEthernet
+    UsbNodeCategory.SerialAdapter -> Icons.Outlined.Cable
+    UsbNodeCategory.WirelessController -> Icons.Outlined.Wifi
+    UsbNodeCategory.Keyboard -> Icons.Outlined.Keyboard
+    UsbNodeCategory.Pointer -> Icons.Outlined.Mouse
+    UsbNodeCategory.GameController -> Icons.Outlined.SportsEsports
+    UsbNodeCategory.HidControl -> Icons.Outlined.Usb
+    UsbNodeCategory.Audio -> Icons.Outlined.Headphones
+    UsbNodeCategory.VideoWebcam -> Icons.Outlined.Videocam
+    UsbNodeCategory.Storage -> Icons.Outlined.Storage
+    UsbNodeCategory.SecurityBiometric -> Icons.Outlined.Security
+    UsbNodeCategory.Billboard -> Icons.Outlined.WarningAmber
+    UsbNodeCategory.Other -> Icons.Outlined.Usb
+}
+
 // ------------------------------------------------------------------------ F1 Shortcuts Dialog
 
 @Composable
 private fun ShortcutsDialog(onDismiss: () -> Unit) {
     val shortcuts = listOf(
         "Ctrl+M" to "Toggle between Full Workbench and Compact Mini-HUD mode",
-        "Ctrl+1 .. Ctrl+5" to "Switch tabs (Compute, Battery, Memory, Display(s), Network & Bluetooth)",
+        "Ctrl+1 .. Ctrl+6" to "Switch tabs (Compute, Battery, Memory, Display(s), Net & BT, USB & Peripherals)",
         "Ctrl+K" to "Toggle Caffeine Keep-Awake active state",
         "Space" to "Pause / Resume live telemetry graph scrolling",
         "Ctrl+Shift+C" to "Copy Markdown Hardware & Thermal Diagnostic Snapshot",
         "Ctrl+Shift+S" to "Trigger an active Wi-Fi scan on Network & Bluetooth",
         "Ctrl+Shift+B" to "Toggle surrounding AP BSSID MAC privacy masking",
-        "F5 / Ctrl+R" to "Reset session min/max/average telemetry counters",
+        "Ctrl+Shift+I" to "Toggle internal motherboard USB devices on USB & Peripherals",
+        "F5 / Ctrl+R" to "Reset session min/max/average & USB hotplug counters",
         "F1" to "Show / hide this Keyboard Shortcuts cheatsheet",
     )
     AlertDialog(
