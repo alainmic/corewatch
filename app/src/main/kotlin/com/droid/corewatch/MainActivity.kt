@@ -86,25 +86,29 @@ class MainActivity : ComponentActivity() {
     private val canDrawOverlaysState = mutableStateOf(false)
     private var awaitingOverlayPermissionForPip: Boolean = false
     private var frameMetricsThread: HandlerThread? = null
-    private val frameMetricsListener = Window.OnFrameMetricsAvailableListener { _, metrics, _ ->
-        if (metrics.getMetric(FrameMetrics.FIRST_DRAW_FRAME) == 1L) return@OnFrameMetricsAvailableListener
-        val totalNs = metrics.getMetric(FrameMetrics.TOTAL_DURATION)
-        val cpuStagesNs = metrics.getMetric(FrameMetrics.INPUT_HANDLING_DURATION).coerceAtLeast(0L) +
+    internal val frameMetricsListener = Window.OnFrameMetricsAvailableListener { _, metrics, dropCountSinceLastInvocation ->
+        val isFirstDraw = metrics.getMetric(FrameMetrics.FIRST_DRAW_FRAME) == 1L
+        if (isFirstDraw && dropCountSinceLastInvocation <= 0) return@OnFrameMetricsAvailableListener
+        val unknownDelayNs = metrics.getMetric(FrameMetrics.UNKNOWN_DELAY_DURATION).coerceAtLeast(0L)
+        val cpuStagesNs = unknownDelayNs +
+            metrics.getMetric(FrameMetrics.INPUT_HANDLING_DURATION).coerceAtLeast(0L) +
             metrics.getMetric(FrameMetrics.ANIMATION_DURATION).coerceAtLeast(0L) +
             metrics.getMetric(FrameMetrics.LAYOUT_MEASURE_DURATION).coerceAtLeast(0L) +
             metrics.getMetric(FrameMetrics.DRAW_DURATION).coerceAtLeast(0L) +
             metrics.getMetric(FrameMetrics.SYNC_DURATION).coerceAtLeast(0L) +
             metrics.getMetric(FrameMetrics.COMMAND_ISSUE_DURATION).coerceAtLeast(0L)
+        val swapBuffersNs = metrics.getMetric(FrameMetrics.SWAP_BUFFERS_DURATION).coerceAtLeast(0L)
         val deadlineNs = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             metrics.getMetric(FrameMetrics.DEADLINE)
         } else {
             -1L
         }
         val gpuNs = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            metrics.getMetric(FrameMetrics.GPU_DURATION)
+            metrics.getMetric(FrameMetrics.GPU_DURATION).coerceAtLeast(0L)
         } else {
             0L
         }
+        val totalNs = maxOf(metrics.getMetric(FrameMetrics.TOTAL_DURATION), gpuNs)
         val intendedNs = metrics.getMetric(FrameMetrics.INTENDED_VSYNC_TIMESTAMP)
         val vsyncNs = metrics.getMetric(FrameMetrics.VSYNC_TIMESTAMP)
         vm.recordFrameMetric(
@@ -114,6 +118,9 @@ class MainActivity : ComponentActivity() {
             intendedVsyncNs = intendedNs,
             vsyncNs = vsyncNs,
             cpuStagesDurationNs = cpuStagesNs,
+            swapBuffersDurationNs = swapBuffersNs,
+            isFirstDrawFrame = isFirstDraw,
+            droppedReportCount = dropCountSinceLastInvocation,
         )
     }
 

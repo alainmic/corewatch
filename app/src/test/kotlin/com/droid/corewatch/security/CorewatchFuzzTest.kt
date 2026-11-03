@@ -19,6 +19,7 @@ import com.droid.corewatch.data.UsbHotplugTracker
 import com.droid.corewatch.data.UsbPeripheralParsers
 import com.droid.corewatch.data.UsbPeripheralTelemetrySnapshot
 import com.droid.corewatch.data.UsbVendorLookup
+import com.droid.corewatch.data.VrrAndFrameWindowTracker
 import com.droid.corewatch.data.WifiRadioCapabilities
 import com.droid.corewatch.data.WifiTelemetrySnapshot
 import com.droid.corewatch.data.WirelessTelemetryParsers
@@ -354,6 +355,58 @@ class CorewatchFuzzTest {
             )
             assertTrue(sec.isNotBlank())
             assertTrue(badges.size <= 5)
+        }
+    }
+
+    @Test
+    fun fuzzVrrFrameJankTrackerPercentageInvariants() {
+        val r = Random(0x4A414E4BL)
+        val tracker = VrrAndFrameWindowTracker(windowHorizonMs = 300_000L)
+        var nowMs = 0L
+        repeat(15_000) { iter ->
+            if (iter % 1_500 == 0 && iter > 0) {
+                tracker.reset()
+            }
+            nowMs = (nowMs + r.nextLong(-250L, 4_000L)).coerceAtLeast(0L)
+            val totalNs = when (r.nextInt(8)) {
+                0 -> -100L
+                1 -> 0L
+                2 -> Long.MAX_VALUE
+                else -> r.nextLong(1_000_000L, 600_000_000L)
+            }
+            val deadlineNs = when (r.nextInt(6)) {
+                0 -> -1L
+                1 -> 0L
+                2 -> Long.MAX_VALUE
+                else -> listOf(8_333_333L, 16_666_667L, 33_333_333L, 41_666_667L, 50_000_000L)[r.nextInt(5)]
+            }
+            val intendedNs = r.nextLong(0L, 10_000_000_000L)
+            val vsyncNs = intendedNs + r.nextLong(-5_000_000L, 80_000_000L)
+            val fallbackHz = listOf(120f, 60f, 20f, 0f, -10f, Float.NaN, Float.POSITIVE_INFINITY)[r.nextInt(7)]
+            tracker.recordFrameMetric(
+                nowElapsedMs = nowMs,
+                totalDurationNs = totalNs,
+                deadlineNs = deadlineNs,
+                gpuDurationNs = r.nextLong(-1_000L, 40_000_000L),
+                intendedVsyncNs = intendedNs,
+                vsyncNs = vsyncNs,
+                fallbackHz = fallbackHz,
+                cpuStagesDurationNs = r.nextLong(-1L, 80_000_000L),
+                swapBuffersDurationNs = r.nextLong(-1L, 40_000_000L),
+                isFirstDrawFrame = r.nextInt(20) == 0,
+                droppedReportCount = r.nextInt(-2, 10),
+            )
+            val snap = tracker.snapshotFrames(nowElapsedMs = nowMs + r.nextLong(0L, 2_500L), defaultHz = 120)
+            assertTrue(snap.droppedPercent5m.isFinite() && snap.droppedPercent5m in 0f..100f)
+            assertTrue(snap.jankyPercent5m.isFinite() && snap.jankyPercent5m in 0f..100f)
+            assertTrue(snap.latestIntervalJankPercent.isFinite() && snap.latestIntervalJankPercent in 0f..100f)
+            assertTrue(snap.jankyFrames5m in 0..snap.evaluatedFrames5m)
+            assertTrue(snap.droppedFrames5m >= 0)
+            assertTrue(snap.expectedFrames5m >= snap.evaluatedFrames5m)
+            assertTrue(snap.windowDurationMs in 0L..300_000L)
+            if (snap.evaluatedFrames5m == 0) {
+                assertTrue(snap.droppedPercent5m == 0f && snap.jankyPercent5m == 0f)
+            }
         }
     }
 

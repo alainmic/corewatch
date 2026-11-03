@@ -313,9 +313,13 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
         intendedVsyncNs: Long,
         vsyncNs: Long,
         cpuStagesDurationNs: Long = -1L,
+        swapBuffersDurationNs: Long = -1L,
+        isFirstDrawFrame: Boolean = false,
+        droppedReportCount: Int = 0,
         nowElapsedMs: Long = SystemClock.elapsedRealtime(),
     ) {
-        val fallbackHz = _state.value.snapshot.displays.firstOrNull()?.renderFrameRateHz ?: 120f
+        val primaryDisplay = _state.value.snapshot.displays.firstOrNull()
+        val fallbackHz = primaryDisplay?.renderFrameRateHz ?: primaryDisplay?.activeRefreshHz ?: 120f
         collector.vrrAndFrameTracker.recordFrameMetric(
             nowElapsedMs = nowElapsedMs,
             totalDurationNs = totalDurationNs,
@@ -325,6 +329,9 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
             vsyncNs = vsyncNs,
             fallbackHz = fallbackHz,
             cpuStagesDurationNs = cpuStagesDurationNs,
+            swapBuffersDurationNs = swapBuffersDurationNs,
+            isFirstDrawFrame = isFirstDrawFrame,
+            droppedReportCount = droppedReportCount,
         )
     }
 

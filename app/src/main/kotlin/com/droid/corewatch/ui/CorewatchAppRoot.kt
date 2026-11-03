@@ -2065,7 +2065,7 @@ private fun DisplaysTab(state: CorewatchUiState) {
                                 color = if (jank.droppedFrames5m > 0) cs.error else cs.secondary,
                             )
                             Text(
-                                text = "${jank.droppedFrames5m} dropped frames (5m)",
+                                text = "${jank.droppedFrames5m} missed VSyncs / ${jank.expectedFrames5m} expected",
                                 style = CorewatchMonoTypography.hudSmall,
                                 color = cs.onSurfaceVariant,
                             )
@@ -2085,7 +2085,7 @@ private fun DisplaysTab(state: CorewatchUiState) {
                                 color = if (jank.jankyPercent5m >= 5f) cs.error else cs.primary,
                             )
                             Text(
-                                text = "${jank.jankyFrames5m} janky frames (5m)",
+                                text = "${jank.jankyFrames5m} late frames / ${jank.evaluatedFrames5m} rendered",
                                 style = CorewatchMonoTypography.hudSmall,
                                 color = cs.onSurfaceVariant,
                             )

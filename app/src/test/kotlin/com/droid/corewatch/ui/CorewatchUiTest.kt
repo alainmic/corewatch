@@ -1643,4 +1643,103 @@ class CorewatchUiTest {
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("bluetooth_audio_drops_section").performScrollTo().assertIsDisplayed()
     }
+
+    @Test
+    fun displaysTabAndMainActivityFrameMetricsReflectAccurateDroppedAndJankyFramePercentages() {
+        val controller = org.robolectric.Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            val vm = androidx.lifecycle.ViewModelProvider(activity)[CorewatchViewModel::class.java]
+            vm.resetSessionHistory()
+
+            val deadline60HzNs = 16_666_667L
+            // 1. Exempt FIRST_DRAW_FRAME (cold 180ms window inflate must not pollute dropped/janky %)
+            val firstDraw = org.robolectric.shadows.FrameMetricsBuilder()
+                .setMetric(android.view.FrameMetrics.FIRST_DRAW_FRAME, 1L)
+                .setMetric(android.view.FrameMetrics.LAYOUT_MEASURE_DURATION, 180_000_000L)
+                .setMetric(android.view.FrameMetrics.DEADLINE, deadline60HzNs)
+                .build()
+            activity.frameMetricsListener.onFrameMetricsAvailable(activity.window, firstDraw, 0)
+
+            // 2. 8 smooth 60 Hz frames (7ms total <= 16.67ms deadline)
+            repeat(8) { idx ->
+                val vsync = (idx + 1L) * deadline60HzNs
+                val smooth = org.robolectric.shadows.FrameMetricsBuilder()
+                    .setMetric(android.view.FrameMetrics.INTENDED_VSYNC_TIMESTAMP, vsync)
+                    .setMetric(android.view.FrameMetrics.VSYNC_TIMESTAMP, vsync)
+                    .setMetric(android.view.FrameMetrics.DRAW_DURATION, 4_000_000L)
+                    .setMetric(android.view.FrameMetrics.COMMAND_ISSUE_DURATION, 1_000_000L)
+                    .setMetric(android.view.FrameMetrics.SWAP_BUFFERS_DURATION, 200_000L)
+                    .setMetric(android.view.FrameMetrics.GPU_DURATION, 2_000_000L)
+                    .setMetric(android.view.FrameMetrics.DEADLINE, deadline60HzNs)
+                    .build()
+                activity.frameMetricsListener.onFrameMetricsAvailable(activity.window, smooth, 0)
+            }
+
+            // 3. 1 Buffer-Stuffing frame (SWAP_BUFFERS_DURATION = 16ms + 4ms CPU = 20ms > 16.67ms -> 1 missed VSync)
+            val bufferStuffed = org.robolectric.shadows.FrameMetricsBuilder()
+                .setMetric(android.view.FrameMetrics.INTENDED_VSYNC_TIMESTAMP, 200_000_000L)
+                .setMetric(android.view.FrameMetrics.VSYNC_TIMESTAMP, 200_000_000L)
+                .setMetric(android.view.FrameMetrics.DRAW_DURATION, 4_000_000L)
+                .setMetric(android.view.FrameMetrics.SWAP_BUFFERS_DURATION, 16_000_000L)
+                .setMetric(android.view.FrameMetrics.GPU_DURATION, 2_000_000L)
+                .setMetric(android.view.FrameMetrics.DEADLINE, deadline60HzNs)
+                .build()
+            activity.frameMetricsListener.onFrameMetricsAvailable(activity.window, bufferStuffed, 0)
+
+            // 4. 1 multi-VSync UI freeze via UNKNOWN_DELAY_DURATION + VSync slip (185ms total -> overrun 168.3ms -> 11 missed VSyncs)
+            val uiFreeze = org.robolectric.shadows.FrameMetricsBuilder()
+                .setMetric(android.view.FrameMetrics.INTENDED_VSYNC_TIMESTAMP, 300_000_000L)
+                .setMetric(android.view.FrameMetrics.VSYNC_TIMESTAMP, 470_000_000L)
+                .setMetric(android.view.FrameMetrics.UNKNOWN_DELAY_DURATION, 175_000_000L)
+                .setMetric(android.view.FrameMetrics.DRAW_DURATION, 9_000_000L)
+                .setMetric(android.view.FrameMetrics.SWAP_BUFFERS_DURATION, 1_000_000L)
+                .setMetric(android.view.FrameMetrics.GPU_DURATION, 2_000_000L)
+                .setMetric(android.view.FrameMetrics.DEADLINE, deadline60HzNs)
+                .build()
+            activity.frameMetricsListener.onFrameMetricsAvailable(activity.window, uiFreeze, 1)
+
+            // Sample VM and inspect computed FrameJankSnapshot:
+            // 10 rendered frames (2 janky -> 20.00% janky), 12 missed VSyncs (12 / 22 expected -> 54.55% dropped)
+            vm.sampleNow()
+            val jank = vm.state.value.snapshot.frameJank
+            assertEquals(10, jank.evaluatedFrames5m)
+            assertEquals(2, jank.jankyFrames5m)
+            assertEquals(12, jank.droppedFrames5m)
+            assertEquals(22, jank.expectedFrames5m)
+            assertEquals(20.00f, jank.jankyPercent5m, 0.01f)
+            assertEquals(54.55f, jank.droppedPercent5m, 0.02f)
+            assertEquals(1, jank.bufferStuffing5m)
+            assertEquals(1, jank.longCpuJank5m)
+            assertEquals(1, jank.sfMissedFrames5m)
+            assertEquals(1, jank.droppedReports5m)
+
+            val markdown = vm.copyDiagnosticMarkdown()
+            assertTrue(markdown.contains("`10` frames (`54.55%` dropped, `20.00%` janky"))
+            val capturedSnapshot = vm.state.value.snapshot
+            controller.destroy()
+
+            // Render DisplaysTab in Compose and verify exact UI strings and denominators
+            val uiVm = CorewatchViewModel(ApplicationProvider.getApplicationContext())
+            uiVm.setSnapshotForTesting(capturedSnapshot)
+            uiVm.selectTab(CorewatchTab.Displays)
+            composeRule.setContent {
+                CorewatchTheme(dark = true) {
+                    CorewatchAppRoot(vm = uiVm, canDrawOverlays = false)
+                }
+            }
+            composeRule.waitForIdle()
+            composeRule.onNodeWithTag("frame_jank_card").performScrollTo().assertIsDisplayed()
+            composeRule.onNodeWithText("54.55%").assertIsDisplayed()
+            composeRule.onNodeWithText("12 missed VSyncs / 22 expected").assertIsDisplayed()
+            composeRule.onNodeWithText("20.00%").assertIsDisplayed()
+            composeRule.onNodeWithText("2 late frames / 10 rendered").assertIsDisplayed()
+            composeRule.onNodeWithText(
+                "Jank Causes (5m): Long CPU: 1 · Long GPU: 0 · Buffer Stuffing: 1 · Missed VSync: 1",
+            ).assertIsDisplayed()
+        } catch (t: Throwable) {
+            runCatching { controller.destroy() }
+            throw t
+        }
+    }
 }

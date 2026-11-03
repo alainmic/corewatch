@@ -38,12 +38,41 @@ data class FrameJankSnapshot(
     val activeDeadlineHzMax: Int = 120,
     val latestIntervalJankPercent: Float = 0f,
     val isSystemWideTimeStats: Boolean = false,
+    val droppedReports5m: Int = 0,
 ) {
-    val droppedPercent5m: Float
-        get() = if (evaluatedFrames5m <= 0) 0f else ((droppedFrames5m * 100f) / evaluatedFrames5m.toFloat()).coerceIn(0f, 100f)
+    /**
+     * Total expected frame presentation slots in the 5-minute window:
+     * rendered frames (`evaluatedFrames5m`) plus display VSync frame slots skipped while stalling (`droppedFrames5m`).
+     */
+    val expectedFrames5m: Int
+        get() = (evaluatedFrames5m.coerceAtLeast(0).toLong() + droppedFrames5m.coerceAtLeast(0).toLong())
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+            .toInt()
 
+    /**
+     * Percentage of expected VSync frame slots that were dropped (`dropped / (rendered + dropped)`).
+     * For example, sustaining 30 FPS on a 60 Hz cadence yields 30 rendered + 30 dropped = 50.00% dropped frames.
+     */
+    val droppedPercent5m: Float
+        get() = if (evaluatedFrames5m <= 0 || droppedFrames5m <= 0) {
+            0f
+        } else {
+            val denom = evaluatedFrames5m.toDouble() + droppedFrames5m.toDouble()
+            ((droppedFrames5m.toDouble() * 100.0) / denom).toFloat().coerceIn(0f, 100f)
+        }
+
+    /**
+     * Percentage of rendered frames whose `FrameMetrics.TOTAL_DURATION` exceeded `FrameMetrics.DEADLINE`
+     * (`janky / rendered`).
+     */
     val jankyPercent5m: Float
-        get() = if (evaluatedFrames5m <= 0) 0f else ((jankyFrames5m * 100f) / evaluatedFrames5m.toFloat()).coerceIn(0f, 100f)
+        get() = if (evaluatedFrames5m <= 0 || jankyFrames5m <= 0) {
+            0f
+        } else {
+            ((jankyFrames5m.coerceAtMost(evaluatedFrames5m).toDouble() * 100.0) / evaluatedFrames5m.toDouble())
+                .toFloat()
+                .coerceIn(0f, 100f)
+        }
 
     val windowElapsedLabel: String
         get() {
@@ -111,12 +140,15 @@ class VrrAndFrameWindowTracker(
 
     private data class FrameBucket(
         val timestampMs: Long,
+        var firstFrameMs: Long = timestampMs,
         var evaluated: Int = 0,
         var dropped: Int = 0,
         var janky: Int = 0,
         var longCpu: Int = 0,
         var longGpu: Int = 0,
         var bufferStuffing: Int = 0,
+        var missedVsync: Int = 0,
+        var droppedReports: Int = 0,
         var minDeadlineHz: Int = Int.MAX_VALUE,
         var maxDeadlineHz: Int = 0,
     )
@@ -127,8 +159,7 @@ class VrrAndFrameWindowTracker(
     private var lastObservedHz: Int = -1
 
     private val frameBuckets = ArrayDeque<FrameBucket>()
-    private var firstFrameElapsedMs: Long = -1L
-    private var lastFrameVsyncNs: Long = -1L
+    private var lastFrameElapsedMs: Long = -1L
 
     fun reset() {
         synchronized(lock) {
@@ -136,8 +167,7 @@ class VrrAndFrameWindowTracker(
             lastSampleElapsedMs = -1L
             lastObservedHz = -1
             frameBuckets.clear()
-            firstFrameElapsedMs = -1L
-            lastFrameVsyncNs = -1L
+            lastFrameElapsedMs = -1L
         }
     }
 
@@ -185,125 +215,186 @@ class VrrAndFrameWindowTracker(
         vsyncNs: Long,
         fallbackHz: Float = 120f,
         cpuStagesDurationNs: Long = -1L,
+        swapBuffersDurationNs: Long = -1L,
+        isFirstDrawFrame: Boolean = false,
+        droppedReportCount: Int = 0,
     ) {
-        if (totalDurationNs <= 0L) return
-        val hz = if (fallbackHz.isFinite() && fallbackHz >= 10f) fallbackHz else 120f
-        val renderPeriodNs = (1_000_000_000.0 / hz.toDouble()).toLong()
-        val rawDeadlineNs = if (deadlineNs in 1_000_000L..100_000_000L) {
+        val safeDroppedReports = droppedReportCount.coerceAtLeast(0)
+        if (isFirstDrawFrame || totalDurationNs <= 0L) {
+            if (safeDroppedReports > 0) {
+                val safeNowMs = nowElapsedMs.coerceAtLeast(0L)
+                val bucketKeyMs = (safeNowMs / 1_000L) * 1_000L
+                synchronized(lock) {
+                    val bucket = getOrCreateBucketLocked(bucketKeyMs, safeNowMs)
+                    bucket.droppedReports = (bucket.droppedReports.toLong() + safeDroppedReports.toLong())
+                        .coerceAtMost(Int.MAX_VALUE.toLong())
+                        .toInt()
+                    pruneFramesLocked(safeNowMs)
+                }
+            }
+            return
+        }
+        val safeNowMs = nowElapsedMs.coerceAtLeast(0L)
+        val hz = if (fallbackHz.isFinite() && fallbackHz >= 10f) fallbackHz.coerceAtMost(480f) else 120f
+        val fallbackDeadlineNs = (1_000_000_000.0 / hz.toDouble()).toLong().coerceAtLeast(1_000_000L)
+        // Per Android FrameMetrics.DEADLINE (API 31+), DEADLINE already encodes the exact per-frame
+        // compositor budget allocated by SurfaceFlinger's FrameTimeline for the window's active display
+        // and VRR cadence. Only fall back to Display refresh rate when DEADLINE is unavailable/invalid.
+        val evalDeadlineNs = if (deadlineNs in 1_000_000L..250_000_000L) {
             deadlineNs
         } else {
-            renderPeriodNs
+            fallbackDeadlineNs
         }
-        // When Android ARR/VRR paces rendering at a lower step (e.g., Render 60 Hz inside a 120 Hz VSync mode),
-        // use the effective VRR render interval so 60 Hz-paced frames are not penalized against an 8.33 ms VSync tick.
-        val safeDeadlineNs = maxOf(rawDeadlineNs, renderPeriodNs)
-        val deadlineHz = (1_000_000_000.0 / safeDeadlineNs.toDouble()).roundToInt().coerceIn(20, 480)
-        val vsyncSlipNs = (vsyncNs - intendedVsyncNs).coerceAtLeast(0L)
+        val deadlineHz = (1_000_000_000.0 / evalDeadlineNs.toDouble()).roundToInt().coerceIn(4, 480)
+        val vsyncSlipNs = if (intendedVsyncNs > 0L && vsyncNs > intendedVsyncNs) {
+            vsyncNs - intendedVsyncNs
+        } else {
+            0L
+        }
         val safeGpuNs = gpuDurationNs.coerceAtLeast(0L)
+        val safeSwapNs = swapBuffersDurationNs.coerceAtLeast(0L)
         val cpuNs = if (cpuStagesDurationNs >= 0L) {
-            cpuStagesDurationNs
+            maxOf(cpuStagesDurationNs, vsyncSlipNs)
         } else {
-            (totalDurationNs - safeGpuNs).coerceAtLeast(0L)
+            maxOf((totalDurationNs - safeGpuNs - safeSwapNs).coerceAtLeast(0L), vsyncSlipNs)
         }
-        val activeRenderNs = if (cpuStagesDurationNs >= 0L) {
-            maxOf(cpuNs + safeGpuNs, vsyncSlipNs)
-        } else {
-            totalDurationNs
-        }
-        val isIdleWakeupFrame = synchronized(lock) {
-            val prevVsync = lastFrameVsyncNs
-            if (vsyncNs > 0L) {
-                lastFrameVsyncNs = vsyncNs
-            }
-            (prevVsync <= 0L || (vsyncNs - prevVsync) >= 250_000_000L) && vsyncSlipNs < safeDeadlineNs
-        }
-        // Isolated 1Hz telemetry ticks (>= 250 ms after the previous frame with no VSync slip)
-        // wake the CPU from powersave, GPU from RC6, and eDP panel from PSR low-refresh (30 Hz / 33.3 ms).
-        val evalDeadlineNs = if (isIdleWakeupFrame) {
-            maxOf(safeDeadlineNs, 33_333_333L)
-        } else {
-            safeDeadlineNs
-        }
-        val isJanky = totalDurationNs > evalDeadlineNs && activeRenderNs > evalDeadlineNs
-        val isDropped = isJanky && (vsyncSlipNs > safeDeadlineNs || activeRenderNs > (evalDeadlineNs * 2L))
-        val isLongCpu = isJanky && cpuNs > (evalDeadlineNs * 65L / 100L)
-        val isLongGpu = isJanky && safeGpuNs > (evalDeadlineNs * 50L / 100L)
-        val isStuffing = isJanky && !isLongCpu && !isLongGpu
 
-        val bucketKeyMs = (nowElapsedMs / 1_000L) * 1_000L
+        val isJanky = totalDurationNs > evalDeadlineNs
+        val overrunNs = (totalDurationNs - evalDeadlineNs).coerceAtLeast(0L)
+        val maxDroppedPerFrame = (5_000_000_000L / evalDeadlineNs).coerceIn(1L, 600L)
+        val overrunDroppedSlots = if (overrunNs > 0L) {
+            (((overrunNs - 1L) / evalDeadlineNs) + 1L).coerceIn(1L, maxDroppedPerFrame).toInt()
+        } else {
+            0
+        }
+        val vsyncSlipSlots = if (isJanky && vsyncSlipNs >= evalDeadlineNs) {
+            (vsyncSlipNs / evalDeadlineNs).coerceIn(1L, maxDroppedPerFrame).toInt()
+        } else {
+            0
+        }
+        val droppedSlots = maxOf(overrunDroppedSlots, vsyncSlipSlots)
+
+        val missedVsyncStart = isJanky && vsyncSlipNs >= minOf(evalDeadlineNs / 2L, 4_000_000L)
+        val unattributedStallNs = if (cpuStagesDurationNs >= 0L) {
+            (totalDurationNs - cpuNs - safeGpuNs).coerceAtLeast(0L)
+        } else {
+            safeSwapNs
+        }
+        val isStuffing = isJanky && (
+            safeSwapNs > (evalDeadlineNs / 3L) ||
+                (safeSwapNs > 0L && safeSwapNs >= cpuNs && safeSwapNs >= safeGpuNs) ||
+                unattributedStallNs > (evalDeadlineNs / 2L)
+            )
+        val isLongGpu = isJanky && (safeGpuNs > (evalDeadlineNs / 2L) || (!isStuffing && safeGpuNs > cpuNs))
+        val isLongCpu = isJanky && (cpuNs > (evalDeadlineNs / 2L) || (!isStuffing && cpuNs >= safeGpuNs))
+
+        val bucketKeyMs = (safeNowMs / 1_000L) * 1_000L
         synchronized(lock) {
-            if (firstFrameElapsedMs < 0L) {
-                firstFrameElapsedMs = nowElapsedMs
-            }
-            val tail = frameBuckets.lastOrNull()
-            val bucket = if (tail != null && tail.timestampMs == bucketKeyMs) {
-                tail
-            } else {
-                FrameBucket(timestampMs = bucketKeyMs).also { frameBuckets.addLast(it) }
+            val bucket = getOrCreateBucketLocked(bucketKeyMs, safeNowMs)
+            if (safeNowMs < bucket.firstFrameMs) {
+                bucket.firstFrameMs = safeNowMs
             }
             bucket.evaluated += 1
-            if (isDropped) bucket.dropped += 1
+            bucket.dropped += droppedSlots
             if (isJanky) bucket.janky += 1
             if (isLongCpu) bucket.longCpu += 1
             if (isLongGpu) bucket.longGpu += 1
             if (isStuffing) bucket.bufferStuffing += 1
+            if (missedVsyncStart) bucket.missedVsync += 1
+            if (safeDroppedReports > 0) {
+                bucket.droppedReports = (bucket.droppedReports.toLong() + safeDroppedReports.toLong())
+                    .coerceAtMost(Int.MAX_VALUE.toLong())
+                    .toInt()
+            }
             if (deadlineHz < bucket.minDeadlineHz) bucket.minDeadlineHz = deadlineHz
             if (deadlineHz > bucket.maxDeadlineHz) bucket.maxDeadlineHz = deadlineHz
-            pruneFramesLocked(nowElapsedMs)
+            if (safeNowMs > lastFrameElapsedMs) {
+                lastFrameElapsedMs = safeNowMs
+            }
+            pruneFramesLocked(safeNowMs)
         }
     }
 
+    private fun getOrCreateBucketLocked(bucketKeyMs: Long, nowElapsedMs: Long): FrameBucket {
+        val existing = frameBuckets.lastOrNull { it.timestampMs == bucketKeyMs }
+        if (existing != null) return existing
+        val created = FrameBucket(timestampMs = bucketKeyMs, firstFrameMs = nowElapsedMs)
+        if (frameBuckets.isEmpty() || bucketKeyMs >= frameBuckets.last().timestampMs) {
+            frameBuckets.addLast(created)
+        } else {
+            val insertIdx = frameBuckets.indexOfFirst { it.timestampMs > bucketKeyMs }
+            if (insertIdx < 0) frameBuckets.addLast(created) else frameBuckets.add(insertIdx, created)
+        }
+        return created
+    }
+
     fun snapshotFrames(nowElapsedMs: Long, defaultHz: Int = 120): FrameJankSnapshot {
+        val safeNowMs = nowElapsedMs.coerceAtLeast(0L)
         synchronized(lock) {
-            pruneFramesLocked(nowElapsedMs)
+            pruneFramesLocked(safeNowMs)
             if (frameBuckets.isEmpty()) {
                 return FrameJankSnapshot(
                     activeDeadlineHzMin = defaultHz,
                     activeDeadlineHzMax = defaultHz,
                 )
             }
-            var eval = 0
-            var dropped = 0
-            var janky = 0
-            var longCpu = 0
-            var longGpu = 0
-            var stuffing = 0
+            var eval = 0L
+            var dropped = 0L
+            var janky = 0L
+            var longCpu = 0L
+            var longGpu = 0L
+            var stuffing = 0L
+            var missedVsync = 0L
+            var droppedReports = 0L
             var minHz = Int.MAX_VALUE
             var maxHz = 0
+            var oldestEvaluatedMs = -1L
             for (b in frameBuckets) {
-                eval += b.evaluated
-                dropped += b.dropped
-                janky += b.janky
-                longCpu += b.longCpu
-                longGpu += b.longGpu
-                stuffing += b.bufferStuffing
-                if (b.minDeadlineHz < minHz) minHz = b.minDeadlineHz
-                if (b.maxDeadlineHz > maxHz) maxHz = b.maxDeadlineHz
+                eval += b.evaluated.toLong()
+                dropped += b.dropped.toLong()
+                janky += b.janky.toLong()
+                longCpu += b.longCpu.toLong()
+                longGpu += b.longGpu.toLong()
+                stuffing += b.bufferStuffing.toLong()
+                missedVsync += b.missedVsync.toLong()
+                droppedReports += b.droppedReports.toLong()
+                if (b.evaluated > 0) {
+                    if (oldestEvaluatedMs < 0L || b.firstFrameMs < oldestEvaluatedMs) {
+                        oldestEvaluatedMs = b.firstFrameMs
+                    }
+                    if (b.minDeadlineHz < minHz) minHz = b.minDeadlineHz
+                    if (b.maxDeadlineHz > maxHz) maxHz = b.maxDeadlineHz
+                }
             }
-            val latest = frameBuckets.last()
-            val latestJankPct = if (latest.evaluated > 0) {
-                ((latest.janky * 100f) / latest.evaluated.toFloat()).coerceIn(0f, 100f)
+            val latest = frameBuckets.lastOrNull { it.evaluated > 0 }
+            val isLatestActive = latest != null &&
+                lastFrameElapsedMs >= 0L &&
+                safeNowMs >= lastFrameElapsedMs &&
+                (safeNowMs - lastFrameElapsedMs) <= 1_500L
+            val latestJankPct = if (isLatestActive && latest.evaluated > 0) {
+                ((latest.janky.toDouble() * 100.0) / latest.evaluated.toDouble()).toFloat().coerceIn(0f, 100f)
             } else {
                 0f
             }
-            val winDur = if (firstFrameElapsedMs > 0L && nowElapsedMs >= firstFrameElapsedMs) {
-                (nowElapsedMs - firstFrameElapsedMs).coerceAtMost(windowHorizonMs)
+            val winDur = if (oldestEvaluatedMs >= 0L && safeNowMs >= oldestEvaluatedMs) {
+                (safeNowMs - oldestEvaluatedMs).coerceAtMost(windowHorizonMs)
             } else {
                 0L
             }
             return FrameJankSnapshot(
-                evaluatedFrames5m = eval,
-                droppedFrames5m = dropped,
-                jankyFrames5m = janky,
-                longCpuJank5m = longCpu,
-                longGpuJank5m = longGpu,
-                bufferStuffing5m = stuffing,
-                sfMissedFrames5m = dropped,
+                evaluatedFrames5m = eval.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                droppedFrames5m = dropped.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                jankyFrames5m = janky.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                longCpuJank5m = longCpu.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                longGpuJank5m = longGpu.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                bufferStuffing5m = stuffing.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                sfMissedFrames5m = missedVsync.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
                 windowDurationMs = winDur,
                 activeDeadlineHzMin = if (minHz == Int.MAX_VALUE) defaultHz else minHz,
                 activeDeadlineHzMax = if (maxHz == 0) defaultHz else maxHz,
                 latestIntervalJankPercent = latestJankPct,
                 isSystemWideTimeStats = false,
+                droppedReports5m = droppedReports.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
             )
         }
     }
