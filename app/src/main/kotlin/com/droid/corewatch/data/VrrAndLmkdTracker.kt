@@ -465,6 +465,7 @@ class VrrAndFrameWindowTracker(
     private var graphicsStatsHasBaseline: Boolean = false
     private var graphicsStatsBaselineElapsedMs: Long = -1L
     private var graphicsStatsMaxSinceNs: Long = 0L
+    private var graphicsStatsLastDumpWallNs: Long = 0L
     private var lastSysFrameElapsedMs: Long = -1L
 
     fun reset() {
@@ -490,6 +491,7 @@ class VrrAndFrameWindowTracker(
         graphicsStatsHasBaseline = false
         graphicsStatsBaselineElapsedMs = -1L
         graphicsStatsMaxSinceNs = 0L
+        graphicsStatsLastDumpWallNs = 0L
         lastSysFrameElapsedMs = -1L
     }
 
@@ -697,11 +699,15 @@ class VrrAndFrameWindowTracker(
             if (!graphicsStatsHasBaseline) {
                 prevGraphicsStatsByKey.clear()
                 var maxSince = 0L
+                var maxWall = 0L
                 for ((k, rec) in merged) {
                     prevGraphicsStatsByKey[k] = rec
                     if (k.statsSinceNs > maxSince) maxSince = k.statsSinceNs
+                    val recWall = maxOf(k.statsSinceNs, rec.statsEndNs)
+                    if (recWall > maxWall) maxWall = recWall
                 }
                 graphicsStatsMaxSinceNs = maxSince
+                graphicsStatsLastDumpWallNs = maxWall
                 graphicsStatsBaselineElapsedMs = safeNowMs
                 graphicsStatsHasBaseline = true
                 pruneSysFramesLocked(safeNowMs)
@@ -713,6 +719,12 @@ class VrrAndFrameWindowTracker(
             }
 
             val bucketKeyMs = (safeNowMs / 1_000L) * 1_000L
+            val minLiveNewSinceNs = if (graphicsStatsLastDumpWallNs > 0L) {
+                graphicsStatsLastDumpWallNs
+            } else {
+                graphicsStatsMaxSinceNs
+            }
+            var nextDumpMaxWallNs = graphicsStatsLastDumpWallNs
             var sliceEval = 0L
             var sliceDropped = 0L
             var sliceJanky = 0L
@@ -723,12 +735,14 @@ class VrrAndFrameWindowTracker(
             var activePkgs: HashSet<String>? = null
 
             for ((key, cur) in merged) {
+                val curWall = maxOf(key.statsSinceNs, cur.statsEndNs)
+                if (curWall > nextDumpMaxWallNs) nextDumpMaxWallNs = curWall
                 val existingPrev = prevGraphicsStatsByKey[key]
                 val effectivePrev: PackageGraphicsStatsRecord = if (existingPrev != null) {
                     existingPrev
                 } else {
                     val isLiveNewStream = cur.totalFrames in 1L..MAX_NEW_STREAM_INITIAL_FRAMES &&
-                        (graphicsStatsMaxSinceNs == 0L || key.statsSinceNs >= graphicsStatsMaxSinceNs)
+                        (minLiveNewSinceNs == 0L || key.statsSinceNs >= minLiveNewSinceNs)
                     if (isLiveNewStream) {
                         PackageGraphicsStatsRecord(key = key)
                     } else {
@@ -754,10 +768,6 @@ class VrrAndFrameWindowTracker(
                 val dSlowBitmap = (cur.slowBitmapUploads - effectivePrev.slowBitmapUploads).coerceAtLeast(0L)
                 val dSlowDraw = (cur.slowIssueDrawCommands - effectivePrev.slowIssueDrawCommands).coerceAtLeast(0L)
                 val dDeadlineMissed = (cur.frameDeadlineMissed - effectivePrev.frameDeadlineMissed).coerceIn(0L, dJanky)
-                val dLongCpu = GraphicsStatsParsers.saturatingAdd(
-                    GraphicsStatsParsers.saturatingAdd(dSlowUi, dSlowBitmap),
-                    dSlowDraw,
-                ).coerceAtMost(dJanky)
 
                 val (dDropped, dLongGpu) = if (dJanky == 0L) {
                     0L to 0L
@@ -765,9 +775,22 @@ class VrrAndFrameWindowTracker(
                     computeDroppedSlotsAndGpuOverrun(
                         prev = effectivePrev,
                         cur = cur,
+                        dEval = dEval,
                         dJanky = dJanky,
                         displayPeriodMs = displayPeriodMs,
                     )
+                }
+                // When GPU command execution overruns VSync (`dLongGpu > 0`), RenderThread's
+                // `issueDrawCommands` also blocks on GPU fence backpressure; subtract `dLongGpu`
+                // so GPU-bound stalls are not double-attributed as CPU jank unless UI/bitmap stalled too.
+                val dCpuOnlySlowDraw = (dSlowDraw - dLongGpu).coerceAtLeast(0L)
+                val dLongCpu = if (dJanky == 0L) {
+                    0L
+                } else {
+                    GraphicsStatsParsers.saturatingAdd(
+                        GraphicsStatsParsers.saturatingAdd(dSlowUi, dSlowBitmap),
+                        dCpuOnlySlowDraw,
+                    ).coerceAtMost(dJanky)
                 }
                 val dStuffing = if (dJanky == 0L) {
                     0L
@@ -785,6 +808,7 @@ class VrrAndFrameWindowTracker(
                 val pkgs = activePkgs ?: HashSet<String>(8).also { activePkgs = it }
                 pkgs.add(key.packageName)
             }
+            graphicsStatsLastDumpWallNs = nextDumpMaxWallNs
 
             if (sliceEval > 0L) {
                 val bucket = getOrCreateSysBucketLocked(bucketKeyMs, safeNowMs)
@@ -812,6 +836,7 @@ class VrrAndFrameWindowTracker(
     private fun computeDroppedSlotsAndGpuOverrun(
         prev: PackageGraphicsStatsRecord,
         cur: PackageGraphicsStatsRecord,
+        dEval: Long,
         dJanky: Long,
         displayPeriodMs: Double,
     ): Pair<Long, Long> {
@@ -826,35 +851,45 @@ class VrrAndFrameWindowTracker(
         cpuDeltasDesc.sortByDescending { it.first }
 
         var remJanky = dJanky
-        var maxNonJankyMs = 0
-        val takenJankyBuckets = ArrayList<Pair<Int, Long>>(cpuDeltasDesc.size.coerceAtMost(32))
+        var remUnflaggedFreezeBudget = (dEval - dJanky).coerceAtLeast(0L)
+        var maxSmoothMs = 0
+        val takenStallBuckets = ArrayList<Pair<Int, Long>>(cpuDeltasDesc.size.coerceAtMost(32))
         for ((ms, diff) in cpuDeltasDesc) {
-            if (remJanky > 0L) {
-                val take = minOf(diff, remJanky)
-                takenJankyBuckets += ms to take
-                remJanky -= take
-                val leftoverNonJanky = diff - take
-                if (leftoverNonJanky > 0L && ms > maxNonJankyMs) {
-                    maxNonJankyMs = ms
-                }
-            } else if (ms > maxNonJankyMs) {
-                maxNonJankyMs = ms
+            val takeJanky = if (remJanky > 0L) minOf(diff, remJanky) else 0L
+            remJanky -= takeJanky
+            val leftover = diff - takeJanky
+            // When consecutive frames all freeze (e.g. 150..300ms UI stalls), HWUI's rolling
+            // cadence heuristic suppresses `jankyFrames` on roughly half of the frozen frames;
+            // still count missed VSync slots for unambiguous >= 85ms multi-VSync stalls up to `dEval`.
+            val takeSevereFreeze = if (leftover > 0L && ms >= SEVERE_FREEZE_HISTOGRAM_MS && remUnflaggedFreezeBudget > 0L) {
+                minOf(leftover, remUnflaggedFreezeBudget)
+            } else {
+                0L
+            }
+            remUnflaggedFreezeBudget -= takeSevereFreeze
+            val totalTaken = takeJanky + takeSevereFreeze
+            if (totalTaken > 0L) {
+                takenStallBuckets += ms to totalTaken
+            }
+            val smoothLeftover = leftover - takeSevereFreeze
+            // Only infer lower VRR / FrameRateOverride budgets (60/40/30 Hz) from genuinely smooth
+            // frames (<= 34ms), never from multi-VSync freezes where HWUI suppressed consecutive jank.
+            if (smoothLeftover > 0L && ms <= 34 && ms > maxSmoothMs) {
+                maxSmoothMs = ms
             }
         }
 
-        // If smooth (non-janky) frames took e.g. 11..16ms while the primary panel supports 120Hz,
-        // HWUI evaluated this app against a wider VRR / FrameRateOverride budget (e.g. 60Hz = 16.67ms).
         val pkgPeriodMs = when {
-            maxNonJankyMs.toDouble() <= displayPeriodMs + 1.0 -> displayPeriodMs
-            maxNonJankyMs <= 17 -> maxOf(displayPeriodMs, 1000.0 / 60.0)
-            maxNonJankyMs <= 26 -> maxOf(displayPeriodMs, 1000.0 / 40.0)
-            maxNonJankyMs <= 34 -> maxOf(displayPeriodMs, 1000.0 / 30.0)
-            else -> maxOf(displayPeriodMs, maxNonJankyMs.toDouble())
-        }.coerceIn(2.0, 250.0)
+            maxSmoothMs <= 0 -> displayPeriodMs
+            maxSmoothMs.toDouble() <= displayPeriodMs + 1.0 -> displayPeriodMs
+            maxSmoothMs <= 17 -> maxOf(displayPeriodMs, 1000.0 / 60.0)
+            maxSmoothMs <= 26 -> maxOf(displayPeriodMs, 1000.0 / 40.0)
+            else -> maxOf(displayPeriodMs, 1000.0 / 30.0)
+        }.coerceIn(2.0, 50.0)
 
         val maxDroppedPerFrame = (5000.0 / pkgPeriodMs).toLong().coerceIn(1L, 600L)
         var droppedSlots = 0L
-        for ((ms, count) in takenJankyBuckets) {
+        for ((ms, count) in takenStallBuckets) {
             val overrunMs = ms.toDouble() - pkgPeriodMs
             val slotsPerFrame = if (overrunMs > 0.01) {
                 ceil(overrunMs / pkgPeriodMs).toLong().coerceIn(1L, maxDroppedPerFrame)
@@ -869,7 +904,7 @@ class VrrAndFrameWindowTracker(
         }
 
         var gpuOverrun = 0L
-        val gpuThresholdMs = pkgPeriodMs * 0.5
+        val gpuThresholdMs = pkgPeriodMs
         for ((ms, curCount) in cur.gpuHistogramMsCounts) {
             if (ms.toDouble() > gpuThresholdMs) {
                 val prevCount = prev.gpuHistogramMsCounts[ms] ?: 0L
@@ -1087,6 +1122,7 @@ class VrrAndFrameWindowTracker(
 
     companion object {
         private const val MAX_NEW_STREAM_INITIAL_FRAMES = 2_400L
+        private const val SEVERE_FREEZE_HISTOGRAM_MS = 85
 
         fun snapToSupportedStep(rawHz: Float, supportedStepsHz: List<Float>): Int {
             val clean = if (rawHz.isFinite() && rawHz > 0f) rawHz else 60f

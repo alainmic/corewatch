@@ -1967,4 +1967,121 @@ class CorewatchDataUnitTest {
         assertEquals(0, expired.activeAppCount5m)
         assertEquals("05:00 / 05:00", expired.windowElapsedLabel)
     }
+
+    @Test
+    fun graphicsStatsHandlesConsecutiveMultiVsyncFreezesGpuThresholdsAndResurrectedStreams() {
+        val tracker = VrrAndFrameWindowTracker(windowHorizonMs = 300_000L)
+        val probeKey = GraphicsStatsKey(1010270, "com.example.probe", 1L, 1_793_664_000_014L)
+        // Baseline t=0 with statsEndNs = 1_793_720_270_000
+        tracker.recordGraphicsStatsSample(
+            nowElapsedMs = 1_000L,
+            records = listOf(
+                PackageGraphicsStatsRecord(
+                    key = probeKey,
+                    statsEndNs = 1_793_720_270_000L,
+                    totalFrames = 100L,
+                    jankyFrames = 0L,
+                    cpuHistogramMsCounts = mapOf(5 to 100L),
+                    gpuHistogramMsCounts = mapOf(2 to 100L),
+                ),
+            ),
+            effectiveHz = 120f,
+        )
+
+        // Case A: Pure CPU 28ms UI-thread jank (30/120 frames) where GPU completes in 5ms (< 8.33ms 120Hz budget)
+        // Must report Long CPU = 30 and Long GPU = 0 (no false-positive 5ms GPU overrun).
+        tracker.recordGraphicsStatsSample(
+            nowElapsedMs = 3_000L,
+            records = listOf(
+                PackageGraphicsStatsRecord(
+                    key = probeKey,
+                    statsEndNs = 1_793_720_272_000L,
+                    totalFrames = 220L,
+                    jankyFrames = 30L,
+                    slowUiThread = 30L,
+                    frameDeadlineMissed = 30L,
+                    cpuHistogramMsCounts = mapOf(5 to 190L, 28 to 30L),
+                    gpuHistogramMsCounts = mapOf(2 to 215L, 5 to 5L),
+                ),
+            ),
+            effectiveHz = 120f,
+        )
+        val cpuJankSnap = tracker.snapshotFrames(nowElapsedMs = 3_000L, defaultHz = 120, hasDumpPermission = true)
+        assertEquals(120, cpuJankSnap.evaluatedFrames5m)
+        assertEquals(30, cpuJankSnap.jankyFrames5m)
+        assertEquals(90, cpuJankSnap.droppedFrames5m) // 30 * ceil((28 - 8.333)/8.333) = 30 * 3
+        assertEquals(30, cpuJankSnap.longCpuJank5m)
+        assertEquals(0, cpuJankSnap.longGpuJank5m)
+
+        // Case B: Consecutive severe 150..300ms UI freezes (20 frames, HWUI rolling average marks 10 janky)
+        // Must NOT inflate pkgPeriodMs to 250ms; all 20 >=85ms freezes count missed 120Hz VSync slots (19*35 + 1*17 = 682).
+        tracker.reset()
+        tracker.recordGraphicsStatsSample(
+            nowElapsedMs = 10_000L,
+            records = listOf(PackageGraphicsStatsRecord(key = probeKey, statsEndNs = 1_793_720_280_000L, totalFrames = 220L, jankyFrames = 30L)),
+            effectiveHz = 120f,
+        )
+        tracker.recordGraphicsStatsSample(
+            nowElapsedMs = 13_000L,
+            records = listOf(
+                PackageGraphicsStatsRecord(
+                    key = probeKey,
+                    statsEndNs = 1_793_720_283_000L,
+                    totalFrames = 240L,
+                    jankyFrames = 40L,
+                    slowUiThread = 10L,
+                    frameDeadlineMissed = 10L,
+                    cpuHistogramMsCounts = mapOf(300 to 19L, 150 to 1L),
+                    gpuHistogramMsCounts = mapOf(3 to 20L),
+                ),
+            ),
+            effectiveHz = 120f,
+        )
+        val freezeSnap = tracker.snapshotFrames(nowElapsedMs = 13_000L, defaultHz = 120, hasDumpPermission = true)
+        assertEquals(20, freezeSnap.evaluatedFrames5m)
+        assertEquals(10, freezeSnap.jankyFrames5m)
+        assertEquals(682, freezeSnap.droppedFrames5m)
+        assertTrue(freezeSnap.droppedPercent5m > 95f)
+        assertEquals(10, freezeSnap.longCpuJank5m)
+        assertEquals(0, freezeSnap.longGpuJank5m)
+
+        // Case C: Heavy GPU shader burst where RenderThread issueDrawCommands blocks on GPU fence (slowDraw=40, gpu=40, slowUi=3)
+        // Plus a resurrected pre-reset UID stream (statsSinceNs < lastDumpWallNs) that must NOT leak historical frames.
+        tracker.reset()
+        tracker.recordGraphicsStatsSample(
+            nowElapsedMs = 20_000L,
+            records = listOf(PackageGraphicsStatsRecord(key = probeKey, statsEndNs = 1_793_720_300_000L, totalFrames = 240L, jankyFrames = 40L)),
+            effectiveHz = 120f,
+        )
+        val resurrectedKey = GraphicsStatsKey(1010271, "com.example.reinstalled", 1L, 1_793_720_150_000L) // < 1_793_720_300_000L!
+        tracker.recordGraphicsStatsSample(
+            nowElapsedMs = 23_000L,
+            records = listOf(
+                PackageGraphicsStatsRecord(
+                    key = probeKey,
+                    statsEndNs = 1_793_720_303_000L,
+                    totalFrames = 305L,
+                    jankyFrames = 80L,
+                    slowUiThread = 3L,
+                    slowIssueDrawCommands = 40L,
+                    frameDeadlineMissed = 40L,
+                    cpuHistogramMsCounts = mapOf(6 to 25L, 200 to 40L),
+                    gpuHistogramMsCounts = mapOf(2 to 25L, 4950 to 40L),
+                ),
+                PackageGraphicsStatsRecord(
+                    key = resurrectedKey,
+                    statsEndNs = 1_793_720_303_000L,
+                    totalFrames = 585L,
+                    jankyFrames = 121L,
+                ),
+            ),
+            effectiveHz = 120f,
+        )
+        val gpuSnap = tracker.snapshotFrames(nowElapsedMs = 23_000L, defaultHz = 120, hasDumpPermission = true)
+        assertEquals(65, gpuSnap.evaluatedFrames5m) // 585 resurrected frames NOT leaked!
+        assertEquals(40, gpuSnap.jankyFrames5m)
+        assertEquals(40, gpuSnap.longGpuJank5m)
+        assertEquals(3, gpuSnap.longCpuJank5m)
+        assertEquals(1, gpuSnap.activeAppCount5m)
+    }
 }
