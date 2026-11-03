@@ -12,6 +12,7 @@ import com.droid.corewatch.data.DisplayAuditor
 import com.droid.corewatch.data.DisplayModeSpec
 import com.droid.corewatch.data.EthernetTelemetrySnapshot
 import com.droid.corewatch.data.FloatRingBuffer
+import com.droid.corewatch.data.GraphicsStatsParsers
 import com.droid.corewatch.data.SysfsParsers
 import com.droid.corewatch.data.SystemTelemetrySnapshot
 import com.droid.corewatch.data.TypeCPortStatus
@@ -452,6 +453,66 @@ class CorewatchFuzzTest {
             assertTrue(snap.jankyFrames5m in 0..snap.evaluatedFrames5m)
             assertTrue(snap.droppedFrames5m >= 0)
             assertTrue(snap.expectedFrames5m >= snap.evaluatedFrames5m)
+            assertTrue(snap.windowDurationMs in 0L..300_000L)
+            if (snap.evaluatedFrames5m == 0) {
+                assertTrue(snap.droppedPercent5m == 0f && snap.jankyPercent5m == 0f)
+            }
+        }
+    }
+
+    @Test
+    fun fuzzGraphicsStatsParserAndSystemWideFrameTracker() {
+        val r = Random(0x47465853L)
+        val tracker = VrrAndFrameWindowTracker(windowHorizonMs = 300_000L)
+        var nowMs = 0L
+        repeat(15_000) { iter ->
+            if (iter % 1_200 == 0 && iter > 0) {
+                if (r.nextBoolean()) tracker.reset() else tracker.clearGraphicsStatsState()
+            }
+            nowMs = (nowMs + r.nextLong(-100L, 3_500L)).coerceAtLeast(0L)
+            val rawDump = if (r.nextInt(8) == 0) {
+                randomStr(r, 128)
+            } else {
+                buildString {
+                    repeat(r.nextInt(1, 4)) { idx ->
+                        val uid = listOf(10204, 1010204, 1010180, -5, Int.MAX_VALUE)[r.nextInt(5)]
+                        val pkg = if (r.nextInt(6) == 0) randomStr(r, 24) else "com.example.app$idx"
+                        val total = listOf(0L, r.nextLong(0L, 500_000L), Long.MAX_VALUE)[r.nextInt(3)]
+                        val janky = listOf(0L, r.nextLong(0L, 1_000L), Long.MAX_VALUE)[r.nextInt(3)]
+                        appendLine("UID: $uid")
+                        appendLine("Package: $pkg")
+                        appendLine("Version: ${r.nextLong(-1L, 100L)}")
+                        appendLine("Stats since: ${r.nextLong(0L, 2_000_000_000_000L)}ns")
+                        appendLine("Total frames rendered: $total")
+                        appendLine("Janky frames: $janky (${if (total == 0L) "-nan%" else "1.00%"})")
+                        appendLine("Number Missed Vsync: ${r.nextLong(0L, 200L)}")
+                        appendLine("Number Slow UI thread: ${r.nextLong(0L, 200L)}")
+                        appendLine("Number Slow bitmap uploads: ${r.nextLong(0L, 50L)}")
+                        appendLine("Number Slow issue draw commands: ${r.nextLong(0L, 200L)}")
+                        appendLine("Number Frame deadline missed: ${r.nextLong(0L, 400L)}")
+                        appendLine("HISTOGRAM: 5ms=${r.nextLong(0L, 500L)} 12ms=${r.nextLong(0L, 100L)} 25ms=${r.nextLong(0L, 30L)} 250ms=${r.nextLong(0L, 5L)} ${randomStr(r, 12)}")
+                        appendLine("GPU HISTOGRAM: 2ms=${r.nextLong(0L, 500L)} 16ms=${r.nextLong(0L, 30L)} 4950ms=0")
+                        appendLine()
+                    }
+                }
+            }
+            val parsed = GraphicsStatsParsers.parseDumpsysGraphicsStats(rawDump)
+            for (rec in parsed) {
+                assertTrue(rec.totalFrames >= 0L)
+                assertTrue(rec.jankyFrames in 0L..rec.totalFrames)
+                assertFalse(rec.key.packageName.contains('|') || rec.key.packageName.contains('\n'))
+            }
+            val hz = listOf(120f, 60f, 30f, 0f, -5f, Float.NaN, Float.POSITIVE_INFINITY)[r.nextInt(7)]
+            tracker.recordGraphicsStatsSample(nowElapsedMs = nowMs, records = parsed, effectiveHz = hz)
+            val hasDump = r.nextInt(5) != 0
+            val snap = tracker.snapshotFrames(nowElapsedMs = nowMs + r.nextLong(0L, 2_000L), defaultHz = 120, hasDumpPermission = hasDump)
+            assertTrue(snap.droppedPercent5m.isFinite() && snap.droppedPercent5m in 0f..100f)
+            assertTrue(snap.jankyPercent5m.isFinite() && snap.jankyPercent5m in 0f..100f)
+            assertTrue(snap.latestIntervalJankPercent.isFinite() && snap.latestIntervalJankPercent in 0f..100f)
+            assertTrue(snap.jankyFrames5m in 0..snap.evaluatedFrames5m)
+            assertTrue(snap.droppedFrames5m >= 0)
+            assertTrue(snap.expectedFrames5m >= snap.evaluatedFrames5m)
+            assertTrue(snap.activeAppCount5m >= 0)
             assertTrue(snap.windowDurationMs in 0L..300_000L)
             if (snap.evaluatedFrames5m == 0) {
                 assertTrue(snap.droppedPercent5m == 0f && snap.jankyPercent5m == 0f)

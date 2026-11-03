@@ -440,6 +440,7 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun onPermissionsUpdated() {
+        collector.invalidateGraphicsStatsCache()
         collector.invalidateWifiCaches()
         collector.invalidateUsbCaches()
         sampleNow()

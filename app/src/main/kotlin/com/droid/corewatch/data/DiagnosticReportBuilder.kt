@@ -181,13 +181,24 @@ object DiagnosticReportBuilder {
             appendLine(
                 "| **Memory & zram Swap** | RAM: `${formatGiB(snapshot.memory.usedBytes)} / ${formatGiB(snapshot.memory.totalBytes)}` (`${ramPct}%`, AMS Threshold `${formatGiB(snapshot.memory.amsThresholdBytes)}`) · Swap: `${formatGiB(snapshot.memory.swapUsedBytes)} / ${formatGiB(snapshot.memory.swapTotalBytes)}` (`${swapPct}%`) · LMKD 5m: `${snapshot.lmkd.killCount5m} kills` |",
             )
+            val frameScopeToken = when {
+                snapshot.frameJank.isSystemWideGraphicsStats ->
+                    if (snapshot.frameJank.activeAppCount5m > 0) {
+                        "System-Wide GraphicsStats, ${snapshot.frameJank.activeAppCount5m} apps"
+                    } else {
+                        "System-Wide GraphicsStats"
+                    }
+                snapshot.frameJank.isSystemWideTimeStats -> "System-Wide SF TimeStats"
+                else -> "App-Window FrameMetrics"
+            }
             appendLine(
                 String.format(
                     Locale.US,
-                    "| **Frame Pacing (5m)** | `%d` frames (`%.2f%%` dropped, `%.2f%%` janky · Deadlines `%s`) |",
+                    "| **Frame Pacing (5m)** | `%d` frames (`%.2f%%` dropped, `%.2f%%` janky · `%s` · Deadlines `%s`) |",
                     snapshot.frameJank.evaluatedFrames5m,
                     snapshot.frameJank.droppedPercent5m,
                     snapshot.frameJank.jankyPercent5m,
+                    frameScopeToken,
                     snapshot.frameJank.deadlineRangeLabel,
                 ),
             )

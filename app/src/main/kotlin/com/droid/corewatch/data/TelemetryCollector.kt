@@ -159,14 +159,29 @@ class TelemetryCollector(
     private var usbDumpsysRefreshInFlight: Boolean = false
     @Volatile
     private var cachedUsbDumpsysText: String = ""
+    private val graphicsStatsExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "corewatch-gfx-stats").apply { isDaemon = true }
+    }
+    @Volatile
+    private var lastGfxStatsSampleElapsedMs: Long = 0L
+    @Volatile
+    private var gfxStatsRefreshInFlight: Boolean = false
+    @Volatile
+    private var gfxStatsGeneration: Long = 0L
     @Volatile
     var lastTrimLevelLabel: String = "Normal"
 
     fun resetWindowCounters() {
+        gfxStatsGeneration += 1L
+        lastGfxStatsSampleElapsedMs = 0L
         vrrAndFrameTracker.reset()
         usbHotplugTracker.reset()
         invalidateWifiCaches()
         invalidateUsbCaches()
+    }
+
+    fun invalidateGraphicsStatsCache() {
+        lastGfxStatsSampleElapsedMs = 0L
     }
 
     fun invalidateWifiCaches() {
@@ -234,8 +249,18 @@ class TelemetryCollector(
         val memory = readMemory(am)
         val storage = readStorage()
         val displays = readDisplays(dm, nowElapsedMs)
-        val primaryHz = displays.firstOrNull()?.activeRefreshHz?.toInt()?.coerceIn(30, 480) ?: 120
-        val frameJank = vrrAndFrameTracker.snapshotFrames(nowElapsedMs, defaultHz = primaryHz)
+        val hasGfxStatsPerm = hasGraphicsStatsPermissions()
+        val primaryDisplay = displays.firstOrNull()
+        val primaryRenderHz = primaryDisplay?.renderFrameRateHz?.takeIf { it.isFinite() && it >= 10f }
+            ?: primaryDisplay?.activeRefreshHz?.takeIf { it.isFinite() && it >= 10f }
+            ?: 120f
+        scheduleGraphicsStatsIfPermitted(hasGfxStatsPerm, nowElapsedMs, primaryRenderHz)
+        val primaryHz = (primaryDisplay?.activeRefreshHz?.toInt() ?: 120).coerceIn(30, 480)
+        val frameJank = vrrAndFrameTracker.snapshotFrames(
+            nowElapsedMs = nowElapsedMs,
+            defaultHz = primaryHz,
+            hasDumpPermission = hasGfxStatsPerm,
+        )
         val lmkd = readLmkd(am)
         val netBundle = readConnectivityBundle(nowElapsedMs)
         val bluetooth = readBluetooth(nowElapsedMs)
@@ -2378,6 +2403,89 @@ class TelemetryCollector(
                 },
                 null,
             )
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun hasGraphicsStatsPermissions(): Boolean {
+        val hasDump = ContextCompat.checkSelfPermission(context, Manifest.permission.DUMP) == PackageManager.PERMISSION_GRANTED
+        if (!hasDump) return false
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.PACKAGE_USAGE_STATS) == PackageManager.PERMISSION_GRANTED) {
+            return true
+        }
+        val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as? android.app.AppOpsManager ?: return false
+        val mode = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                appOps.unsafeCheckOpNoThrow(
+                    android.app.AppOpsManager.OPSTR_GET_USAGE_STATS,
+                    android.os.Process.myUid(),
+                    context.packageName,
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                appOps.checkOpNoThrow(
+                    android.app.AppOpsManager.OPSTR_GET_USAGE_STATS,
+                    android.os.Process.myUid(),
+                    context.packageName,
+                )
+            }
+        }.getOrDefault(android.app.AppOpsManager.MODE_IGNORED)
+        return mode == android.app.AppOpsManager.MODE_ALLOWED
+    }
+
+    private fun scheduleGraphicsStatsIfPermitted(
+        hasDump: Boolean,
+        nowElapsedMs: Long,
+        effectiveHz: Float,
+    ) {
+        if (!hasDump) {
+            lastGfxStatsSampleElapsedMs = 0L
+            vrrAndFrameTracker.clearGraphicsStatsState()
+            return
+        }
+        if (gfxStatsRefreshInFlight) return
+        val dt = nowElapsedMs - lastGfxStatsSampleElapsedMs
+        if (lastGfxStatsSampleElapsedMs != 0L && dt in 0L until 1_500L) {
+            return
+        }
+        gfxStatsRefreshInFlight = true
+        lastGfxStatsSampleElapsedMs = nowElapsedMs
+        val gen = gfxStatsGeneration
+        runCatching {
+            graphicsStatsExecutor.execute {
+                try {
+                    val proc = ProcessBuilder("/system/bin/dumpsys", "graphicsstats")
+                        .redirectErrorStream(true)
+                        .start()
+                    val sb = StringBuilder(131_072)
+                    proc.inputStream.bufferedReader().use { reader ->
+                        var linesRead = 0
+                        while (linesRead < 45_000 && sb.length < 2_097_152) {
+                            val line = reader.readLine() ?: break
+                            linesRead++
+                            sb.appendLine(line)
+                        }
+                    }
+                    runCatching { proc.destroy() }
+                    if (gen == gfxStatsGeneration) {
+                        val records = GraphicsStatsParsers.parseDumpsysGraphicsStats(sb.toString())
+                        if (records.isNotEmpty()) {
+                            val sampleTs = maxOf(nowElapsedMs, SystemClock.elapsedRealtime())
+                            vrrAndFrameTracker.recordGraphicsStatsSample(
+                                nowElapsedMs = sampleTs,
+                                records = records,
+                                effectiveHz = effectiveHz,
+                            )
+                        }
+                    }
+                } catch (_: Throwable) {
+                    // Ignore process sandbox failures (falls back to Window FrameMetrics)
+                } finally {
+                    gfxStatsRefreshInFlight = false
+                }
+            }
+        }.onFailure {
+            gfxStatsRefreshInFlight = false
         }
     }
 

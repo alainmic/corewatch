@@ -1715,4 +1715,256 @@ class CorewatchDataUnitTest {
         assertTrue(dualBandReport.contains("6G `Unsupported`"))
         assertFalse(dualBandReport.contains("⚠️ 6 GHz"))
     }
+
+    @Test
+    fun systemWideGraphicsStatsParserAndTrackerBaselineDeltasVrrAndFallbackWorkAccurately() {
+        // 1. Permission Denial / blank safety
+        assertTrue(GraphicsStatsParsers.parseDumpsysGraphicsStats("").isEmpty())
+        assertTrue(
+            GraphicsStatsParsers.parseDumpsysGraphicsStats(
+                "Permission Denial: can't dump graphicsstats from from pid=1234, uid=10269",
+            ).isEmpty(),
+        )
+
+        // 2. Parse multi-UID (HSUM), multi-day rotated buckets, and zero-frame (-nan%) blocks
+        val dumpT0 = """
+            UID: 10204
+            Package: com.android.systemui
+            Version: 37
+            Stats since: 1793664000014ns
+            Stats end: 1793715546093ns
+            Total frames rendered: 192607
+            Janky frames: 20 (0.01%)
+            50th percentile: 5ms
+            90th percentile: 5ms
+            95th percentile: 5ms
+            99th percentile: 5ms
+            Number Missed Vsync: 2
+            Number High input latency: 1473
+            Number Slow UI thread: 9
+            Number Slow bitmap uploads: 0
+            Number Slow issue draw commands: 7
+            Number Frame deadline missed: 20
+            HISTOGRAM: 5ms=191662 6ms=583 7ms=150 8ms=192 20ms=10 53ms=10 4950ms=0
+            50th gpu percentile: 1ms
+            90th gpu percentile: 2ms
+            95th gpu percentile: 2ms
+            99th gpu percentile: 3ms
+            GPU HISTOGRAM: 1ms=112524 2ms=80083 4950ms=0
+
+            UID: 1010204
+            Package: com.android.systemui
+            Version: 37
+            Stats since: 1793664000015ns
+            Stats end: 1793715546093ns
+            Total frames rendered: 317
+            Janky frames: 0 (0.00%)
+            Number Missed Vsync: 0
+            Number High input latency: 317
+            Number Slow UI thread: 0
+            Number Slow bitmap uploads: 0
+            Number Slow issue draw commands: 0
+            Number Frame deadline missed: 0
+            HISTOGRAM: 5ms=311 6ms=6 4950ms=0
+            GPU HISTOGRAM: 1ms=317 4950ms=0
+
+            UID: 1010180
+            Package: com.android.chrome
+            Version: 6778200
+            Stats since: 1793664000020ns
+            Stats end: 1793715546093ns
+            Total frames rendered: 50000
+            Janky frames: 120 (0.24%)
+            Number Missed Vsync: 10
+            Number High input latency: 200
+            Number Slow UI thread: 50
+            Number Slow bitmap uploads: 5
+            Number Slow issue draw commands: 40
+            Number Frame deadline missed: 110
+            HISTOGRAM: 6ms=49880 18ms=120 4950ms=0
+            GPU HISTOGRAM: 2ms=49950 12ms=50 4950ms=0
+
+            UID: 1001000
+            Package: com.android.settings
+            Version: 37
+            Stats since: 1793664000016ns
+            Stats end: 1793715546093ns
+            Total frames rendered: 0
+            Janky frames: 0 (-nan%)
+            50th gpu percentile: 4950ms
+            HISTOGRAM: 5ms=0 4950ms=0
+            GPU HISTOGRAM: 1ms=0 4950ms=0
+        """.trimIndent()
+
+        val parsedT0 = GraphicsStatsParsers.parseDumpsysGraphicsStats(dumpT0)
+        assertEquals(4, parsedT0.size)
+        assertTrue(parsedT0[3].cpuHistogramMsCounts.isEmpty())
+        assertTrue(parsedT0[3].gpuHistogramMsCounts.isEmpty())
+
+        val tracker = VrrAndFrameWindowTracker(windowHorizonMs = 300_000L)
+        // Also record 1 app-window FrameMetrics frame so we can verify fallback vs system-wide separation
+        tracker.recordFrameMetric(
+            nowElapsedMs = 900L,
+            totalDurationNs = 6_000_000L,
+            deadlineNs = 8_333_333L,
+            gpuDurationNs = 1_500_000L,
+            intendedVsyncNs = 10_000_000L,
+            vsyncNs = 10_000_000L,
+        )
+
+        // 3. First GraphicsStats sample at t=1000ms establishes baseline with 0 historical leak!
+        tracker.recordGraphicsStatsSample(nowElapsedMs = 1_000L, records = parsedT0, effectiveHz = 120f)
+        val snapBaseline = tracker.snapshotFrames(nowElapsedMs = 1_000L, defaultHz = 120, hasDumpPermission = true)
+        assertTrue(snapBaseline.isSystemWideGraphicsStats)
+        assertTrue(snapBaseline.isSystemWide)
+        assertEquals("SYSTEM-WIDE (GRAPHICSSTATS)", snapBaseline.scopeBadgeLabel)
+        assertEquals(0, snapBaseline.evaluatedFrames5m)
+        assertEquals(0, snapBaseline.droppedFrames5m)
+        assertEquals(0, snapBaseline.jankyFrames5m)
+        assertEquals(0, snapBaseline.activeAppCount5m)
+
+        // 4. Second GraphicsStats sample at t=3000ms across 3 active apps (120 Hz panel -> 8.333ms period):
+        // - SystemUI (UID 10204): +120 frames, +2 janky (1 at 20ms -> 2 missed slots, 1 at 53ms -> 6 missed slots = 8 dropped slots; +1 slow UI, +1 missed vsync, +2 deadline missed)
+        // - SystemUI (UID 1010204): +30 smooth frames (same package name -> still 1 distinct app for systemui)
+        // - Chrome (UID 1010180): +60 frames, +1 janky (1 at 18ms -> 2 missed slots, 0 slow CPU, 0 GPU overrun, +1 deadline missed -> +1 buffer stuffing!)
+        // - Newly launched app (com.example.editor, statsSince >= baselineMax): 40 frames, 1 janky (1 at 26ms -> 3 missed slots, GPU 12ms=1 -> +1 long GPU)
+        val dumpT1 = """
+            UID: 10204
+            Package: com.android.systemui
+            Version: 37
+            Stats since: 1793664000014ns
+            Stats end: 1793717546093ns
+            Total frames rendered: 192727
+            Janky frames: 22 (0.01%)
+            Number Missed Vsync: 3
+            Number High input latency: 1473
+            Number Slow UI thread: 10
+            Number Slow bitmap uploads: 0
+            Number Slow issue draw commands: 7
+            Number Frame deadline missed: 22
+            HISTOGRAM: 5ms=191780 6ms=583 7ms=150 8ms=192 20ms=11 53ms=11 4950ms=0
+            GPU HISTOGRAM: 1ms=112644 2ms=80083 4950ms=0
+
+            UID: 1010204
+            Package: com.android.systemui
+            Version: 37
+            Stats since: 1793664000015ns
+            Stats end: 1793717546093ns
+            Total frames rendered: 347
+            Janky frames: 0 (0.00%)
+            Number Missed Vsync: 0
+            Number High input latency: 317
+            Number Slow UI thread: 0
+            Number Slow bitmap uploads: 0
+            Number Slow issue draw commands: 0
+            Number Frame deadline missed: 0
+            HISTOGRAM: 5ms=341 6ms=6 4950ms=0
+            GPU HISTOGRAM: 1ms=347 4950ms=0
+
+            UID: 1010180
+            Package: com.android.chrome
+            Version: 6778200
+            Stats since: 1793664000020ns
+            Stats end: 1793717546093ns
+            Total frames rendered: 50060
+            Janky frames: 121 (0.24%)
+            Number Missed Vsync: 10
+            Number High input latency: 200
+            Number Slow UI thread: 50
+            Number Slow bitmap uploads: 5
+            Number Slow issue draw commands: 40
+            Number Frame deadline missed: 111
+            HISTOGRAM: 6ms=49939 18ms=121 4950ms=0
+            GPU HISTOGRAM: 2ms=50010 12ms=50 4950ms=0
+
+            UID: 1010350
+            Package: com.example.editor
+            Version: 1
+            Stats since: 1793716000000ns
+            Stats end: 1793717546093ns
+            Total frames rendered: 40
+            Janky frames: 1 (2.50%)
+            Number Missed Vsync: 0
+            Number High input latency: 0
+            Number Slow UI thread: 0
+            Number Slow bitmap uploads: 0
+            Number Slow issue draw commands: 0
+            Number Frame deadline missed: 1
+            HISTOGRAM: 6ms=39 26ms=1
+            GPU HISTOGRAM: 2ms=39 12ms=1
+        """.trimIndent()
+
+        val parsedT1 = GraphicsStatsParsers.parseDumpsysGraphicsStats(dumpT1)
+        tracker.recordGraphicsStatsSample(nowElapsedMs = 3_000L, records = parsedT1, effectiveHz = 120f)
+        val snapT1 = tracker.snapshotFrames(nowElapsedMs = 3_000L, defaultHz = 120, hasDumpPermission = true)
+        assertEquals(250, snapT1.evaluatedFrames5m) // 120 + 30 + 60 + 40
+        assertEquals(4, snapT1.jankyFrames5m) // 2 + 0 + 1 + 1
+        assertEquals(13, snapT1.droppedFrames5m) // 8 + 0 + 2 + 3
+        assertEquals(3, snapT1.activeAppCount5m) // systemui, chrome, editor
+        assertEquals(1, snapT1.longCpuJank5m)
+        assertEquals(1, snapT1.longGpuJank5m)
+        assertEquals(1, snapT1.bufferStuffing5m)
+        assertEquals(1, snapT1.sfMissedFrames5m)
+        assertEquals("00:02 / 05:00", snapT1.windowElapsedLabel)
+        assertTrue(snapT1.windowSummaryLabel.contains("250 evaluated frames (3 active apps)"))
+
+        // Verify Markdown export includes system-wide scope and app count WITHOUT leaking any package names
+        val report = DiagnosticReportBuilder.buildMarkdownReport(SystemTelemetrySnapshot(frameJank = snapT1))
+        assertTrue(report.contains("`System-Wide GraphicsStats, 3 apps`"))
+        assertFalse(report.contains("com.android.chrome"))
+        assertFalse(report.contains("com.example.editor"))
+
+        // 5. Automatic fallback to APP WINDOW (FRAMEMETRICS) when DUMP permission is not granted
+        val fallbackSnap = tracker.snapshotFrames(nowElapsedMs = 3_000L, defaultHz = 120, hasDumpPermission = false)
+        assertFalse(fallbackSnap.isSystemWideGraphicsStats)
+        assertFalse(fallbackSnap.isSystemWide)
+        assertEquals("APP WINDOW (FRAMEMETRICS)", fallbackSnap.scopeBadgeLabel)
+        assertEquals(1, fallbackSnap.evaluatedFrames5m)
+
+        // 6. VRR 60Hz budget inference on a 120Hz panel: 59 smooth 12ms frames + 1 janky 20ms frame -> 1 missed 60Hz VSync (not 2)
+        val vrrTracker = VrrAndFrameWindowTracker(windowHorizonMs = 300_000L)
+        val vrrKey = GraphicsStatsKey(1010500, "com.example.video60", 1L, 1000L)
+        vrrTracker.recordGraphicsStatsSample(
+            nowElapsedMs = 1_000L,
+            records = listOf(PackageGraphicsStatsRecord(key = vrrKey, totalFrames = 100L, jankyFrames = 0L, cpuHistogramMsCounts = mapOf(12 to 100L))),
+            effectiveHz = 120f,
+        )
+        // Smooth 60Hz frames (12..15ms, 0 janky) -> 0 dropped
+        vrrTracker.recordGraphicsStatsSample(
+            nowElapsedMs = 2_000L,
+            records = listOf(PackageGraphicsStatsRecord(key = vrrKey, totalFrames = 160L, jankyFrames = 0L, cpuHistogramMsCounts = mapOf(12 to 130L, 15 to 30L))),
+            effectiveHz = 120f,
+        )
+        val smoothVrr = vrrTracker.snapshotFrames(nowElapsedMs = 2_000L, defaultHz = 120, hasDumpPermission = true)
+        assertEquals(60, smoothVrr.evaluatedFrames5m)
+        assertEquals(0, smoothVrr.jankyFrames5m)
+        assertEquals(0, smoothVrr.droppedFrames5m)
+
+        // Now 59 smooth 12ms frames + 1 late 20ms frame -> infers 60Hz (16.67ms) budget -> 1 missed VSync
+        vrrTracker.recordGraphicsStatsSample(
+            nowElapsedMs = 3_000L,
+            records = listOf(
+                PackageGraphicsStatsRecord(
+                    key = vrrKey,
+                    totalFrames = 220L,
+                    jankyFrames = 1L,
+                    frameDeadlineMissed = 1L,
+                    slowUiThread = 1L,
+                    cpuHistogramMsCounts = mapOf(12 to 189L, 15 to 30L, 20 to 1L),
+                ),
+            ),
+            effectiveHz = 120f,
+        )
+        val oneLate60Hz = vrrTracker.snapshotFrames(nowElapsedMs = 3_000L, defaultHz = 120, hasDumpPermission = true)
+        assertEquals(120, oneLate60Hz.evaluatedFrames5m)
+        assertEquals(1, oneLate60Hz.jankyFrames5m)
+        assertEquals(1, oneLate60Hz.droppedFrames5m)
+
+        // 7. Rolling 5-minute expiration (> 300_000ms) prunes expired slices cleanly
+        val expired = vrrTracker.snapshotFrames(nowElapsedMs = 305_000L, defaultHz = 120, hasDumpPermission = true)
+        assertEquals(0, expired.evaluatedFrames5m)
+        assertEquals(0, expired.droppedFrames5m)
+        assertEquals(0, expired.activeAppCount5m)
+        assertEquals("05:00 / 05:00", expired.windowElapsedLabel)
+    }
 }

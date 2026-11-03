@@ -1804,4 +1804,67 @@ class CorewatchUiTest {
             throw t
         }
     }
+
+    @Test
+    fun displaysTabRendersSystemWideGraphicsStatsAndAppWindowFallbackAdbHelper() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = CorewatchViewModel(app)
+
+        // 1. Unprivileged fallback (hasDumpPermission = false): APP WINDOW (FRAMEMETRICS) + Copy ADB Command chip
+        val fallbackSnap = SystemTelemetrySnapshot(
+            frameJank = com.droid.corewatch.data.FrameJankSnapshot(
+                evaluatedFrames5m = 84,
+                droppedFrames5m = 2,
+                jankyFrames5m = 1,
+                windowDurationMs = 15_000L,
+                activeDeadlineHzMin = 60,
+                activeDeadlineHzMax = 120,
+                isSystemWideGraphicsStats = false,
+                hasDumpPermission = false,
+            ),
+        )
+        vm.setSnapshotForTesting(fallbackSnap)
+        vm.selectTab(CorewatchTab.Displays)
+
+        composeRule.setContent {
+            CorewatchTheme(dark = true) {
+                CorewatchAppRoot(vm = vm, canDrawOverlays = false)
+            }
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("frame_jank_card").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("APP WINDOW (FRAMEMETRICS)").assertIsDisplayed()
+        composeRule.onNodeWithTag("display_dump_locked_banner").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("copy_display_dump_adb_btn").performScrollTo().performClick()
+        assertTrue(vm.state.value.statusBanner.orEmpty().contains("Copied ADB GraphicsStats"))
+
+        // 2. System-Wide GraphicsStats active (hasDumpPermission = true, 4 active apps): hides ADB helper banner
+        val sysWideSnap = SystemTelemetrySnapshot(
+            frameJank = com.droid.corewatch.data.FrameJankSnapshot(
+                evaluatedFrames5m = 4_820,
+                droppedFrames5m = 6,
+                jankyFrames5m = 4,
+                longCpuJank5m = 2,
+                longGpuJank5m = 1,
+                bufferStuffing5m = 1,
+                sfMissedFrames5m = 1,
+                windowDurationMs = 95_000L,
+                activeDeadlineHzMin = 60,
+                activeDeadlineHzMax = 120,
+                isSystemWideGraphicsStats = true,
+                hasDumpPermission = true,
+                activeAppCount5m = 4,
+            ),
+        )
+        composeRule.runOnUiThread {
+            vm.setSnapshotForTesting(sysWideSnap)
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("SYSTEM-WIDE (GRAPHICSSTATS)").assertIsDisplayed()
+        composeRule.onNodeWithText("Window: 01:35 / 05:00 · 4820 evaluated frames (4 active apps)").assertIsDisplayed()
+        composeRule.onNodeWithText(
+            "VRR Deadline Accounting: System-wide HWUI FrameTimeline / GraphicsStats across all apps [60, 120] Hz",
+        ).assertIsDisplayed()
+        composeRule.onNodeWithTag("display_dump_locked_banner").assertDoesNotExist()
+    }
 }

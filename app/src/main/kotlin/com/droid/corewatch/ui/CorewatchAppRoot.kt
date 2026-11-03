@@ -336,7 +336,7 @@ fun CorewatchAppRoot(
                             CorewatchTab.OverviewThermals -> OverviewThermalsTab(state = state, vm = vm)
                             CorewatchTab.BatteryPower -> BatteryPowerTab(state = state, vm = vm)
                             CorewatchTab.MemoryStorage -> MemoryStorageTab(state = state)
-                            CorewatchTab.Displays -> DisplaysTab(state = state)
+                            CorewatchTab.Displays -> DisplaysTab(state = state, vm = vm)
                             CorewatchTab.Network -> NetworkTab(
                                 state = state,
                                 vm = vm,
@@ -1986,7 +1986,7 @@ private fun MemoryStorageTab(state: CorewatchUiState) {
 // ------------------------------------------------------------------------ Tab 4: Display / Displays
 
 @Composable
-private fun DisplaysTab(state: CorewatchUiState) {
+private fun DisplaysTab(state: CorewatchUiState, vm: CorewatchViewModel) {
     val cs = MaterialTheme.colorScheme
     val snap = state.snapshot
     val hist = state.history
@@ -2014,7 +2014,7 @@ private fun DisplaysTab(state: CorewatchUiState) {
             DisplayCard(disp = disp)
         }
 
-        // Dropped & Janky Frames (Rolling 5-Min Window, VRR-Aware)
+        // Dropped & Janky Frames (Rolling 5-Min Window, VRR-Aware, System-Wide GraphicsStats + FrameMetrics Fallback)
         val jank = snap.frameJank
         Surface(
             shape = RoundedCornerShape(14.dp),
@@ -2027,22 +2027,32 @@ private fun DisplaysTab(state: CorewatchUiState) {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text("Dropped & Janky Frames (Last 5 Mins · VRR-Aware)", style = MaterialTheme.typography.titleMedium)
+                    Column(
+                        modifier = Modifier.weight(1f, fill = false),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
                         Text(
-                            text = "Window: ${jank.windowElapsedLabel} · ${jank.evaluatedFrames5m} evaluated frames",
+                            text = "Dropped & Janky Frames (Last 5 Mins · VRR-Aware)",
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = jank.windowSummaryLabel,
                             style = CorewatchMonoTypography.hudSmall,
                             color = cs.onSurfaceVariant,
                         )
                     }
+                    Spacer(Modifier.width(8.dp))
                     Surface(
                         shape = RoundedCornerShape(6.dp),
-                        color = cs.surfaceContainerHigh,
+                        color = if (jank.isSystemWide) cs.secondaryContainer else cs.surfaceContainerHigh,
+                        modifier = Modifier.testTag("frame_jank_scope_badge"),
                     ) {
                         Text(
                             text = jank.scopeBadgeLabel,
                             style = CorewatchMonoTypography.hudSmall,
-                            color = cs.onSurfaceVariant,
+                            color = if (jank.isSystemWide) cs.onSecondaryContainer else cs.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                         )
                     }
@@ -2115,10 +2125,60 @@ private fun DisplaysTab(state: CorewatchUiState) {
                     color = cs.onSurfaceVariant,
                 )
                 Text(
-                    text = "VRR Deadline Accounting: Per-frame dynamic FrameMetrics.DEADLINE ${jank.deadlineRangeLabel}",
+                    text = if (jank.isSystemWideGraphicsStats) {
+                        "VRR Deadline Accounting: System-wide HWUI FrameTimeline / GraphicsStats across all apps ${jank.deadlineRangeLabel}"
+                    } else {
+                        "VRR Deadline Accounting: Per-frame dynamic FrameMetrics.DEADLINE ${jank.deadlineRangeLabel}"
+                    },
                     style = CorewatchMonoTypography.hudSmall,
                     color = cs.primary,
                 )
+
+                if (!jank.isSystemWide && !jank.hasDumpPermission) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = cs.surfaceContainerHigh,
+                        modifier = Modifier.fillMaxWidth().testTag("display_dump_locked_banner"),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                            ) {
+                                Text(
+                                    text = "App-Window Fallback Active (System-Wide GraphicsStats Locked)",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = cs.onSurface,
+                                )
+                                Text(
+                                    text = "Android gates cross-app GraphicsStats behind DUMP + PACKAGE_USAGE_STATS. Grant once via ADB to measure Dropped & Janky Frames across all apps and SystemUI:",
+                                    style = CorewatchMonoTypography.hudSmall,
+                                    color = cs.onSurfaceVariant,
+                                )
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            FilterChip(
+                                selected = false,
+                                onClick = {
+                                    vm.copyTextToClipboard(
+                                        label = "ADB Grant GraphicsStats",
+                                        text = "adb shell pm grant --user current com.droid.corewatch android.permission.DUMP && adb shell pm grant --user current com.droid.corewatch android.permission.PACKAGE_USAGE_STATS",
+                                        bannerMessage = "Copied ADB GraphicsStats permission command to clipboard",
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+                                },
+                                label = { Text("Copy ADB Command") },
+                                modifier = Modifier.testTag("copy_display_dump_adb_btn"),
+                            )
+                        }
+                    }
+                }
             }
         }
     }
