@@ -25,6 +25,11 @@
     <uses-permission android:name="android.permission.READ_LOGS" tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.DUMP" tools:ignore="ProtectedPermissions" />
 
+    <queries>
+        <package android:name="com.google.android.wifi.resources" />
+        <package android:name="com.android.wifi.resources" />
+    </queries>
+
     <application
         android:allowBackup="false"
         android:fullBackupContent="@xml/backup_rules"

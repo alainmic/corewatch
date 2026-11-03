@@ -3329,7 +3329,11 @@ private fun BandChannelTile(
             Text(
                 text = "Channels: ${summary.channelRangeSummary}",
                 style = CorewatchMonoTypography.hudSmall,
-                color = if (isRegBlocked) cs.error else cs.primary,
+                color = when {
+                    isRegBlocked -> cs.error
+                    summary.isHardwareSupported -> cs.primary
+                    else -> cs.onSurfaceVariant
+                },
             )
             if (summary.isHardwareSupported && summary.maxBandwidthMhz > 0) {
                 Text(

@@ -344,9 +344,58 @@ class CorewatchFuzzTest {
             parsedIes.qbssStationCount?.let { stas -> assertTrue(stas in 0..65_535) }
             parsedIes.countryCode80211d?.let { cc -> assertTrue(WirelessTelemetryParsers.isValidRegulatoryCountryCode(cc)) }
 
-            val dumpsys = randomStr(r, 80) + "\nmDriverCountryCode: " + randomStr(r, 5)
-            WirelessTelemetryParsers.parseWifiDumpsysCountryCode(dumpsys)?.let { (cc, _) ->
+            val dumpsys = randomStr(r, 80) + "\nmDriverCountryCode: " + randomStr(r, 5) +
+                "\nSupportedChannelListIn6g[" + (if (r.nextBoolean()) "" else "5955, 5975") + "] mCountryCodeFromDriver" + randomStr(r, 3) +
+                "\nResource Name: config_wifi6ghzSupport, value: " + listOf("true", "false", randomStr(r, 6))[r.nextInt(3)]
+            val regMeta = WirelessTelemetryParsers.parseWifiDumpsysRegMetadata(dumpsys)
+            regMeta.countryAndSource?.let { (cc, _) ->
                 assertTrue(WirelessTelemetryParsers.isValidRegulatoryCountryCode(cc))
+            }
+            if (!regMeta.driver6GhzChannelListSeen) {
+                assertFalse(regMeta.driver6GhzChannelListEmpty)
+            }
+
+            val osSup6 = r.nextBoolean()
+            val sup11be = r.nextBoolean()
+            val resSta6 = listOf(null, true, false)[r.nextInt(3)]
+            val resSap6 = listOf(null, true, false)[r.nextInt(3)]
+            val drvEmpty = listOf(null, true, false)[r.nextInt(3)]
+            val randCc = listOf("CA", "US", "00", "DE", "Unknown", randomStr(r, 4))[r.nextInt(6)]
+            val sum6Eval = WirelessTelemetryParsers.evaluateSixGhzBandSummary(
+                allowedFreqsWidths = allowed,
+                usableFreqs = usable,
+                osReports6GhzSupported = osSup6,
+                supports11be = sup11be,
+                countryCode = randCc,
+                wifiKernelDriver = randomStr(r, 24),
+                wifiResConfig6GhzSta = resSta6,
+                wifiResConfig6GhzSoftAp = resSap6,
+                driver6GhzChannelListEmpty = drvEmpty,
+            )
+            val capsEval = com.droid.corewatch.data.WifiRadioCapabilities(
+                isCapabilitiesQueried = r.nextBoolean(),
+                channelQuerySucceeded = r.nextBoolean(),
+                supports11beWifi7 = sup11be,
+                supports11axWifi6 = r.nextBoolean(),
+                supports24Ghz = true,
+                supports5Ghz = true,
+                supports6Ghz = osSup6,
+                wifiResConfig6GhzSta = resSta6,
+                wifiResConfig6GhzSoftAp = resSap6,
+                driver6GhzChannelListEmpty = drvEmpty,
+                countryCode = randCc,
+                band6Ghz = sum6Eval,
+            )
+            if (!capsEval.is6GhzHardwareCapable) {
+                assertEqualsCount(
+                    com.droid.corewatch.data.SixGhzSupportStatus.HARDWARE_UNSUPPORTED.ordinal,
+                    capsEval.sixGhzStatus.ordinal,
+                )
+                assertTrue(capsEval.sixGhzRegulatoryWarning == null)
+                assertFalse(sum6Eval.isHardwareSupported)
+            } else if (!capsEval.supports6Ghz && capsEval.isCapabilitiesQueried) {
+                assertTrue(sum6Eval.isHardwareSupported)
+                assertTrue(capsEval.sixGhzRegulatoryWarning != null)
             }
 
             val (sec, badges) = WirelessTelemetryParsers.formatScanCapabilitiesSecurity(

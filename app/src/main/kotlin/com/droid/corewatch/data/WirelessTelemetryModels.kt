@@ -7,6 +7,37 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 /**
+ * Diagnostic classification distinguishing genuine 2.4/5 GHz-only hardware from 6 GHz-capable
+ * radios whose 6 GHz band (`5925–7125 MHz`) is blocked by radio firmware / regulatory domain
+ * (e.g., Intel `iwlwifi` LAR / `wireless-regdb` in `'CA'` or `'00'` world mode) or disabled via
+ * Android's Wi-Fi resource overlay (`config_wifi6ghzSupport=false`).
+ */
+enum class SixGhzSupportStatus {
+    /** 6 GHz is supported and has >= 1 usable 20 MHz primary channel. */
+    SUPPORTED_USABLE,
+    /** 6 GHz has >= 1 regulatory-allowed channel, but 0 currently usable (concurrency / coex / indoor). */
+    SUPPORTED_TEMP_UNUSABLE,
+    /** 6 GHz hardware is present, but radio firmware / regulatory domain exposes 0 allowed channels. */
+    FIRMWARE_OR_REGDOMAIN_BLOCKED,
+    /** 6 GHz hardware is present in a 6 GHz-open region, but Android RRO (`config_wifi6ghzSupport`) disables STA 6 GHz. */
+    OS_CONFIG_DISABLED,
+    /** Device radio hardware has no 6 GHz PHY (genuine 2.4 GHz / 5 GHz-only hardware). */
+    HARDWARE_UNSUPPORTED,
+}
+
+/**
+ * Regulatory & 6 GHz driver metadata parsed from `dumpsys wifi` when optional `DUMP` is granted.
+ */
+data class WifiDumpsysRegMetadata(
+    val countryAndSource: Pair<String, String>? = null,
+    val wifiResConfig6GhzSta: Boolean? = null,
+    val wifiResConfig6GhzSoftAp: Boolean? = null,
+    val driver6GhzChannelListSeen: Boolean = false,
+    val driver6GhzChannelListEmpty: Boolean = false,
+    val mentionsIwlwifi: Boolean = false,
+)
+
+/**
  * Allowed vs. currently usable 20 MHz primary channels for a single Wi-Fi frequency band
  * (`2.4 GHz`, `5 GHz`, or `6 GHz`) in the device's active regulatory domain.
  */
@@ -20,9 +51,11 @@ data class BandChannelSummary(
     val dfsChannelCount: Int = 0,
     val pscChannelCount: Int = 0,
     val subBandNote: String = "",
+    val statusBadgeOverride: String = "",
 ) {
     val countBadge: String
         get() = when {
+            statusBadgeOverride.isNotEmpty() -> statusBadgeOverride
             !isHardwareSupported -> "Unsupported"
             allowedCount == 0 -> "0 Allowed (Reg-Blocked)"
             usableCount == allowedCount -> "$usableCount / $allowedCount Usable"
@@ -50,6 +83,15 @@ data class WifiRadioCapabilities(
     val supports5Ghz: Boolean = false,
     val supports6Ghz: Boolean = false,
     val supports60Ghz: Boolean = false,
+    // Underlying 6 GHz Silicon & Driver / RRO Diagnostics (distinguishes HW lack vs. FW/Reg block)
+    val wifiKernelDriver: String = "",
+    val wifiResConfig6GhzSta: Boolean? = null,
+    val wifiResConfig6GhzSoftAp: Boolean? = null,
+    val driver6GhzChannelListEmpty: Boolean? = null,
+    val is6GhzHardwareCapable: Boolean = supports6Ghz ||
+        supports11beWifi7 ||
+        wifiResConfig6GhzSta == true ||
+        wifiResConfig6GhzSoftAp == true,
     // Max Supported PHY Link Speed on Current Association (API 30+)
     val maxTxLinkSpeedMbps: Int = 0,
     val maxRxLinkSpeedMbps: Int = 0,
@@ -77,10 +119,21 @@ data class WifiRadioCapabilities(
     val band5Ghz: BandChannelSummary = BandChannelSummary(bandLabel = "5 GHz"),
     val band6Ghz: BandChannelSummary = BandChannelSummary(bandLabel = "6 GHz"),
 ) {
+    val sixGhzStatus: SixGhzSupportStatus
+        get() = WirelessTelemetryParsers.classifySixGhzStatus(
+            osReports6GhzSupported = supports6Ghz,
+            is6GhzHardwareCapable = is6GhzHardwareCapable,
+            allowed6GhzCount = band6Ghz.allowedCount,
+            usable6GhzCount = band6Ghz.usableCount,
+            countryCode = countryCode,
+            wifiResConfig6GhzSta = wifiResConfig6GhzSta,
+            driver6GhzChannelListEmpty = driver6GhzChannelListEmpty,
+        )
+
     val maxGenerationLabel: String
         get() = when {
             supports11beWifi7 -> "Wi-Fi 7 (802.11be)"
-            supports11axWifi6 && supports6Ghz -> "Wi-Fi 6E (802.11ax)"
+            supports11axWifi6 && (supports6Ghz || is6GhzHardwareCapable) -> "Wi-Fi 6E (802.11ax)"
             supports11axWifi6 -> "Wi-Fi 6 (802.11ax)"
             supports11acWifi5 -> "Wi-Fi 5 (802.11ac)"
             supports11nWifi4 -> "Wi-Fi 4 (802.11n)"
@@ -92,7 +145,9 @@ data class WifiRadioCapabilities(
         get() {
             val gens = ArrayList<String>(6)
             if (supports11beWifi7) gens += "Wi-Fi 7 (11be)"
-            if (supports11axWifi6) gens += if (supports6Ghz) "Wi-Fi 6E/6 (11ax)" else "Wi-Fi 6 (11ax)"
+            if (supports11axWifi6) {
+                gens += if (supports6Ghz || is6GhzHardwareCapable) "Wi-Fi 6E/6 (11ax)" else "Wi-Fi 6 (11ax)"
+            }
             if (supports11acWifi5) gens += "Wi-Fi 5 (11ac)"
             if (supports11nWifi4) gens += "Wi-Fi 4 (11n)"
             if (supports11abgLegacy) gens += "11a/b/g"
@@ -105,11 +160,21 @@ data class WifiRadioCapabilities(
             val bands = ArrayList<String>(4)
             if (supports24Ghz) bands += "2.4 GHz"
             if (supports5Ghz) bands += "5 GHz"
-            if (supports6Ghz) bands += "6 GHz"
+            if (supports6Ghz) {
+                bands += "6 GHz"
+            } else if (is6GhzHardwareCapable) {
+                val cc = countryCode.trim().uppercase(Locale.US)
+                val blockHint = when {
+                    sixGhzStatus == SixGhzSupportStatus.OS_CONFIG_DISABLED -> "HW Capable · Disabled by OS Config"
+                    cc.isNotEmpty() && cc != "UNKNOWN" -> "HW Capable · Blocked in $cc"
+                    else -> "HW Capable · Reg-Blocked"
+                }
+                bands += "6 GHz ($blockHint)"
+            }
             if (supports60Ghz) bands += "60 GHz"
             val tier = when {
                 supports24Ghz && supports5Ghz && supports6Ghz -> " (Tri-Band)"
-                supports24Ghz && supports5Ghz -> " (Dual-Band)"
+                supports24Ghz && supports5Ghz && !is6GhzHardwareCapable -> " (Dual-Band)"
                 else -> ""
             }
             return if (bands.isEmpty()) "Unknown" else bands.joinToString(" · ") + tier
@@ -152,8 +217,36 @@ data class WifiRadioCapabilities(
 
     val sixGhzRegulatoryWarning: String?
         get() {
-            if (!supports6Ghz || !channelQuerySucceeded) return null
+            if (!is6GhzHardwareCapable) return null
             val cc = countryCode.trim().uppercase(Locale.US)
+            val hwDesc = buildList {
+                if (supports11beWifi7) add("Wi-Fi 7 802.11be")
+                else if (supports11axWifi6) add("Wi-Fi 6E 802.11ax")
+                if (wifiKernelDriver.isNotBlank()) add(wifiKernelDriver)
+            }.joinToString(" · ").ifEmpty { "6 GHz PHY" }
+            val rroSuffix = if (wifiResConfig6GhzSta == false) {
+                " (OS STA RRO config_wifi6ghzSupport=false)"
+            } else {
+                ""
+            }
+
+            if (!supports6Ghz) {
+                if (!isCapabilitiesQueried) return null
+                return when (sixGhzStatus) {
+                    SixGhzSupportStatus.OS_CONFIG_DISABLED ->
+                        "6 GHz Hardware Capable ($hwDesc) — Disabled by OS Config: Android Wi-Fi overlay sets config_wifi6ghzSupport=false in region '${countryCode.ifBlank { "Unknown" }}'."
+                    else -> when {
+                        cc.isEmpty() || cc == "00" || cc == "UNKNOWN" ->
+                            "6 GHz Hardware Capable ($hwDesc) — Blocked by World Safe-Mode ('$countryCode' world safe-mode): firmware / cfg80211 exposes 0 channels until an ISO region is resolved$rroSuffix."
+                        cc == "CA" ->
+                            "6 GHz Hardware Capable ($hwDesc) — Firmware / RegDomain Blocked in CA (Canada): Intel LAR / wireless-regdb exposes 0 channels (5955–7115 MHz) to Android in 'CA'$rroSuffix."
+                        else ->
+                            "6 GHz Hardware Capable ($hwDesc) — Firmware / RegDomain Blocked in Region '$cc': firmware LAR / wireless-regdb exposes 0 channels ($countryCodeSource)$rroSuffix."
+                    }
+                }
+            }
+
+            if (!channelQuerySucceeded) return null
             if (band6Ghz.allowedCount == 0) {
                 return when {
                     cc.isEmpty() || cc == "00" || cc == "UNKNOWN" ->
@@ -1023,13 +1116,153 @@ object WirelessTelemetryParsers {
         )
     }
 
+    private val REGDOMAINS_BLOCKING_OR_LPI_GATING_6GHZ: Set<String> = setOf(
+        "CA", "CN", "RU", "IN", "IL", "SG", "TW", "UA", "BY", "IR", "PK", "EG", "VN", "ID",
+    )
+
+    /**
+     * Classifies 6 GHz availability into genuine hardware lack vs. firmware/regulatory block,
+     * OS RRO disablement, temporary concurrency muting, or usable operation.
+     */
+    fun classifySixGhzStatus(
+        osReports6GhzSupported: Boolean,
+        is6GhzHardwareCapable: Boolean,
+        allowed6GhzCount: Int,
+        usable6GhzCount: Int,
+        countryCode: String,
+        wifiResConfig6GhzSta: Boolean? = null,
+        driver6GhzChannelListEmpty: Boolean? = null,
+    ): SixGhzSupportStatus {
+        if (!is6GhzHardwareCapable) return SixGhzSupportStatus.HARDWARE_UNSUPPORTED
+        if (osReports6GhzSupported) {
+            return when {
+                allowed6GhzCount <= 0 -> SixGhzSupportStatus.FIRMWARE_OR_REGDOMAIN_BLOCKED
+                usable6GhzCount <= 0 -> SixGhzSupportStatus.SUPPORTED_TEMP_UNUSABLE
+                else -> SixGhzSupportStatus.SUPPORTED_USABLE
+            }
+        }
+        if (driver6GhzChannelListEmpty == true) {
+            return SixGhzSupportStatus.FIRMWARE_OR_REGDOMAIN_BLOCKED
+        }
+        if (driver6GhzChannelListEmpty == false && wifiResConfig6GhzSta == false) {
+            return SixGhzSupportStatus.OS_CONFIG_DISABLED
+        }
+        val cc = countryCode.trim().uppercase(Locale.US)
+        if (cc.isEmpty() || cc == "00" || cc == "UNKNOWN" || cc in REGDOMAINS_BLOCKING_OR_LPI_GATING_6GHZ) {
+            return SixGhzSupportStatus.FIRMWARE_OR_REGDOMAIN_BLOCKED
+        }
+        if (wifiResConfig6GhzSta == false) {
+            return SixGhzSupportStatus.OS_CONFIG_DISABLED
+        }
+        return SixGhzSupportStatus.FIRMWARE_OR_REGDOMAIN_BLOCKED
+    }
+
+    /**
+     * Builds the `6 GHz` [BandChannelSummary] distinguishing genuine 2.4/5 GHz-only hardware
+     * (`Hardware Unsupported`) from 6 GHz-capable silicon blocked by firmware/regdomain or OS config.
+     */
+    fun evaluateSixGhzBandSummary(
+        allowedFreqsWidths: List<Pair<Int, Int>>,
+        usableFreqs: List<Int>,
+        osReports6GhzSupported: Boolean,
+        supports11be: Boolean,
+        supports11axOrAc: Boolean = true,
+        supports11n: Boolean = true,
+        countryCode: String = "Unknown",
+        wifiKernelDriver: String = "",
+        wifiResConfig6GhzSta: Boolean? = null,
+        wifiResConfig6GhzSoftAp: Boolean? = null,
+        driver6GhzChannelListEmpty: Boolean? = null,
+    ): BandChannelSummary {
+        if (osReports6GhzSupported) {
+            return summarizeAllowedBandChannels(
+                bandGhz = 6,
+                allowedFreqsWidths = allowedFreqsWidths,
+                usableFreqs = usableFreqs,
+                isBandSupported = true,
+                supports11be = supports11be,
+                supports11axOrAc = supports11axOrAc,
+                supports11n = supports11n,
+            )
+        }
+
+        val isHwCapable = supports11be || wifiResConfig6GhzSta == true || wifiResConfig6GhzSoftAp == true
+        val status = classifySixGhzStatus(
+            osReports6GhzSupported = false,
+            is6GhzHardwareCapable = isHwCapable,
+            allowed6GhzCount = 0,
+            usable6GhzCount = 0,
+            countryCode = countryCode,
+            wifiResConfig6GhzSta = wifiResConfig6GhzSta,
+            driver6GhzChannelListEmpty = driver6GhzChannelListEmpty,
+        )
+        if (status == SixGhzSupportStatus.HARDWARE_UNSUPPORTED) {
+            return BandChannelSummary(
+                bandLabel = "6 GHz",
+                isHardwareSupported = false,
+                allowedCount = 0,
+                usableCount = 0,
+                maxBandwidthMhz = 0,
+                channelRangeSummary = "Hardware Unsupported",
+                subBandNote = "2.4 / 5 GHz radio only (no 6 GHz PHY)",
+                statusBadgeOverride = "Hardware Unsupported",
+            )
+        }
+
+        val cleanDriver = wifiKernelDriver.trim().filter { it.isLetterOrDigit() || it == '_' || it == '-' }.take(20)
+        val hwEvidence = buildList {
+            if (supports11be) add("11be") else add("6E RRO")
+            if (cleanDriver.isNotEmpty()) add(cleanDriver)
+        }.joinToString(" · ")
+        val evSuffix = if (hwEvidence.isNotEmpty()) " ($hwEvidence)" else ""
+
+        if (status == SixGhzSupportStatus.OS_CONFIG_DISABLED) {
+            return BandChannelSummary(
+                bandLabel = "6 GHz",
+                isHardwareSupported = true,
+                allowedCount = 0,
+                usableCount = 0,
+                maxBandwidthMhz = 0,
+                channelRangeSummary = "Disabled by OS Wi-Fi Config",
+                subBandNote = "6 GHz HW capable$evSuffix · config_wifi6ghzSupport=false",
+                statusBadgeOverride = "Disabled (OS RRO)",
+            )
+        }
+
+        val cc = countryCode.trim().uppercase(Locale.US)
+        val isWorld = cc.isEmpty() || cc == "00" || cc == "UNKNOWN"
+        val rroHint = if (wifiResConfig6GhzSta == false) " · STA RRO off" else ""
+        return BandChannelSummary(
+            bandLabel = "6 GHz",
+            isHardwareSupported = true,
+            allowedCount = 0,
+            usableCount = 0,
+            maxBandwidthMhz = 0,
+            channelRangeSummary = if (isWorld) {
+                "Blocked (World Domain '00')"
+            } else {
+                "Firmware / RegDomain Blocked ($cc)"
+            },
+            subBandNote = if (isWorld) {
+                "6 GHz HW capable$evSuffix · Unresolved '00'$rroHint"
+            } else {
+                "6 GHz HW capable$evSuffix · 0 ch in $cc$rroHint"
+            },
+            statusBadgeOverride = if (isWorld) "Reg-Blocked ('00')" else "Firmware Blocked ($cc)",
+        )
+    }
+
     private val DUMPSYS_COUNTRY_PATTERNS: List<Pair<Regex, String>> = listOf(
         Regex("\\bmDriverCountryCode:\\s*([A-Za-z0-9]{2})\\b") to "Driver RegDomain (dumpsys)",
         Regex("\\bmOverrideCountryCode:\\s*([A-Za-z0-9]{2})\\b") to "Override RegDomain (dumpsys)",
+        Regex("\\bmCountryCodeFromDriver([A-Za-z0-9]{2})\\b") to "Driver RegDomain (dumpsys)",
         Regex("\\bmTelephonyCountryCode:\\s*([A-Za-z0-9]{2})\\b") to "Telephony RegDomain (dumpsys)",
         Regex("\\bDefaultCountryCode\\(config store\\):\\s*([A-Za-z0-9]{2})\\b") to "Config Store (dumpsys)",
         Regex("\\bDefaultCountryCode\\(system property\\):\\s*([A-Za-z0-9]{2})\\b") to "System Property (dumpsys)",
     )
+    private val DUMPSYS_6G_CHANNEL_LIST_RE = Regex("SupportedChannelListIn6g\\[([^\\]]*)]")
+    private val DUMPSYS_RES_6G_STA_RE = Regex("Resource Name:\\s*config_wifi6ghzSupport,\\s*value:\\s*(true|false)", RegexOption.IGNORE_CASE)
+    private val DUMPSYS_RES_6G_SAP_RE = Regex("Resource Name:\\s*config_wifiSoftap6ghzSupported,\\s*value:\\s*(true|false)", RegexOption.IGNORE_CASE)
 
     fun isValidRegulatoryCountryCode(raw: String?): Boolean {
         if (raw == null || raw.length != 2) return false
@@ -1039,27 +1272,70 @@ object WirelessTelemetryParsers {
     }
 
     /**
-     * Extracts the active Wi-Fi regulatory country code and provenance from `dumpsys wifi` (`WifiCountryCode`).
+     * Parses active Wi-Fi regulatory country code, driver 6 GHz channel list presence, and
+     * cached Wi-Fi RRO 6 GHz booleans from `dumpsys wifi`.
      */
-    fun parseWifiDumpsysCountryCode(dumpsysText: String): Pair<String, String>? {
-        if (dumpsysText.isBlank() || dumpsysText.contains("Permission Denial", ignoreCase = true)) return null
-        val matches = HashMap<Int, Pair<String, String>>(5)
+    fun parseWifiDumpsysRegMetadata(dumpsysText: String): WifiDumpsysRegMetadata {
+        if (dumpsysText.isBlank() || dumpsysText.contains("Permission Denial", ignoreCase = true)) {
+            return WifiDumpsysRegMetadata()
+        }
+        val matches = HashMap<Int, Pair<String, String>>(6)
+        var resSta: Boolean? = null
+        var resSap: Boolean? = null
+        var chanSeen = false
+        var chanEmpty = false
+        var sawIwlwifi = false
+
         for (line in dumpsysText.lineSequence()) {
+            if (!sawIwlwifi && line.contains("iwlwifi", ignoreCase = true)) {
+                sawIwlwifi = true
+            }
+            DUMPSYS_6G_CHANNEL_LIST_RE.find(line)?.let { m ->
+                chanSeen = true
+                chanEmpty = m.groupValues[1].trim().isEmpty()
+            }
+            if (resSta == null) {
+                DUMPSYS_RES_6G_STA_RE.find(line)?.let { m ->
+                    resSta = m.groupValues[1].equals("true", ignoreCase = true)
+                }
+            }
+            if (resSap == null) {
+                DUMPSYS_RES_6G_SAP_RE.find(line)?.let { m ->
+                    resSap = m.groupValues[1].equals("true", ignoreCase = true)
+                }
+            }
             for ((idx, entry) in DUMPSYS_COUNTRY_PATTERNS.withIndex()) {
-                if (matches.containsKey(idx)) continue
+                // Keep updating idx == 2 (historical mCountryCodeFromDriverXX log lines) to latest entry
+                if (idx != 2 && matches.containsKey(idx)) continue
                 val m = entry.first.find(line) ?: continue
                 val code = m.groupValues[1].uppercase(Locale.US)
                 if (isValidRegulatoryCountryCode(code)) {
                     matches[idx] = code to entry.second
-                    if (idx == 0) return matches[0]
                 }
             }
         }
+        var bestCountry: Pair<String, String>? = null
         for (idx in DUMPSYS_COUNTRY_PATTERNS.indices) {
-            matches[idx]?.let { return it }
+            if (matches.containsKey(idx)) {
+                bestCountry = matches[idx]
+                break
+            }
         }
-        return null
+        return WifiDumpsysRegMetadata(
+            countryAndSource = bestCountry,
+            wifiResConfig6GhzSta = resSta,
+            wifiResConfig6GhzSoftAp = resSap,
+            driver6GhzChannelListSeen = chanSeen,
+            driver6GhzChannelListEmpty = chanSeen && chanEmpty,
+            mentionsIwlwifi = sawIwlwifi,
+        )
     }
+
+    /**
+     * Extracts the active Wi-Fi regulatory country code and provenance from `dumpsys wifi` (`WifiCountryCode`).
+     */
+    fun parseWifiDumpsysCountryCode(dumpsysText: String): Pair<String, String>? =
+        parseWifiDumpsysRegMetadata(dumpsysText).countryAndSource
 
     /**
      * Parses IEEE 802.11 Beacon / Probe Response Information Elements (`ScanResult.InformationElement`):

@@ -104,7 +104,11 @@ class TelemetryCollector(
     @Volatile
     private var wifiDumpsysRefreshInFlight: Boolean = false
     @Volatile
-    private var cachedDumpsysWifiCountry: Pair<String, String>? = null
+    private var cachedDumpsysWifiMeta: WifiDumpsysRegMetadata = WifiDumpsysRegMetadata()
+    @Volatile
+    private var cachedWifiOverlayFlags: Pair<Boolean?, Boolean?>? = null
+    @Volatile
+    private var cachedWifiKernelDriver: String? = null
     @Volatile
     private var latestBeaconCountry80211d: String? = null
     @Volatile
@@ -1068,6 +1072,7 @@ class TelemetryCollector(
         val wifiCapabilities = readWifiRadioCapabilities(
             wm = wm,
             wifiInfo = wifiInfo,
+            ifaceName = if (isWifiConnected) cleanWifiIface else "wlan0",
             activeStdCode = stdCode,
             activeFreqMhz = freq,
             nowElapsedMs = nowElapsedMs,
@@ -1156,20 +1161,38 @@ class TelemetryCollector(
                         .redirectErrorStream(true)
                         .start()
                     val sb = StringBuilder(4_096)
+                    var sawDriverCountry = false
+                    var sawWifi6GhzRes = false
                     proc.inputStream.bufferedReader().use { reader ->
                         var linesRead = 0
-                        while (linesRead < 4_000) {
+                        while (linesRead < 30_000 && sb.length < 16_384) {
                             val line = reader.readLine() ?: break
                             linesRead++
-                            if (line.contains("CountryCode", ignoreCase = true)) {
+                            val matchCountry = line.contains("CountryCode", ignoreCase = true)
+                            val match6gChan = line.contains("SupportedChannelListIn6g")
+                            val match6gRes = line.contains("config_wifi6ghzSupport", ignoreCase = true) ||
+                                line.contains("config_wifiSoftap6ghzSupported", ignoreCase = true)
+                            val matchDriver = line.contains("iwlwifi", ignoreCase = true)
+                            if (matchCountry || match6gChan || match6gRes || matchDriver) {
                                 sb.appendLine(line)
-                                if (line.contains("mDriverCountryCode:")) break
+                                if (line.contains("mDriverCountryCode:")) sawDriverCountry = true
+                                if (line.contains("config_wifi6ghzSupport", ignoreCase = true)) sawWifi6GhzRes = true
+                                if (sawDriverCountry && sawWifi6GhzRes) break
                             }
                         }
                     }
                     runCatching { proc.destroy() }
-                    WirelessTelemetryParsers.parseWifiDumpsysCountryCode(sb.toString())?.let {
-                        cachedDumpsysWifiCountry = it
+                    val parsed = WirelessTelemetryParsers.parseWifiDumpsysRegMetadata(sb.toString())
+                    if (parsed.countryAndSource != null ||
+                        parsed.driver6GhzChannelListSeen ||
+                        parsed.wifiResConfig6GhzSta != null ||
+                        parsed.wifiResConfig6GhzSoftAp != null
+                    ) {
+                        val prev = cachedDumpsysWifiMeta
+                        cachedDumpsysWifiMeta = parsed
+                        if (parsed != prev) {
+                            lastWifiCapSampleElapsedMs = 0L
+                        }
                     }
                 } catch (_: Throwable) {
                     // Ignore process failures on restricted sandboxes
@@ -1182,13 +1205,59 @@ class TelemetryCollector(
         }
     }
 
+    private fun queryWifiResourcesOverlayFlags(): Pair<Boolean?, Boolean?> {
+        cachedWifiOverlayFlags?.let { return it }
+        val pkgCandidates = listOf(
+            "com.google.android.wifi.resources",
+            "com.android.wifi.resources",
+        )
+        for (pkg in pkgCandidates) {
+            val res = runCatching { context.packageManager.getResourcesForApplication(pkg) }.getOrNull() ?: continue
+            val staId = runCatching { res.getIdentifier("config_wifi6ghzSupport", "bool", pkg) }.getOrDefault(0)
+            val sapId = runCatching { res.getIdentifier("config_wifiSoftap6ghzSupported", "bool", pkg) }.getOrDefault(0)
+            if (staId != 0 || sapId != 0) {
+                val staVal = if (staId != 0) runCatching { res.getBoolean(staId) }.getOrNull() else null
+                val sapVal = if (sapId != 0) runCatching { res.getBoolean(sapId) }.getOrNull() else null
+                return (staVal to sapVal).also { cachedWifiOverlayFlags = it }
+            }
+        }
+        return (null to null).also { cachedWifiOverlayFlags = it }
+    }
+
+    private fun readWifiKernelDriverName(ifaceName: String): String {
+        cachedWifiKernelDriver?.let { return it }
+        val cleanIface = ifaceName.trim().filter { it.isLetterOrDigit() || it == '_' || it == '-' }.ifEmpty { "wlan0" }
+        val candidates = if (cleanIface == "wlan0") listOf("wlan0") else listOf(cleanIface, "wlan0")
+        for (iface in candidates) {
+            val link = File("/sys/class/net/$iface/device/driver")
+            val resolved = runCatching {
+                if (link.exists()) link.canonicalFile.name else ""
+            }.getOrDefault("")
+                .trim()
+                .filter { it.isLetterOrDigit() || it == '_' || it == '-' }
+                .take(20)
+            if (resolved.isNotEmpty() && resolved != "driver") {
+                cachedWifiKernelDriver = resolved
+                return resolved
+            }
+        }
+        for (mod in listOf("iwlwifi", "mt7925e", "mt7921e", "ath12k_pci", "ath11k_pci", "brcmfmac")) {
+            val present = runCatching { File("/sys/module/$mod").isDirectory }.getOrDefault(false)
+            if (present) {
+                cachedWifiKernelDriver = mod
+                return mod
+            }
+        }
+        return ""
+    }
+
     private fun resolveRegulatoryRegion(
         wm: WifiManager?,
         hasLocationPerm: Boolean,
         nowElapsedMs: Long,
     ): Pair<String, String> {
         scheduleWifiCountryDumpsysIfPermitted(nowElapsedMs)
-        cachedDumpsysWifiCountry?.let { return it }
+        cachedDumpsysWifiMeta.countryAndSource?.let { return it }
 
         if (wm != null && hasLocationPerm) {
             val sysCountry = runCatching {
@@ -1225,6 +1294,7 @@ class TelemetryCollector(
     private fun readWifiRadioCapabilities(
         wm: WifiManager?,
         wifiInfo: WifiInfo?,
+        ifaceName: String,
         activeStdCode: Int,
         activeFreqMhz: Int,
         nowElapsedMs: Long,
@@ -1250,18 +1320,18 @@ class TelemetryCollector(
             0
         }
 
+        val (cc, ccSrc) = resolveRegulatoryRegion(wm, hasLocationPerm, nowElapsedMs)
         val dt = nowElapsedMs - lastWifiCapSampleElapsedMs
         if (cachedWifiCapabilities.isCapabilitiesQueried &&
             lastWifiCapSampleElapsedMs != 0L &&
             dt in 0L until 5_000L &&
-            hasNearbyPerm == cachedWifiCapabilities.hasNearbyWifiPermission
+            hasNearbyPerm == cachedWifiCapabilities.hasNearbyWifiPermission &&
+            cc == cachedWifiCapabilities.countryCode &&
+            ccSrc == cachedWifiCapabilities.countryCodeSource
         ) {
-            val (cc, ccSrc) = resolveRegulatoryRegion(wm, hasLocationPerm, nowElapsedMs)
             return cachedWifiCapabilities.copy(
                 maxTxLinkSpeedMbps = maxTxPhy,
                 maxRxLinkSpeedMbps = maxRxPhy,
-                countryCode = cc,
-                countryCodeSource = ccSrc,
             )
         }
         lastWifiCapSampleElapsedMs = nowElapsedMs
@@ -1455,17 +1525,33 @@ class TelemetryCollector(
             supports11axOrAc = sup11ax || sup11ac,
             supports11n = sup11n,
         )
-        val summary6 = WirelessTelemetryParsers.summarizeAllowedBandChannels(
-            bandGhz = 6,
+        val (overlaySta6g, overlaySap6g) = queryWifiResourcesOverlayFlags()
+        val dumpsysMeta = cachedDumpsysWifiMeta
+        val resSta6g = overlaySta6g ?: dumpsysMeta.wifiResConfig6GhzSta
+        val resSap6g = overlaySap6g ?: dumpsysMeta.wifiResConfig6GhzSoftAp
+        val driver6gEmpty = if (dumpsysMeta.driver6GhzChannelListSeen) {
+            dumpsysMeta.driver6GhzChannelListEmpty
+        } else {
+            null
+        }
+        val kernelDriver = readWifiKernelDriverName(ifaceName).ifBlank {
+            if (dumpsysMeta.mentionsIwlwifi) "iwlwifi" else ""
+        }
+        val is6gHwCapable = sup6 || sup11be || resSta6g == true || resSap6g == true
+
+        val summary6 = WirelessTelemetryParsers.evaluateSixGhzBandSummary(
             allowedFreqsWidths = allowed6,
             usableFreqs = usable6,
-            isBandSupported = sup6,
+            osReports6GhzSupported = sup6,
             supports11be = sup11be,
             supports11axOrAc = sup11ax || sup11ac,
             supports11n = sup11n,
+            countryCode = cc,
+            wifiKernelDriver = kernelDriver,
+            wifiResConfig6GhzSta = resSta6g,
+            wifiResConfig6GhzSoftAp = resSap6g,
+            driver6GhzChannelListEmpty = driver6gEmpty,
         )
-
-        val (cc, ccSrc) = resolveRegulatoryRegion(wm, hasLocationPerm, nowElapsedMs)
 
         return WifiRadioCapabilities(
             isCapabilitiesQueried = true,
@@ -1481,6 +1567,11 @@ class TelemetryCollector(
             supports5Ghz = sup5,
             supports6Ghz = sup6,
             supports60Ghz = sup60,
+            wifiKernelDriver = kernelDriver,
+            wifiResConfig6GhzSta = resSta6g,
+            wifiResConfig6GhzSoftAp = resSap6g,
+            driver6GhzChannelListEmpty = driver6gEmpty,
+            is6GhzHardwareCapable = is6gHwCapable,
             maxTxLinkSpeedMbps = maxTxPhy,
             maxRxLinkSpeedMbps = maxRxPhy,
             supportsWpa3Sae = supSae,

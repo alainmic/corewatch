@@ -208,12 +208,23 @@ object DiagnosticReportBuilder {
                 ),
             )
             val wifiCap = snapshot.wifi.capabilities
+            val sixGhzToken = when {
+                !wifiCap.is6GhzHardwareCapable -> "Unsupported"
+                !wifiCap.supports6Ghz && wifiCap.sixGhzStatus == SixGhzSupportStatus.OS_CONFIG_DISABLED -> "Disabled(OS)"
+                !wifiCap.supports6Ghz -> "Blocked(${SysfsParsers.sanitizeSensorName(wifiCap.countryCode, "Reg")})"
+                else -> "${wifiCap.band6Ghz.usableCount}/${wifiCap.band6Ghz.allowedCount}"
+            }
             val regChannelsSummary = if (wifiCap.channelQuerySucceeded) {
-                "2.4G `${wifiCap.band24Ghz.usableCount}/${wifiCap.band24Ghz.allowedCount}` · 5G `${wifiCap.band5Ghz.usableCount}/${wifiCap.band5Ghz.allowedCount}` · 6G `${wifiCap.band6Ghz.usableCount}/${wifiCap.band6Ghz.allowedCount}`"
+                "2.4G `${wifiCap.band24Ghz.usableCount}/${wifiCap.band24Ghz.allowedCount}` · 5G `${wifiCap.band5Ghz.usableCount}/${wifiCap.band5Ghz.allowedCount}` · 6G `$sixGhzToken`"
             } else {
                 "Channels `Unqueried`"
             }
-            val sixGhzWarnFlag = if (wifiCap.sixGhzRegulatoryWarning != null) " ⚠️ 6 GHz RegDomain Blocked" else ""
+            val sixGhzWarnFlag = when {
+                wifiCap.sixGhzRegulatoryWarning == null -> ""
+                wifiCap.sixGhzStatus == SixGhzSupportStatus.OS_CONFIG_DISABLED -> " ⚠️ 6 GHz Disabled by OS Config"
+                wifiCap.sixGhzStatus == SixGhzSupportStatus.SUPPORTED_TEMP_UNUSABLE -> " ⚠️ 6 GHz Temporarily Unusable"
+                else -> " ⚠️ 6 GHz RegDomain Blocked"
+            }
             appendLine(
                 String.format(
                     Locale.US,

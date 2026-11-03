@@ -1512,4 +1512,207 @@ class CorewatchDataUnitTest {
         assertEquals(0f, freshWindowSnap.jankyPercent5m, 0.001f)
         assertEquals("00:01 / 05:00", freshWindowSnap.windowElapsedLabel)
     }
+
+    @Test
+    fun sixGhzDiagnosticsDistinguishFirmwareRegDomainBlockOsConfigDisableAndGenuineHardwareLack() {
+        val sum24 = WirelessTelemetryParsers.summarizeAllowedBandChannels(
+            bandGhz = 2,
+            allowedFreqsWidths = (1..11).map { (2407 + it * 5) to 0 },
+            usableFreqs = (1..11).map { 2407 + it * 5 },
+            isBandSupported = true,
+        )
+        val sum5 = WirelessTelemetryParsers.summarizeAllowedBandChannels(
+            bandGhz = 5,
+            allowedFreqsWidths = listOf(5180 to 0, 5200 to 0, 5745 to 0, 5765 to 0),
+            usableFreqs = listOf(5180, 5200, 5745, 5765),
+            isBandSupported = true,
+            supports11be = true,
+        )
+
+        // 1. Live Wi-Fi 7 (802.11be · iwlwifi) laptop in Canada ('CA') where WifiManager.is6GHzBandSupported == false
+        //    because firmware LAR / wireless-regdb exposes 0 channels (and STA RRO config_wifi6ghzSupport=false).
+        val dumpsysCaRaw = """
+            ActiveModeWarden:
+              SupportedChannelListIn24g[2412, 2437, 2462] SupportedChannelListIn5g[5180, 5745] SupportedChannelListIn6g[] mCountryCodeFromDriverCA
+            WifiModule: iwlwifi 0000:00:14.3
+            WifiCountryCode:
+              mTelephonyCountryCode: null
+              mDriverCountryCode: CA
+            WifiResourceCache:
+              Resource Name: config_wifi6ghzSupport, value: false
+              Resource Name: config_wifiSoftap6ghzSupported, value: true
+        """.trimIndent()
+        val parsedMeta = WirelessTelemetryParsers.parseWifiDumpsysRegMetadata(dumpsysCaRaw)
+        assertEquals("CA" to "Driver RegDomain (dumpsys)", parsedMeta.countryAndSource)
+        assertTrue(parsedMeta.driver6GhzChannelListSeen)
+        assertTrue(parsedMeta.driver6GhzChannelListEmpty)
+        assertEquals(false, parsedMeta.wifiResConfig6GhzSta)
+        assertEquals(true, parsedMeta.wifiResConfig6GhzSoftAp)
+        assertTrue(parsedMeta.mentionsIwlwifi)
+
+        val sum6CaFwBlocked = WirelessTelemetryParsers.evaluateSixGhzBandSummary(
+            allowedFreqsWidths = emptyList(),
+            usableFreqs = emptyList(),
+            osReports6GhzSupported = false,
+            supports11be = true,
+            countryCode = "CA",
+            wifiKernelDriver = "iwlwifi",
+            wifiResConfig6GhzSta = false,
+            wifiResConfig6GhzSoftAp = true,
+            driver6GhzChannelListEmpty = true,
+        )
+        assertTrue(sum6CaFwBlocked.isHardwareSupported)
+        assertEquals("Firmware Blocked (CA)", sum6CaFwBlocked.countBadge)
+        assertEquals("Firmware / RegDomain Blocked (CA)", sum6CaFwBlocked.channelRangeSummary)
+        assertTrue(sum6CaFwBlocked.subBandNote.contains("11be · iwlwifi"))
+        assertTrue(sum6CaFwBlocked.subBandNote.contains("0 ch in CA"))
+        assertTrue(sum6CaFwBlocked.subBandNote.contains("STA RRO off"))
+
+        val caWifi7Caps = WifiRadioCapabilities(
+            isCapabilitiesQueried = true,
+            hasNearbyWifiPermission = true,
+            channelQuerySucceeded = true,
+            supports11beWifi7 = true,
+            supports11axWifi6 = true,
+            supports24Ghz = true,
+            supports5Ghz = true,
+            supports6Ghz = false,
+            wifiKernelDriver = "iwlwifi",
+            wifiResConfig6GhzSta = false,
+            wifiResConfig6GhzSoftAp = true,
+            driver6GhzChannelListEmpty = true,
+            countryCode = "CA",
+            countryCodeSource = "Driver RegDomain (dumpsys)",
+            band24Ghz = sum24,
+            band5Ghz = sum5,
+            band6Ghz = sum6CaFwBlocked,
+        )
+        assertTrue(caWifi7Caps.is6GhzHardwareCapable)
+        assertEquals(SixGhzSupportStatus.FIRMWARE_OR_REGDOMAIN_BLOCKED, caWifi7Caps.sixGhzStatus)
+        assertEquals("2.4 GHz · 5 GHz · 6 GHz (HW Capable · Blocked in CA)", caWifi7Caps.supportedBandsSummary)
+        assertNotNull(caWifi7Caps.sixGhzRegulatoryWarning)
+        assertTrue(caWifi7Caps.sixGhzRegulatoryWarning!!.contains("6 GHz Hardware Capable"))
+        assertTrue(caWifi7Caps.sixGhzRegulatoryWarning!!.contains("CA (Canada)"))
+        assertTrue(caWifi7Caps.sixGhzRegulatoryWarning!!.contains("Intel LAR"))
+        assertTrue(caWifi7Caps.sixGhzRegulatoryWarning!!.contains("config_wifi6ghzSupport=false"))
+
+        val caReport = DiagnosticReportBuilder.buildMarkdownReport(
+            SystemTelemetrySnapshot(wifi = WifiTelemetrySnapshot(isConnected = true, capabilities = caWifi7Caps)),
+        )
+        assertTrue(caReport.contains("6G `Blocked(CA)`"))
+        assertTrue(caReport.contains("⚠️ 6 GHz RegDomain Blocked"))
+
+        // 2. Wi-Fi 6E (802.11ax + RRO config_wifi6ghzSupport=true, no 11be) in unresolved World Safe-Mode ('00')
+        val sum6World = WirelessTelemetryParsers.evaluateSixGhzBandSummary(
+            allowedFreqsWidths = emptyList(),
+            usableFreqs = emptyList(),
+            osReports6GhzSupported = false,
+            supports11be = false,
+            countryCode = "00",
+            wifiKernelDriver = "mt7921e",
+            wifiResConfig6GhzSta = true,
+        )
+        assertTrue(sum6World.isHardwareSupported)
+        assertEquals("Reg-Blocked ('00')", sum6World.countBadge)
+        assertEquals("Blocked (World Domain '00')", sum6World.channelRangeSummary)
+        assertTrue(sum6World.subBandNote.contains("6E RRO · mt7921e"))
+
+        val worldWifi6eCaps = WifiRadioCapabilities(
+            isCapabilitiesQueried = true,
+            hasNearbyWifiPermission = true,
+            channelQuerySucceeded = true,
+            supports11beWifi7 = false,
+            supports11axWifi6 = true,
+            supports24Ghz = true,
+            supports5Ghz = true,
+            supports6Ghz = false,
+            wifiKernelDriver = "mt7921e",
+            wifiResConfig6GhzSta = true,
+            countryCode = "00",
+            countryCodeSource = "Driver RegDomain (dumpsys)",
+            band24Ghz = sum24,
+            band5Ghz = sum5,
+            band6Ghz = sum6World,
+        )
+        assertTrue(worldWifi6eCaps.is6GhzHardwareCapable)
+        assertEquals("Wi-Fi 6E (802.11ax)", worldWifi6eCaps.maxGenerationLabel)
+        assertEquals(SixGhzSupportStatus.FIRMWARE_OR_REGDOMAIN_BLOCKED, worldWifi6eCaps.sixGhzStatus)
+        assertTrue(worldWifi6eCaps.sixGhzRegulatoryWarning!!.contains("world safe-mode"))
+
+        // 3. OS RRO Config Disabled in a 6 GHz-open region ('US', driver channel list non-empty)
+        val sum6OsDisabled = WirelessTelemetryParsers.evaluateSixGhzBandSummary(
+            allowedFreqsWidths = emptyList(),
+            usableFreqs = emptyList(),
+            osReports6GhzSupported = false,
+            supports11be = true,
+            countryCode = "US",
+            wifiKernelDriver = "iwlwifi",
+            wifiResConfig6GhzSta = false,
+            wifiResConfig6GhzSoftAp = true,
+            driver6GhzChannelListEmpty = false,
+        )
+        assertTrue(sum6OsDisabled.isHardwareSupported)
+        assertEquals("Disabled (OS RRO)", sum6OsDisabled.countBadge)
+        assertEquals("Disabled by OS Wi-Fi Config", sum6OsDisabled.channelRangeSummary)
+
+        val usOsDisabledCaps = caWifi7Caps.copy(
+            countryCode = "US",
+            driver6GhzChannelListEmpty = false,
+            band6Ghz = sum6OsDisabled,
+        )
+        assertEquals(SixGhzSupportStatus.OS_CONFIG_DISABLED, usOsDisabledCaps.sixGhzStatus)
+        assertEquals("2.4 GHz · 5 GHz · 6 GHz (HW Capable · Disabled by OS Config)", usOsDisabledCaps.supportedBandsSummary)
+        assertTrue(usOsDisabledCaps.sixGhzRegulatoryWarning!!.contains("Disabled by OS Config"))
+        val usOsReport = DiagnosticReportBuilder.buildMarkdownReport(
+            SystemTelemetrySnapshot(wifi = WifiTelemetrySnapshot(isConnected = true, capabilities = usOsDisabledCaps)),
+        )
+        assertTrue(usOsReport.contains("6G `Disabled(OS)`"))
+        assertTrue(usOsReport.contains("⚠️ 6 GHz Disabled by OS Config"))
+
+        // 4. Genuine Dual-Band 2.4/5 GHz-Only Hardware (Wi-Fi 6 802.11ax without 6 GHz PHY) in Canada ('CA')
+        val sum6NoHw = WirelessTelemetryParsers.evaluateSixGhzBandSummary(
+            allowedFreqsWidths = emptyList(),
+            usableFreqs = emptyList(),
+            osReports6GhzSupported = false,
+            supports11be = false,
+            countryCode = "CA",
+            wifiKernelDriver = "iwlwifi",
+            wifiResConfig6GhzSta = false,
+            wifiResConfig6GhzSoftAp = false,
+        )
+        assertFalse(sum6NoHw.isHardwareSupported)
+        assertEquals("Hardware Unsupported", sum6NoHw.countBadge)
+        assertEquals("Hardware Unsupported", sum6NoHw.channelRangeSummary)
+        assertEquals("2.4 / 5 GHz radio only (no 6 GHz PHY)", sum6NoHw.subBandNote)
+
+        val dualBandOnlyCaps = WifiRadioCapabilities(
+            isCapabilitiesQueried = true,
+            hasNearbyWifiPermission = true,
+            channelQuerySucceeded = true,
+            supports11beWifi7 = false,
+            supports11axWifi6 = true,
+            supports24Ghz = true,
+            supports5Ghz = true,
+            supports6Ghz = false,
+            wifiKernelDriver = "iwlwifi",
+            wifiResConfig6GhzSta = false,
+            wifiResConfig6GhzSoftAp = false,
+            countryCode = "CA",
+            countryCodeSource = "Driver RegDomain (dumpsys)",
+            band24Ghz = sum24,
+            band5Ghz = sum5,
+            band6Ghz = sum6NoHw,
+        )
+        assertFalse(dualBandOnlyCaps.is6GhzHardwareCapable)
+        assertEquals(SixGhzSupportStatus.HARDWARE_UNSUPPORTED, dualBandOnlyCaps.sixGhzStatus)
+        assertEquals("Wi-Fi 6 (802.11ax)", dualBandOnlyCaps.maxGenerationLabel)
+        assertEquals("2.4 GHz · 5 GHz (Dual-Band)", dualBandOnlyCaps.supportedBandsSummary)
+        assertNull(dualBandOnlyCaps.sixGhzRegulatoryWarning)
+
+        val dualBandReport = DiagnosticReportBuilder.buildMarkdownReport(
+            SystemTelemetrySnapshot(wifi = WifiTelemetrySnapshot(isConnected = true, capabilities = dualBandOnlyCaps)),
+        )
+        assertTrue(dualBandReport.contains("6G `Unsupported`"))
+        assertFalse(dualBandReport.contains("⚠️ 6 GHz"))
+    }
 }

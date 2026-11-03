@@ -1051,6 +1051,68 @@ class CorewatchUiTest {
         composeRule.onNodeWithTag("wifi_band_6g_tile").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("0 Allowed (Reg-Blocked)").performScrollTo().assertIsDisplayed()
 
+        // 1b. Verify real-world firmware-blocked Wi-Fi 7 case (supports6Ghz == false, is6GhzHardwareCapable == true)
+        //     renders "Firmware Blocked (CA)" instead of "Hardware Unsupported", versus genuine 2.4/5 GHz hardware!
+        val fwBlocked6g = com.droid.corewatch.data.WirelessTelemetryParsers.evaluateSixGhzBandSummary(
+            allowedFreqsWidths = emptyList(),
+            usableFreqs = emptyList(),
+            osReports6GhzSupported = false,
+            supports11be = true,
+            countryCode = "CA",
+            wifiKernelDriver = "iwlwifi",
+            wifiResConfig6GhzSta = false,
+            wifiResConfig6GhzSoftAp = true,
+            driver6GhzChannelListEmpty = true,
+        )
+        vm.setSnapshotForTesting(
+            vm.state.value.snapshot.copy(
+                wifi = vm.state.value.snapshot.wifi.copy(
+                    capabilities = vm.state.value.snapshot.wifi.capabilities.copy(
+                        supports6Ghz = false,
+                        wifiKernelDriver = "iwlwifi",
+                        wifiResConfig6GhzSta = false,
+                        wifiResConfig6GhzSoftAp = true,
+                        driver6GhzChannelListEmpty = true,
+                        is6GhzHardwareCapable = true,
+                        band6Ghz = fwBlocked6g,
+                    ),
+                ),
+            ),
+        )
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("wifi_6ghz_reg_warning").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("Firmware Blocked (CA)").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("Channels: Firmware / RegDomain Blocked (CA)").performScrollTo().assertIsDisplayed()
+
+        // 1c. Genuine 2.4/5 GHz-only hardware shows "Hardware Unsupported" and NO 6 GHz regulatory warning banner
+        val genuineNo6g = com.droid.corewatch.data.WirelessTelemetryParsers.evaluateSixGhzBandSummary(
+            allowedFreqsWidths = emptyList(),
+            usableFreqs = emptyList(),
+            osReports6GhzSupported = false,
+            supports11be = false,
+            countryCode = "CA",
+            wifiResConfig6GhzSta = false,
+            wifiResConfig6GhzSoftAp = false,
+        )
+        vm.setSnapshotForTesting(
+            vm.state.value.snapshot.copy(
+                wifi = vm.state.value.snapshot.wifi.copy(
+                    capabilities = vm.state.value.snapshot.wifi.capabilities.copy(
+                        supports11beWifi7 = false,
+                        supports6Ghz = false,
+                        wifiResConfig6GhzSta = false,
+                        wifiResConfig6GhzSoftAp = false,
+                        is6GhzHardwareCapable = false,
+                        band6Ghz = genuineNo6g,
+                    ),
+                ),
+            ),
+        )
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("wifi_6ghz_reg_warning").assertDoesNotExist()
+        composeRule.onNodeWithText("Hardware Unsupported").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("2.4 / 5 GHz radio only (no 6 GHz PHY)").performScrollTo().assertIsDisplayed()
+
         // Click opt-in Location permission button
         composeRule.onNodeWithTag("grant_wifi_scan_permission_btn").performScrollTo().performClick()
         assertEquals(1, scanPermRequests)
