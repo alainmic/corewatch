@@ -2290,12 +2290,17 @@ class TelemetryCollector(
     }
 
     private fun readNpu(nowElapsedMs: Long): NpuTelemetrySnapshot {
+        val accelDevNode = if (File("/dev/accel/accel0").exists() && !File("/dev/accel0").exists()) {
+            "/dev/accel/accel0"
+        } else {
+            "/dev/accel0"
+        }
         if (!npuDrmProbed) {
             npuDrmProbed = true
-            cachedNpuDrmVersion = AccelIoctlBridge.queryDrmVersion("/dev/accel0")
-            cachedIvpuStaticParams = AccelIoctlBridge.queryIvpuParams("/dev/accel0", heartbeatOnly = false)
+            cachedNpuDrmVersion = AccelIoctlBridge.queryDrmVersion(accelDevNode)
+            cachedIvpuStaticParams = AccelIoctlBridge.queryIvpuParams(accelDevNode, heartbeatOnly = false)
         } else if (cachedIvpuStaticParams != null) {
-            val hbUpdate = AccelIoctlBridge.queryIvpuParams("/dev/accel0", heartbeatOnly = true)
+            val hbUpdate = AccelIoctlBridge.queryIvpuParams(accelDevNode, heartbeatOnly = true)
             if (hbUpdate != null) {
                 cachedIvpuStaticParams = cachedIvpuStaticParams!!.copy(
                     engineHeartbeat = hbUpdate.engineHeartbeat,
@@ -2312,6 +2317,14 @@ class TelemetryCollector(
         val freqSubDir = File(accelDevDir, "freq")
         for (name in listOf("current_freq", "hw_max_freq", "hw_min_freq", "hw_efficient_freq")) {
             readSmallFile(File(freqSubDir, name))?.let { attrs[name] = it }
+        }
+        readSmallFile(File(accelDevDir, "uevent"))?.let { uevent ->
+            for (line in uevent.lineSequence()) {
+                if (line.startsWith("DRIVER=")) {
+                    val drv = line.removePrefix("DRIVER=").trim()
+                    if (drv.isNotEmpty()) attrs.putIfAbsent("driver", drv)
+                }
+            }
         }
 
         val curBusyUs = attrs["npu_busy_time_us"]?.toLongOrNull()

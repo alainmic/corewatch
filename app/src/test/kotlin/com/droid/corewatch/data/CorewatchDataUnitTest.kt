@@ -375,9 +375,28 @@ class CorewatchDataUnitTest {
             busyDeltaFraction = 0f,
             heartbeatActive = false,
         )
+        assertTrue(idleNpu.isPresent)
         assertEquals("d3cold-sleep", idleNpu.scalingStateLabel)
         assertEquals(2000, idleNpu.maxFreqMhz)
         assertEquals(0, idleNpu.currentFreqMhz)
+
+        val missingNpu = SysfsParsers.parseNpuTelemetry(
+            attrs = emptyMap(),
+            drmVersion = null,
+            ivpuParams = null,
+            busyDeltaFraction = null,
+            heartbeatActive = false,
+        )
+        assertFalse(missingNpu.isPresent)
+        assertEquals("not-present", missingNpu.scalingStateLabel)
+        assertEquals("none", missingNpu.driverName)
+        assertEquals("No NPU Present on SoC", missingNpu.deviceName)
+        assertEquals(0, missingNpu.maxFreqMhz)
+        assertEquals(0, missingNpu.currentFreqMhz)
+        assertEquals(0, missingNpu.maxContexts)
+        assertEquals(0f, missingNpu.utilizationFraction, 0.001f)
+        val missingNpuReport = DiagnosticReportBuilder.buildMarkdownReport(SystemTelemetrySnapshot(npu = missingNpu))
+        assertTrue(missingNpuReport.contains("No NPU Present on SoC"))
 
         val activeNpu = SysfsParsers.parseNpuTelemetry(
             attrs = mapOf(

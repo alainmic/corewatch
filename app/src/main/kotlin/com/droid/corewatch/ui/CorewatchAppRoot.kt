@@ -1115,21 +1115,38 @@ internal fun MiniHudView(
                     // 2. GPU & NPU Hardware Accelerators Sparkline Row
                     MiniHudSparklineCard(
                         title = "GPU & NPU",
-                        primaryValue = String.format(
-                            Locale.US,
-                            "GPU %d%% (%d MHz) · NPU %d%%",
-                            (snap.gpu.utilizationFraction * 100f).roundToInt(),
-                            snap.gpu.displayFreqMhz,
-                            (snap.npu.utilizationFraction * 100f).roundToInt(),
-                        ),
-                        subValue = String.format(
-                            Locale.US,
-                            "GPU %s · NPU %s (%d/%d MHz)",
-                            snap.gpu.scalingStateLabel,
-                            snap.npu.scalingStateLabel,
-                            snap.npu.currentFreqMhz,
-                            snap.npu.maxFreqMhz,
-                        ),
+                        primaryValue = if (snap.npu.isPresent) {
+                            String.format(
+                                Locale.US,
+                                "GPU %d%% (%d MHz) · NPU %d%%",
+                                (snap.gpu.utilizationFraction * 100f).roundToInt(),
+                                snap.gpu.displayFreqMhz,
+                                (snap.npu.utilizationFraction * 100f).roundToInt(),
+                            )
+                        } else {
+                            String.format(
+                                Locale.US,
+                                "GPU %d%% (%d MHz) · NPU N/A",
+                                (snap.gpu.utilizationFraction * 100f).roundToInt(),
+                                snap.gpu.displayFreqMhz,
+                            )
+                        },
+                        subValue = if (snap.npu.isPresent) {
+                            String.format(
+                                Locale.US,
+                                "GPU %s · NPU %s (%d/%d MHz)",
+                                snap.gpu.scalingStateLabel,
+                                snap.npu.scalingStateLabel,
+                                snap.npu.currentFreqMhz,
+                                snap.npu.maxFreqMhz,
+                            )
+                        } else {
+                            String.format(
+                                Locale.US,
+                                "GPU %s · No NPU on SoC",
+                                snap.gpu.scalingStateLabel,
+                            )
+                        },
                         samples = hist.gpuLoadSamples,
                         lineColor = cs.tertiary,
                         maxCeiling = 100f,
@@ -1515,31 +1532,43 @@ private fun OverviewThermalsTab(state: CorewatchUiState, vm: CorewatchViewModel)
                             Text("NPU Accelerator (60s)", style = MaterialTheme.typography.titleMedium)
                         }
                         Text(
-                            text = String.format(
-                                Locale.US,
-                                "%d%% · %d / %d MHz",
-                                (snap.npu.utilizationFraction * 100f).roundToInt(),
-                                snap.npu.currentFreqMhz,
-                                snap.npu.maxFreqMhz,
-                            ),
+                            text = if (snap.npu.isPresent) {
+                                String.format(
+                                    Locale.US,
+                                    "%d%% · %d / %d MHz",
+                                    (snap.npu.utilizationFraction * 100f).roundToInt(),
+                                    snap.npu.currentFreqMhz,
+                                    snap.npu.maxFreqMhz,
+                                )
+                            } else {
+                                "Not Present"
+                            },
                             style = CorewatchMonoTypography.metricLarge,
-                            color = cs.tertiary,
+                            color = if (snap.npu.isPresent) cs.tertiary else cs.onSurfaceVariant,
                         )
                     }
                     Text(
-                        text = "${snap.npu.deviceName} (${snap.npu.driverName} ${snap.npu.firmwareVersion}) · State: ${snap.npu.scalingStateLabel}",
+                        text = if (snap.npu.isPresent) {
+                            "${snap.npu.deviceName} (${snap.npu.driverName} ${snap.npu.firmwareVersion}) · State: ${snap.npu.scalingStateLabel}"
+                        } else {
+                            "${snap.npu.deviceName} · State: ${snap.npu.scalingStateLabel}"
+                        },
                         style = CorewatchMonoTypography.hudSmall,
                         color = cs.onSurface,
                     )
                     Text(
-                        text = String.format(
-                            Locale.US,
-                            "Active Contexts: %d / %d · Max DPU Clock: %d MHz · Peak: %.1f%%",
-                            snap.npu.activeContexts,
-                            snap.npu.maxContexts,
-                            snap.npu.maxFreqMhz,
-                            hist.npuLoadPeak,
-                        ),
+                        text = if (snap.npu.isPresent) {
+                            String.format(
+                                Locale.US,
+                                "Active Contexts: %d / %d · Max DPU Clock: %d MHz · Peak: %.1f%%",
+                                snap.npu.activeContexts,
+                                snap.npu.maxContexts,
+                                snap.npu.maxFreqMhz,
+                                hist.npuLoadPeak,
+                            )
+                        } else {
+                            "No dedicated NPU accelerator (/dev/accel0, /sys/class/accel) detected on this processor"
+                        },
                         style = CorewatchMonoTypography.hudSmall,
                         color = cs.onSurfaceVariant,
                     )

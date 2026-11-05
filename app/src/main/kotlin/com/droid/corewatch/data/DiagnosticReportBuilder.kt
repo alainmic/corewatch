@@ -151,21 +151,33 @@ object DiagnosticReportBuilder {
                     SysfsParsers.sanitizeSensorName(snapshot.gpu.throttleSummary, "Nominal"),
                 ),
             )
-            appendLine(
-                String.format(
-                    Locale.US,
-                    "| **NPU Accelerator** | `%s` (`%s`, `%s`) — `%d%%` active (`%d / %d MHz`, `%s`, `%d / %d` contexts) |",
-                    SysfsParsers.sanitizeSensorName(snapshot.npu.deviceName, "NPU"),
-                    SysfsParsers.sanitizeSensorName(snapshot.npu.driverName, "accel"),
-                    SysfsParsers.sanitizeSensorName(snapshot.npu.firmwareVersion, "v1.0"),
-                    (snapshot.npu.utilizationFraction * 100f).roundToInt(),
-                    snapshot.npu.currentFreqMhz,
-                    snapshot.npu.maxFreqMhz,
-                    snapshot.npu.scalingStateLabel,
-                    snapshot.npu.activeContexts,
-                    snapshot.npu.maxContexts,
-                ),
-            )
+            if (snapshot.npu.isPresent) {
+                appendLine(
+                    String.format(
+                        Locale.US,
+                        "| **NPU Accelerator** | `%s` (`%s`, `%s`) — `%d%%` active (`%d / %d MHz`, `%s`, `%d / %d` contexts) |",
+                        SysfsParsers.sanitizeSensorName(snapshot.npu.deviceName, "NPU"),
+                        SysfsParsers.sanitizeSensorName(snapshot.npu.driverName, "accel"),
+                        SysfsParsers.sanitizeSensorName(snapshot.npu.firmwareVersion, "v1.0"),
+                        (snapshot.npu.utilizationFraction * 100f).roundToInt(),
+                        snapshot.npu.currentFreqMhz,
+                        snapshot.npu.maxFreqMhz,
+                        snapshot.npu.scalingStateLabel,
+                        snapshot.npu.activeContexts,
+                        snapshot.npu.maxContexts,
+                    ),
+                )
+            } else {
+                appendLine(
+                    String.format(
+                        Locale.US,
+                        "| **NPU Accelerator** | `%s` (`%s` — `%s`) |",
+                        SysfsParsers.sanitizeSensorName(snapshot.npu.deviceName, "No NPU Present on SoC"),
+                        SysfsParsers.sanitizeSensorName(snapshot.npu.driverName, "none"),
+                        snapshot.npu.scalingStateLabel,
+                    ),
+                )
+            }
             appendLine(
                 String.format(
                     Locale.US,

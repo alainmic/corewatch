@@ -174,6 +174,8 @@ class CorewatchUiTest {
         assertEquals(0.88f, vm.state.value.miniHudAlpha, 0.01f)
         composeRule.onNodeWithTag("mini_hud_caffeine").performClick()
         composeRule.onNodeWithTag("mini_hud_copy").performClick()
+        vm.setSnapshotForTesting(SystemTelemetrySnapshot())
+        composeRule.waitForIdle()
 
         composeRule.onNodeWithTag("btn_expand_workbench").performClick()
         assertFalse(vm.state.value.isMiniHud)
@@ -700,6 +702,7 @@ class CorewatchUiTest {
             npuBusyTime.writeText("100000\n")
             java.io.File(npuDev, "npu_current_frequency_mhz").writeText("1400\n")
             java.io.File(npuDev, "npu_max_frequency_mhz").writeText("2000\n")
+            java.io.File(npuDev, "uevent").writeText("DRIVER=intel_vpu\nPCI_ID=8086:7D1D\n")
 
             val usbRoot = java.io.File(tempRoot, "usb").apply { mkdirs() }
             val usb2 = java.io.File(usbRoot, "usb2").apply { mkdirs() }
@@ -806,6 +809,7 @@ class CorewatchUiTest {
             assertEquals(0.05f, snap2.cpuCores[1].utilizationFraction, 0.01f)
             assertEquals("powersave", snap2.cpuCores[1].scalingStateLabel)
             assertEquals(0.25f, snap2.gpu.utilizationFraction, 0.01f)
+            assertTrue(snap2.npu.isPresent)
             assertEquals(0.40f, snap2.npu.utilizationFraction, 0.01f)
             assertTrue(snap1.thermalSensors.any { it.celsius > 50f })
             assertTrue(snap2.memory.totalBytes > 0L)
@@ -816,6 +820,8 @@ class CorewatchUiTest {
             assertEquals("wlan0", snap2.wifi.interfaceName)
 
             // Now test with missing directories so all fallback branches execute
+            com.droid.corewatch.data.AccelIoctlBridge.testDrmVersionProvider = null
+            com.droid.corewatch.data.AccelIoctlBridge.testIvpuParamsProvider = null
             val missingDir = java.io.File(tempRoot, "nonexistent")
             val fallbackCollector = com.droid.corewatch.data.TelemetryCollector(
                 context = app,
@@ -823,11 +829,14 @@ class CorewatchUiTest {
                 thermalSysfsRoot = missingDir,
                 hwmonSysfsRoot = missingDir,
                 procMemInfoFile = java.io.File(missingDir, "meminfo"),
+                accelSysfsRoot = missingDir,
             )
             val fallbackSnap = fallbackCollector.sample(CaffeineConfig(), nowElapsedMs = 3_000L)
             assertTrue(fallbackSnap.cpuCores.isNotEmpty())
             assertEquals(2, fallbackSnap.thermalSensors.size)
             assertTrue(fallbackSnap.memory.totalBytes > 0L)
+            assertFalse(fallbackSnap.npu.isPresent)
+            assertEquals("not-present", fallbackSnap.npu.scalingStateLabel)
         } finally {
             com.droid.corewatch.data.AccelIoctlBridge.testDrmVersionProvider = null
             com.droid.corewatch.data.AccelIoctlBridge.testIvpuParamsProvider = null

@@ -131,6 +131,7 @@ data class GpuTelemetrySnapshot(
 }
 
 data class NpuTelemetrySnapshot(
+    val isPresent: Boolean = true,
     val driverName: String = "intel_vpu",
     val deviceName: String = "Intel NPU",
     val currentFreqMhz: Int = 0,
@@ -143,10 +144,11 @@ data class NpuTelemetrySnapshot(
     val memoryUsedBytes: Long = 0L,
 ) {
     val utilizationFraction: Float
-        get() = activeUtilizationFraction.coerceIn(0f, 1f)
+        get() = if (!isPresent) 0f else activeUtilizationFraction.coerceIn(0f, 1f)
 
     val scalingStateLabel: String
         get() = when {
+            !isPresent -> "not-present"
             utilizationFraction >= 0.62f -> "turbo"
             utilizationFraction >= 0.15f -> "active"
             currentFreqMhz > 0 && utilizationFraction > 0.01f -> "balanced"
@@ -461,6 +463,28 @@ object SysfsParsers {
         busyDeltaFraction: Float? = null,
         heartbeatActive: Boolean = false,
     ): NpuTelemetrySnapshot {
+        val hasHardwareEvidence =
+            attrs.isNotEmpty() ||
+                drmVersion != null ||
+                ivpuParams != null ||
+                busyDeltaFraction != null ||
+                heartbeatActive
+        if (!hasHardwareEvidence) {
+            return NpuTelemetrySnapshot(
+                isPresent = false,
+                driverName = "none",
+                deviceName = "No NPU Present on SoC",
+                currentFreqMhz = 0,
+                maxFreqMhz = 0,
+                activeUtilizationFraction = 0f,
+                engineHeartbeat = 0L,
+                activeContexts = 0,
+                maxContexts = 0,
+                firmwareVersion = "—",
+                memoryUsedBytes = 0L,
+            )
+        }
+
         val driver = sanitizeSensorName(drmVersion?.driverName ?: attrs["driver"] ?: "intel_vpu", "npu")
         val baseDesc = when {
             ivpuParams != null && ivpuParams.deviceId > 0 ->
@@ -500,6 +524,7 @@ object SysfsParsers {
         val heartbeat = ivpuParams?.engineHeartbeat ?: 0L
 
         return NpuTelemetrySnapshot(
+            isPresent = true,
             driverName = driver,
             deviceName = sanitizeSensorName(baseDesc, "Intel NPU"),
             currentFreqMhz = curMhz,
