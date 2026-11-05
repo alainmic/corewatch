@@ -1230,6 +1230,7 @@ class TelemetryCollector(
         }
     }
 
+    @android.annotation.SuppressLint("DiscouragedApi")
     private fun queryWifiResourcesOverlayFlags(): Pair<Boolean?, Boolean?> {
         cachedWifiOverlayFlags?.let { return it }
         val pkgCandidates = listOf(
@@ -2700,12 +2701,13 @@ class TelemetryCollector(
                             )
                     } ?: audioCandidates.singleOrNull()
                     if (matchedRaw != null) {
-                        val maxHz = aInfo.sampleRates.maxOrNull() ?: 48_000
-                        val maxCh = aInfo.channelCounts.maxOrNull() ?: 2
+                        val maxHz = runCatching { aInfo.sampleRates.maxOrNull() }.getOrNull() ?: 48_000
+                        val maxCh = runCatching { aInfo.channelCounts.maxOrNull() }.getOrNull() ?: 2
+                        val encs = runCatching { aInfo.encodings }.getOrNull() ?: IntArray(0)
                         val bitLabel = when {
-                            aInfo.encodings.contains(AudioFormat.ENCODING_PCM_32BIT) ||
-                                aInfo.encodings.contains(AudioFormat.ENCODING_PCM_FLOAT) -> "32-bit"
-                            aInfo.encodings.contains(AudioFormat.ENCODING_PCM_24BIT_PACKED) -> "24-bit"
+                            encs.contains(AudioFormat.ENCODING_PCM_32BIT) ||
+                                encs.contains(AudioFormat.ENCODING_PCM_FLOAT) -> "32-bit"
+                            encs.contains(AudioFormat.ENCODING_PCM_24BIT_PACKED) -> "24-bit"
                             else -> "16-bit"
                         }
                         val typeStr = if (aInfo.type == AudioDeviceInfo.TYPE_USB_HEADSET) "USB Headset" else "USB Audio DAC"
@@ -2760,6 +2762,7 @@ class TelemetryCollector(
         return map
     }
 
+    @android.annotation.SuppressLint("PrivateApi")
     private fun readSystemProperty(key: String): String? {
         return runCatching {
             val cls = Class.forName("android.os.SystemProperties")
@@ -2780,4 +2783,24 @@ class TelemetryCollector(
             null
         }
     }
+
+    private inline fun <T> runCatching(block: () -> T): SafeAttempt<T> = try {
+        SafeAttempt(block(), null)
+    } catch (t: Throwable) {
+        SafeAttempt(null, t)
+    }
 }
+
+internal class SafeAttempt<out T>(private val value: Any?, private val error: Throwable?) {
+    @Suppress("UNCHECKED_CAST")
+    fun getOrNull(): T? = if (error == null) value as T? else null
+
+    inline fun onFailure(action: (Throwable) -> Unit): SafeAttempt<T> {
+        if (error != null) action(error)
+        return this
+    }
+}
+
+@Suppress("UNCHECKED_CAST")
+internal fun <R, T : R> SafeAttempt<T>.getOrDefault(defaultValue: R): R =
+    this.getOrNull() ?: defaultValue

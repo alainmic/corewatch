@@ -6,6 +6,7 @@ package com.droid.corewatch.service
 import android.content.Context
 import android.os.PowerManager
 import android.os.SystemClock
+import androidx.core.content.edit
 import com.droid.corewatch.data.CaffeineConfig
 import com.droid.corewatch.data.CaffeineDuration
 import com.droid.corewatch.data.CaffeinePolicy
@@ -28,13 +29,14 @@ object CaffeineController {
     val config: StateFlow<CaffeineConfig> = _config.asStateFlow()
 
     private var wakeLock: PowerManager.WakeLock? = null
-    private var initializedApp: Context? = null
+    private var initializedAppHashCode: Int = 0
 
     @Synchronized
     fun init(context: Context) {
         val appCtx = context.applicationContext
-        if (initializedApp === appCtx) return
-        initializedApp = appCtx
+        val hash = System.identityHashCode(appCtx)
+        if (initializedAppHashCode == hash && hash != 0) return
+        initializedAppHashCode = hash
         val prefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         _config.value = CaffeineConfig(
             duration = CaffeineDuration.Off,
@@ -71,11 +73,10 @@ object CaffeineController {
             autoOnExternalDisplay = autoOnExternalDisplay,
         )
         _config.value = next
-        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean(KEY_AUTO_AC, autoOnAcCharging)
-            .putBoolean(KEY_AUTO_EXT_DISPLAY, autoOnExternalDisplay)
-            .apply()
+        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+            putBoolean(KEY_AUTO_AC, autoOnAcCharging)
+            putBoolean(KEY_AUTO_EXT_DISPLAY, autoOnExternalDisplay)
+        }
     }
 
     /** Synchronizes the system partial wake lock with the evaluated [shouldKeepAwake] state. */

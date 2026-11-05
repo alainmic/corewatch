@@ -9,9 +9,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.PixelFormat
-import android.graphics.drawable.ColorDrawable
-import android.net.Uri
 import android.os.Build
+import androidx.core.graphics.drawable.toDrawable
+import androidx.core.net.toUri
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
@@ -128,7 +128,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         canDrawOverlaysState.value = runCatching { Settings.canDrawOverlays(this) }.getOrDefault(false)
-        window.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
+        window.setBackgroundDrawable(android.graphics.Color.TRANSPARENT.toDrawable())
         runCatching {
             val ht = HandlerThread("corewatch-framemetrics").apply { start() }
             frameMetricsThread = ht
@@ -344,7 +344,7 @@ class MainActivity : ComponentActivity() {
             startActivity(
                 Intent(
                     Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:$packageName"),
+                    "package:$packageName".toUri(),
                 ),
             )
         }.onFailure {

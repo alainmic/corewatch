@@ -1876,4 +1876,429 @@ class CorewatchUiTest {
         ).assertIsDisplayed()
         composeRule.onNodeWithTag("display_dump_locked_banner").assertDoesNotExist()
     }
+
+    @Suppress("DEPRECATION")
+    @Test
+    fun telemetryCollectorCoversBluetoothUsbGpuDisplayWifiAndBatteryFallbackBranches() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val shadowApp = org.robolectric.Shadows.shadowOf(app)
+        val tempRoot = java.nio.file.Files.createTempDirectory("corewatch_branch_sysfs").toFile()
+
+        try {
+            // 1. Null-services ContextWrapper to cover defensive null-service branches and empty-DisplayManager fallback
+            val nullServicesCtx = object : android.content.ContextWrapper(app) {
+                override fun getSystemService(name: String): Any? = null
+                override fun getApplicationContext(): android.content.Context = this
+            }
+            com.droid.corewatch.data.AccelIoctlBridge.testDrmConnectorsProvider = { "eDP-1|1|1|10|300x190" }
+            val nullSvcCollector = com.droid.corewatch.data.TelemetryCollector(context = nullServicesCtx)
+            val nullSvcSnap = nullSvcCollector.sample(CaffeineConfig(), nowElapsedMs = 1_000L)
+            assertEquals("No Adapter", nullSvcSnap.bluetooth.connectionStateLabel)
+            assertEquals(1, nullSvcSnap.displays.size)
+            assertEquals("eDP-1", nullSvcSnap.displays.first().drmConnectorName)
+            assertFalse(nullSvcCollector.triggerActiveWifiScan().first)
+
+            // 2. Setup i915 DRM directory, NPU freq sub-directory, PSI memory, and USB sysfs devices
+            val drmI915 = java.io.File(tempRoot, "drm_i915").apply { mkdirs() }
+            val i915Gt = java.io.File(drmI915, "card0/gt/gt0").apply { mkdirs() }
+            java.io.File(i915Gt, "rps_act_freq_mhz").writeText("950\n")
+            java.io.File(i915Gt, "rps_cur_freq_mhz").writeText("1000\n")
+            java.io.File(i915Gt, "rps_min_freq_mhz").writeText("300\n")
+            java.io.File(i915Gt, "rps_max_freq_mhz").writeText("1450\n")
+            java.io.File(i915Gt, "rps_RP0_freq_mhz").writeText("1450\n")
+            java.io.File(i915Gt, "rps_RP1_freq_mhz").writeText("500\n")
+            java.io.File(i915Gt, "rps_RPn_freq_mhz").writeText("300\n")
+            val rc6File = java.io.File(i915Gt, "rc6_residency_ms").apply { writeText("1000\n") }
+
+            val drmXe = java.io.File(tempRoot, "drm_xe").apply { mkdirs() }
+            val xeFreq0 = java.io.File(drmXe, "card0/device/tile0/gt0/freq0").apply { mkdirs() }
+            java.io.File(xeFreq0, "act_freq").writeText("0\n")
+            java.io.File(xeFreq0, "cur_freq").writeText("400\n")
+            java.io.File(xeFreq0, "rpa_freq").writeText("1800\n")
+            val xeFreq1 = java.io.File(drmXe, "card0/device/tile0/gt1/freq0").apply { mkdirs() }
+            java.io.File(xeFreq1, "act_freq").writeText("0\n")
+            java.io.File(xeFreq1, "cur_freq").writeText("600\n")
+            val xeThr = java.io.File(xeFreq0, "throttle").apply { mkdirs() }
+            java.io.File(xeThr, "status").writeText("1\n")
+            java.io.File(xeThr, "reason_pl1").writeText("1\n")
+            java.io.File(xeThr, "reason_thermal").writeText("1\n")
+            java.io.File(drmXe, "card0/device/tile0/gt0/gtidle").apply { mkdirs() }
+                .let { java.io.File(it, "idle_residency_ms").writeText("2000\n") }
+
+            val accelRoot = java.io.File(tempRoot, "accel").apply { mkdirs() }
+            val accelDev = java.io.File(accelRoot, "accel0/device").apply { mkdirs() }
+            java.io.File(accelDev, "npu_memory_utilization").writeText("4096\n")
+            val accelFreq = java.io.File(accelDev, "freq").apply { mkdirs() }
+            java.io.File(accelFreq, "current_freq").writeText("1200\n")
+            java.io.File(accelFreq, "hw_max_freq").writeText("2000\n")
+            java.io.File(accelFreq, "hw_min_freq").writeText("200\n")
+            java.io.File(accelFreq, "hw_efficient_freq").writeText("800\n")
+
+            val psiFile = java.io.File(tempRoot, "psi_memory").apply {
+                writeText("some avg10=4.25 avg60=1.50 avg300=0.50 total=100\nfull avg10=1.10 avg60=0.20 avg300=0.10 total=20\n")
+            }
+
+            val usbRoot = java.io.File(tempRoot, "usb").apply { mkdirs() }
+            // USB Audio DAC (0bda:4014)
+            val usbDac = java.io.File(usbRoot, "1-1").apply { mkdirs() }
+            java.io.File(usbDac, "idVendor").writeText("0bda\n")
+            java.io.File(usbDac, "idProduct").writeText("4014\n")
+            java.io.File(usbDac, "speed").writeText("480\n")
+            java.io.File(usbDac, "version").writeText(" 2.00\n")
+            java.io.File(usbDac, "product").writeText("USB Audio DAC\n")
+            java.io.File(usbDac, "removable").writeText("removable\n")
+            val usbDacIf = java.io.File(usbRoot, "1-1:1.0").apply { mkdirs() }
+            java.io.File(usbDacIf, "bInterfaceClass").writeText("01\n")
+            java.io.File(usbDacIf, "bNumEndpoints").writeText("02\n")
+
+            // External UVC Camera + HID receiver (046d:085e)
+            val usbCam = java.io.File(usbRoot, "1-2").apply { mkdirs() }
+            java.io.File(usbCam, "idVendor").writeText("046d\n")
+            java.io.File(usbCam, "idProduct").writeText("085e\n")
+            java.io.File(usbCam, "speed").writeText("5000\n")
+            java.io.File(usbCam, "version").writeText(" 3.10\n")
+            java.io.File(usbCam, "product").writeText("BRIO 4K Stream Edition\n")
+            java.io.File(usbCam, "removable").writeText("removable\n")
+            val usbCamIf = java.io.File(usbRoot, "1-2:1.0").apply { mkdirs() }
+            java.io.File(usbCamIf, "bInterfaceClass").writeText("0e\n")
+            java.io.File(usbCamIf, "bNumEndpoints").writeText("01\n")
+
+            // External USB Mass Storage (0781:5583)
+            val usbSto = java.io.File(usbRoot, "1-3").apply { mkdirs() }
+            java.io.File(usbSto, "idVendor").writeText("0781\n")
+            java.io.File(usbSto, "idProduct").writeText("5583\n")
+            java.io.File(usbSto, "speed").writeText("10000\n")
+            java.io.File(usbSto, "version").writeText(" 3.20\n")
+            java.io.File(usbSto, "product").writeText("Extreme SSD\n")
+            java.io.File(usbSto, "removable").writeText("removable\n")
+            val usbStoIf = java.io.File(usbRoot, "1-3:1.0").apply { mkdirs() }
+            java.io.File(usbStoIf, "bInterfaceClass").writeText("08\n")
+            java.io.File(usbStoIf, "bNumEndpoints").writeText("02\n")
+
+            // 3. Populate InputManager, CameraManager, StorageManager, ActivityManager, and Battery sticky intent
+            val im = app.getSystemService(android.hardware.input.InputManager::class.java)
+            val shadowIm = org.robolectric.Shadows.shadowOf(im)
+            val inputDev = org.robolectric.shadows.ShadowInputDevice.makeInputDeviceNamed("BRIO HID")
+            org.robolectric.util.ReflectionHelpers.setField(inputDev, "mId", 42)
+            org.robolectric.util.ReflectionHelpers.setField(inputDev, "mVendorId", 0x046d)
+            org.robolectric.util.ReflectionHelpers.setField(inputDev, "mProductId", 0x085e)
+            org.robolectric.util.ReflectionHelpers.setField(inputDev, "mIsExternal", true)
+            org.robolectric.util.ReflectionHelpers.setField(
+                inputDev,
+                "mSources",
+                android.view.InputDevice.SOURCE_KEYBOARD or
+                    android.view.InputDevice.SOURCE_MOUSE or
+                    android.view.InputDevice.SOURCE_TOUCHPAD or
+                    android.view.InputDevice.SOURCE_STYLUS or
+                    android.view.InputDevice.SOURCE_GAMEPAD,
+            )
+            org.robolectric.util.ReflectionHelpers.setField(
+                inputDev,
+                "mKeyboardType",
+                android.view.InputDevice.KEYBOARD_TYPE_ALPHABETIC,
+            )
+            shadowIm.addInputDevice(inputDev)
+
+            val camMgr = app.getSystemService(android.hardware.camera2.CameraManager::class.java)
+            val shadowCam = org.robolectric.Shadows.shadowOf(camMgr)
+            val camChars = org.robolectric.shadows.ShadowCameraCharacteristics.newCameraCharacteristics()
+            org.robolectric.Shadows.shadowOf(camChars).set(
+                android.hardware.camera2.CameraCharacteristics.LENS_FACING,
+                android.hardware.camera2.CameraCharacteristics.LENS_FACING_EXTERNAL,
+            )
+            shadowCam.addCamera("ext_uvc_0", camChars)
+
+            val sm = app.getSystemService(android.os.storage.StorageManager::class.java)
+            val shadowSm = org.robolectric.Shadows.shadowOf(sm)
+            val remVol = org.robolectric.shadows.StorageVolumeBuilder(
+                "usb_vol_1",
+                tempRoot,
+                "Extreme SSD",
+                android.os.Process.myUserHandle(),
+                android.os.Environment.MEDIA_MOUNTED,
+            ).setIsRemovable(true).build()
+            shadowSm.addStorageVolume(remVol)
+
+            val am = app.getSystemService(android.app.ActivityManager::class.java)
+            val shadowAm = org.robolectric.Shadows.shadowOf(am)
+            val nowWallMs = System.currentTimeMillis()
+            shadowAm.addApplicationExitInfo(
+                org.robolectric.shadows.ShadowActivityManager.ApplicationExitInfoBuilder.newBuilder()
+                    .setProcessName("com.heavy.game")
+                    .setPid(4120)
+                    .setReason(android.app.ApplicationExitInfo.REASON_LOW_MEMORY)
+                    .setPss(512_000L)
+                    .setTimestamp(nowWallMs - 2_000L)
+                    .build(),
+            )
+            shadowAm.addApplicationExitInfo(
+                org.robolectric.shadows.ShadowActivityManager.ApplicationExitInfoBuilder.newBuilder()
+                    .setProcessName("com.bg.sync")
+                    .setPid(4121)
+                    .setReason(android.app.ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE)
+                    .setPss(128_000L)
+                    .setTimestamp(nowWallMs - 3_000L)
+                    .build(),
+            )
+            shadowAm.addApplicationExitInfo(
+                org.robolectric.shadows.ShadowActivityManager.ApplicationExitInfoBuilder.newBuilder()
+                    .setProcessName("com.normal.exit")
+                    .setPid(4122)
+                    .setReason(android.app.ApplicationExitInfo.REASON_OTHER)
+                    .setTimestamp(nowWallMs - 1_000L)
+                    .build(),
+            )
+            shadowAm.addApplicationExitInfo(
+                org.robolectric.shadows.ShadowActivityManager.ApplicationExitInfoBuilder.newBuilder()
+                    .setProcessName("com.old.kill")
+                    .setPid(4100)
+                    .setReason(android.app.ApplicationExitInfo.REASON_LOW_MEMORY)
+                    .setTimestamp(1_000L)
+                    .build(),
+            )
+
+            app.sendStickyBroadcast(
+                android.content.Intent(android.content.Intent.ACTION_BATTERY_CHANGED).apply {
+                    putExtra(android.os.BatteryManager.EXTRA_STATUS, android.os.BatteryManager.BATTERY_STATUS_DISCHARGING)
+                    putExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0)
+                    putExtra(android.os.BatteryManager.EXTRA_LEVEL, 45)
+                    putExtra(android.os.BatteryManager.EXTRA_SCALE, 100)
+                    putExtra(android.os.BatteryManager.EXTRA_VOLTAGE, 11_400)
+                    putExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, 325)
+                    putExtra(android.os.BatteryManager.EXTRA_CYCLE_COUNT, 42)
+                    putExtra(android.os.BatteryManager.EXTRA_HEALTH, android.os.BatteryManager.BATTERY_HEALTH_OVERHEAT)
+                },
+            )
+
+            // 4. Configure BluetoothAdapter, bonded devices, and AudioManager outputs / modes
+            val btMgr = app.getSystemService(android.bluetooth.BluetoothManager::class.java)
+            val adapter = btMgr.adapter
+            val shadowAdapter = org.robolectric.Shadows.shadowOf(adapter)
+            shadowAdapter.setEnabled(true)
+            shadowAdapter.setIsLe2MPhySupported(true)
+            shadowAdapter.setIsLeCodedPhySupported(true)
+            shadowAdapter.setLeAudioSupported(10)
+
+            val btAudioDev = org.robolectric.shadows.ShadowBluetoothDevice.newInstance("AA:BB:CC:DD:EE:01").also { d ->
+                org.robolectric.Shadows.shadowOf(d).apply {
+                    setName("Sony WH-1000XM5")
+                    setType(android.bluetooth.BluetoothDevice.DEVICE_TYPE_DUAL)
+                    setConnected(true)
+                    setBatteryLevel(85)
+                    runCatching {
+                        val btClass = org.robolectric.util.ReflectionHelpers.callConstructor(
+                            android.bluetooth.BluetoothClass::class.java,
+                            org.robolectric.util.ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, 0x240404),
+                        )
+                        setBluetoothClass(btClass)
+                    }
+                }
+            }
+            val btBleDev = org.robolectric.shadows.ShadowBluetoothDevice.newInstance("AA:BB:CC:DD:EE:02").also { d ->
+                org.robolectric.Shadows.shadowOf(d).apply {
+                    setName("MX Master 3S")
+                    setType(android.bluetooth.BluetoothDevice.DEVICE_TYPE_LE)
+                    setConnected(true)
+                    setBatteryLevel(90)
+                }
+            }
+            val btStandbyDev = org.robolectric.shadows.ShadowBluetoothDevice.newInstance("AA:BB:CC:DD:EE:03").also { d ->
+                org.robolectric.Shadows.shadowOf(d).apply {
+                    setName("Pixel Buds Pro")
+                    setType(android.bluetooth.BluetoothDevice.DEVICE_TYPE_CLASSIC)
+                    setConnected(false)
+                }
+            }
+            val btBlankDev = org.robolectric.shadows.ShadowBluetoothDevice.newInstance("AA:BB:CC:DD:EE:04").also { d ->
+                org.robolectric.Shadows.shadowOf(d).setName("")
+            }
+            shadowAdapter.setBondedDevices(setOf(btAudioDev, btBleDev, btStandbyDev, btBlankDev))
+
+            val audioMgr = app.getSystemService(android.media.AudioManager::class.java)
+            val shadowAudio = org.robolectric.Shadows.shadowOf(audioMgr)
+            val a2dpOut = org.robolectric.shadows.AudioDeviceInfoBuilder.newBuilder()
+                .setType(android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP)
+                .build()
+            val scoOut = org.robolectric.shadows.AudioDeviceInfoBuilder.newBuilder()
+                .setType(android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO)
+                .build()
+            val bleOut = org.robolectric.shadows.AudioDeviceInfoBuilder.newBuilder()
+                .setType(android.media.AudioDeviceInfo.TYPE_BLE_HEADSET)
+                .build()
+            val usbHeadsetOut = org.robolectric.shadows.AudioDeviceInfoBuilder.newBuilder()
+                .setType(android.media.AudioDeviceInfo.TYPE_USB_HEADSET)
+                .build()
+            val hdmiOut = org.robolectric.shadows.AudioDeviceInfoBuilder.newBuilder()
+                .setType(android.media.AudioDeviceInfo.TYPE_HDMI)
+                .build()
+            val wiredOut = org.robolectric.shadows.AudioDeviceInfoBuilder.newBuilder()
+                .setType(android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES)
+                .build()
+            shadowAudio.setOutputDevices(listOf(a2dpOut, usbHeadsetOut))
+
+            // 5. Exercise BLUETOOTH_CONNECT denied (adapter enabled & disabled), then granted with A2DP logcat codec fallback
+            shadowApp.denyPermissions(android.Manifest.permission.BLUETOOTH_CONNECT)
+            val collectorI915 = com.droid.corewatch.data.TelemetryCollector(
+                context = app,
+                drmSysfsRoot = drmI915,
+                accelSysfsRoot = accelRoot,
+                procPsiMemoryFile = psiFile,
+                usbSysfsRoot = usbRoot,
+            )
+            val deniedBtOn = collectorI915.sample(CaffeineConfig(), nowElapsedMs = 1_000L)
+            assertEquals("On (Grant Permission)", deniedBtOn.bluetooth.connectionStateLabel)
+            assertFalse(deniedBtOn.battery.isCharging)
+            assertEquals(45, deniedBtOn.battery.levelPercent)
+            assertTrue(deniedBtOn.lmkd.killCount5m >= 2)
+            assertEquals(4.25f, deniedBtOn.lmkd.psiMemorySomeAvg10, 0.01f)
+
+            shadowAdapter.setEnabled(false)
+            rc6File.writeText("1600\n")
+            val deniedBtOff = collectorI915.sample(CaffeineConfig(), nowElapsedMs = 2_000L)
+            assertEquals("Off", deniedBtOff.bluetooth.connectionStateLabel)
+            assertEquals(0.40f, deniedBtOff.gpu.utilizationFraction, 0.02f)
+
+            // Grant BLUETOOTH_CONNECT, DUMP, READ_LOGS, ACCESS_FINE_LOCATION, NEARBY_WIFI_DEVICES
+            shadowAdapter.setEnabled(true)
+            shadowApp.grantPermissions(
+                android.Manifest.permission.BLUETOOTH_CONNECT,
+                android.Manifest.permission.DUMP,
+                android.Manifest.permission.READ_LOGS,
+                android.Manifest.permission.ACCESS_FINE_LOCATION,
+                android.Manifest.permission.NEARBY_WIFI_DEVICES,
+                android.Manifest.permission.PACKAGE_USAGE_STATS,
+            )
+            val extDisplayId = org.robolectric.shadows.ShadowDisplayManager.addDisplay("w1920dp-h1080dp")
+            org.robolectric.util.ReflectionHelpers.setField(collectorI915, "btStackRefreshInFlight", true)
+            org.robolectric.util.ReflectionHelpers.setField(collectorI915, "usbDumpsysRefreshInFlight", true)
+            // Sample once with empty logcat text while A2DP is active so readSystemProperty fallback executes
+            collectorI915.sample(CaffeineConfig(), nowElapsedMs = 5_000L)
+            org.robolectric.util.ReflectionHelpers.setField(
+                collectorI915,
+                "cachedBtLogcatText",
+                "mCodecConfig: {codecName:LDAC,mCodecType:4,mCodecPriority:1000,mSampleRate:0x4(96000),mBitsPerSample:0x4(24),mChannelMode:0x2(STEREO),mCodecSpecific1:1000}\n" +
+                    "mCodecsSelectableCapabilities: [{codecName:LDAC},{codecName:AAC},{codecName:SBC}]",
+            )
+            org.robolectric.util.ReflectionHelpers.setField(
+                collectorI915,
+                "cachedUsbDumpsysText",
+                """
+                port_manager={
+                  usb_ports=[
+                    {
+                      port={
+                        id=port0
+                        supported_modes=dual
+                      }
+                      status={
+                        connected=true
+                        current_mode=dfp
+                        power_role=source
+                        data_role=host
+                        usb_data_status=enabled
+                      }
+                      connected_at_millis=1000
+                    }
+                  ]
+                }
+                """.trimIndent(),
+            )
+            collectorI915.invalidateUsbCaches()
+            com.droid.corewatch.data.AccelIoctlBridge.testDrmConnectorsProvider = {
+                "eDP-1|1|1|10|300x190;DP-1|1|0|12|600x340"
+            }
+            val grantedSnap1 = collectorI915.sample(CaffeineConfig(), nowElapsedMs = 6_000L)
+            assertTrue(grantedSnap1.displays.size >= 2)
+            org.robolectric.shadows.ShadowDisplayManager.removeDisplay(extDisplayId)
+            assertTrue(grantedSnap1.bluetooth.hasConnectPermission)
+            assertEquals("LDAC", grantedSnap1.bluetooth.audioCodec.activeCodecName)
+            assertTrue(grantedSnap1.bluetooth.peripherals.isNotEmpty())
+            assertTrue(grantedSnap1.usbPeripherals.hasTypeCPorts)
+            assertTrue(grantedSnap1.usbPeripherals.nodes.any { it.correlatedInfo.cameraSummary != null })
+            assertTrue(grantedSnap1.usbPeripherals.nodes.any { it.correlatedInfo.storageVolumeSummary != null })
+            assertTrue(grantedSnap1.usbPeripherals.nodes.any { it.correlatedInfo.audioCapabilitiesSummary != null })
+            assertTrue(grantedSnap1.usbPeripherals.nodes.any { it.correlatedInfo.inputSourcesSummary != null })
+
+            // Sample again within cache windows to cover A2DP codec cache hit, Wi-Fi capabilities cache hit, and USB cache hit
+            val grantedSnap2 = collectorI915.sample(CaffeineConfig(), nowElapsedMs = 6_500L)
+            assertEquals("LDAC", grantedSnap2.bluetooth.audioCodec.activeCodecName)
+
+            // Cycle AudioManager modes and output devices (SCO, BLE, HDMI, Wired) +Xe GPU throttle reasons
+            val collectorXe = com.droid.corewatch.data.TelemetryCollector(
+                context = app,
+                drmSysfsRoot = drmXe,
+                accelSysfsRoot = accelRoot,
+                usbSysfsRoot = usbRoot,
+            )
+            audioMgr.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
+            shadowAudio.setOutputDevices(listOf(scoOut))
+            shadowApp.denyPermissions(android.Manifest.permission.DUMP)
+            val scoSnap = collectorXe.sample(CaffeineConfig(), nowElapsedMs = 10_000L)
+            assertTrue(scoSnap.bluetooth.audioCodec.communicationModeLabel.contains("VoIP"))
+            assertTrue(scoSnap.gpu.isThrottled)
+
+            audioMgr.mode = android.media.AudioManager.MODE_IN_CALL
+            shadowAudio.setOutputDevices(listOf(bleOut))
+            val bleSnap = collectorXe.sample(CaffeineConfig(), nowElapsedMs = 14_000L)
+            assertEquals("Voice Call", bleSnap.bluetooth.audioCodec.communicationModeLabel)
+
+            audioMgr.mode = android.media.AudioManager.MODE_RINGTONE
+            shadowAudio.setOutputDevices(listOf(hdmiOut))
+            val hdmiSnap = collectorXe.sample(CaffeineConfig(), nowElapsedMs = 18_000L)
+            assertEquals("Ringtone", hdmiSnap.bluetooth.audioCodec.communicationModeLabel)
+
+            audioMgr.mode = android.media.AudioManager.MODE_NORMAL
+            shadowAudio.setOutputDevices(listOf(wiredOut))
+            collectorXe.resetWindowCounters()
+            collectorXe.invalidateGraphicsStatsCache()
+
+            // 6. Exercise triggerActiveWifiScan states and TelephonyManager regulatory fallback
+            val wm = app.getSystemService(android.net.wifi.WifiManager::class.java)
+            val lm = app.getSystemService(android.location.LocationManager::class.java)
+            val shadowLm = org.robolectric.Shadows.shadowOf(lm)
+            @Suppress("DEPRECATION")
+            wm.isWifiEnabled = false
+            assertFalse(collectorXe.triggerActiveWifiScan().first)
+            @Suppress("DEPRECATION")
+            wm.isWifiEnabled = true
+            shadowLm.setLocationEnabled(false)
+            assertFalse(collectorXe.triggerActiveWifiScan().first)
+            shadowLm.setLocationEnabled(true)
+            shadowApp.denyPermissions(
+                android.Manifest.permission.ACCESS_FINE_LOCATION,
+                android.Manifest.permission.ACCESS_COARSE_LOCATION,
+            )
+            assertFalse(collectorXe.triggerActiveWifiScan().first)
+            shadowApp.grantPermissions(android.Manifest.permission.ACCESS_FINE_LOCATION)
+            collectorXe.triggerActiveWifiScan()
+
+            val tm = app.getSystemService(android.telephony.TelephonyManager::class.java)
+            org.robolectric.Shadows.shadowOf(tm).apply {
+                setNetworkCountryIso("gb")
+                setSimCountryIso("jp")
+            }
+            collectorXe.invalidateWifiCaches()
+            val gbSnap = collectorXe.sample(CaffeineConfig(), nowElapsedMs = 25_000L)
+            assertEquals("GB", gbSnap.wifi.capabilities.countryCode)
+
+            org.robolectric.Shadows.shadowOf(tm).setNetworkCountryIso("")
+            collectorXe.invalidateWifiCaches()
+            val jpSnap = collectorXe.sample(CaffeineConfig(), nowElapsedMs = 31_000L)
+            assertEquals("JP", jpSnap.wifi.capabilities.countryCode)
+
+            // 7. Exercise SDK 26 legacy fallback branches inside the loaded sandbox
+            val savedSdk = android.os.Build.VERSION.SDK_INT
+            try {
+                org.robolectric.util.ReflectionHelpers.setStaticField(android.os.Build.VERSION::class.java, "SDK_INT", 26)
+                collectorXe.invalidateWifiCaches()
+                val sdk26Snap = collectorXe.sample(CaffeineConfig(), nowElapsedMs = 40_000L)
+                assertTrue(sdk26Snap.osVersion.contains("26"))
+            } finally {
+                org.robolectric.util.ReflectionHelpers.setStaticField(android.os.Build.VERSION::class.java, "SDK_INT", savedSdk)
+            }
+        } finally {
+            com.droid.corewatch.data.AccelIoctlBridge.testDrmConnectorsProvider = null
+            tempRoot.deleteRecursively()
+        }
+    }
 }
