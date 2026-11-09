@@ -48,11 +48,17 @@ import android.util.DisplayMetrics
 import android.view.InputDevice
 import androidx.core.content.ContextCompat
 import java.io.File
+import java.io.IOException
+import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Method
 import java.net.Inet4Address
 import java.net.Inet6Address
-import java.net.NetworkInterface
+import java.nio.file.AccessDeniedException
+import java.nio.file.Files
+import java.nio.file.NoSuchFileException
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.roundToInt
 
 /**
  * Unprivileged hardware telemetry collector reading Android system services (`PowerManager`,
@@ -71,8 +77,36 @@ class TelemetryCollector(
     private val procCpuInfoFile: File = File("/proc/cpuinfo"),
     private val procPsiMemoryFile: File = File("/proc/pressure/memory"),
     private val usbSysfsRoot: File = File("/sys/bus/usb/devices"),
+    private val netSysfsRoot: File = File("/sys/class/net"),
     val vrrAndFrameTracker: VrrAndFrameWindowTracker = VrrAndFrameWindowTracker(),
 ) {
+    private enum class GpuSysfsBackend {
+        XE,
+        I915,
+        KGSL,
+        NONE,
+    }
+
+    internal interface A2dpProxyAdapter {
+        fun connectedDevices(): List<BluetoothDevice>
+        fun queryCodecStatus(device: BluetoothDevice): CachedA2dpCodecInfo?
+    }
+
+    internal data class CachedA2dpCodecInfo(
+        val codecType: Int,
+        val sampleRate: Int,
+        val bitsPerSample: Int,
+        val channelMode: Int,
+        val codecSpecific1: Long,
+        val selectableSummary: String?,
+    )
+
+    private val unreadablePaths: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    private val gpuActualFreqRing = FloatRingBuffer(60)
+    private var cachedGpuBackend: GpuSysfsBackend? = null
+    private var cachedXeThrottleReasonFiles: List<String>? = null
+    private var cachedAccelDevNode: String? = null
+    private var drmConnectorsUnreadable: Boolean = false
     private val totalNetRateTracker = InterfaceRateTracker()
     private val wifiRateTracker = InterfaceRateTracker()
     private val ethernetRateTracker = InterfaceRateTracker()
@@ -82,7 +116,6 @@ class TelemetryCollector(
     private var latestWifiTransportInfo: WifiInfo? = null
     private val latestEthernetNetworks: MutableSet<Network> = ConcurrentHashMap.newKeySet()
     private var networkCallbacksRegistered: Boolean = false
-    private var networkInterfaceAccessible: Boolean? = null
     private val isEmulatorBuild: Boolean by lazy {
         val hw = (Build.HARDWARE ?: "").lowercase(java.util.Locale.US)
         val fp = (Build.FINGERPRINT ?: "").lowercase(java.util.Locale.US)
@@ -114,6 +147,15 @@ class TelemetryCollector(
     @Volatile
     private var a2dpProxy: BluetoothA2dp? = null
     private var a2dpProxyRequested: Boolean = false
+    private var a2dpReceiverRegistered: Boolean = false
+    @Volatile
+    private var a2dpCodecStatusDenied: Boolean = false
+    @Volatile
+    private var a2dpCodecDirty: Boolean = true
+    @Volatile
+    private var lastProbedA2dpDevice: BluetoothDevice? = null
+    @Volatile
+    private var cachedA2dpCodecInfo: CachedA2dpCodecInfo? = null
     @Volatile
     private var lastBtStackSampleElapsedMs: Long = 0L
     @Volatile
@@ -171,9 +213,21 @@ class TelemetryCollector(
     @Volatile
     var lastTrimLevelLabel: String = "Normal"
 
+    internal var displayVsyncRateExtractor: ((android.view.Display.Mode) -> Float?)? = null
+    internal var displayArrSupportExtractor: ((android.view.Display) -> Boolean?)? = null
+    internal var testA2dpProxyAdapter: A2dpProxyAdapter? = null
+    internal var fileOpenObserverForTesting: ((String) -> Unit)? = null
+
+    internal fun isPathMarkedUnreadable(file: File): Boolean = file.path in unreadablePaths
+
+    internal fun notifyA2dpConnectionChangedForTesting() {
+        onA2dpConnectionOrProxyChanged()
+    }
+
     fun resetWindowCounters() {
         gfxStatsGeneration += 1L
         lastGfxStatsSampleElapsedMs = 0L
+        gpuActualFreqRing.clear()
         vrrAndFrameTracker.reset()
         usbHotplugTracker.reset()
         invalidateWifiCaches()
@@ -194,6 +248,12 @@ class TelemetryCollector(
         lastUsbSampleElapsedMs = 0L
         lastUsbDumpsysSampleElapsedMs = 0L
         usbTopologyDirty = true
+    }
+
+    fun invalidateBluetoothCaches() {
+        a2dpCodecStatusDenied = false
+        a2dpCodecDirty = true
+        lastBtStackSampleElapsedMs = 0L
     }
 
     @Suppress("DEPRECATION")
@@ -353,7 +413,8 @@ class TelemetryCollector(
                         emptyList()
                     } else {
                         (0..15).mapNotNull { stateIdx ->
-                            File(idleDir, "state$stateIdx/time").takeIf { it.isFile && it.canRead() }
+                            val candidate = File(idleDir, "state$stateIdx/time")
+                            if (readSmallFile(candidate) != null) candidate else null
                         }
                     }
                 }
@@ -424,14 +485,13 @@ class TelemetryCollector(
         val zones = ArrayList<Pair<String, String>>()
         if (thermalSysfsReadable != false) {
             val tz0 = File(thermalSysfsRoot, "thermal_zone0")
-            val canReadTz0 = tz0.isDirectory && File(tz0, "temp").canRead()
+            val canReadTz0 = readSmallFile(File(tz0, "temp")) != null
             thermalSysfsReadable = canReadTz0
             if (canReadTz0) {
                 for (i in 0..31) {
                     val dir = File(thermalSysfsRoot, "thermal_zone$i")
-                    if (!dir.isDirectory) continue
-                    val type = readSmallFile(File(dir, "type")) ?: "thermal_zone$i"
                     val temp = readSmallFile(File(dir, "temp")) ?: continue
+                    val type = readSmallFile(File(dir, "type")) ?: "thermal_zone$i"
                     zones += type to temp
                 }
             }
@@ -439,13 +499,12 @@ class TelemetryCollector(
         val hwmons = ArrayList<Triple<String, String, String>>()
         if (hwmonSysfsReadable != false) {
             val hw0 = File(hwmonSysfsRoot, "hwmon0")
-            val canReadHw0 = hw0.isDirectory && File(hw0, "name").canRead()
+            val canReadHw0 = readSmallFile(File(hw0, "name")) != null
             hwmonSysfsReadable = canReadHw0
             if (canReadHw0) {
                 for (i in 0..15) {
                     val dir = File(hwmonSysfsRoot, "hwmon$i")
-                    if (!dir.isDirectory) continue
-                    val chipName = readSmallFile(File(dir, "name")) ?: "hwmon$i"
+                    val chipName = readSmallFile(File(dir, "name")) ?: continue
                     for (t in 1..8) {
                         val input = readSmallFile(File(dir, "temp${t}_input")) ?: continue
                         val label = readSmallFile(File(dir, "temp${t}_label")) ?: "Sensor $t"
@@ -594,7 +653,17 @@ class TelemetryCollector(
 
     @Suppress("DEPRECATION")
     private fun readDisplays(dm: DisplayManager?, nowElapsedMs: Long): List<DisplaySpec> {
-        val drmConnectors = runCatching { AccelIoctlBridge.queryDrmConnectors("/dev/dri/card0") }.getOrDefault(emptyList())
+        val drmConnectors = if (AccelIoctlBridge.testDrmConnectorsProvider != null) {
+            runCatching { AccelIoctlBridge.queryDrmConnectors("/dev/dri/card0") }.getOrDefault(emptyList())
+        } else if (!drmConnectorsUnreadable) {
+            val list = runCatching { AccelIoctlBridge.queryDrmConnectors("/dev/dri/card0") }.getOrDefault(emptyList())
+            if (list.isEmpty() && AccelIoctlBridge.queryDrmVersion("/dev/dri/card0") == null) {
+                drmConnectorsUnreadable = true
+            }
+            list
+        } else {
+            emptyList()
+        }
         val displays = runCatching { dm?.displays }.getOrNull().orEmpty()
         if (displays.isEmpty()) {
             val eDpConn = drmConnectors.firstOrNull()
@@ -638,19 +707,27 @@ class TelemetryCollector(
             val h = activeMode?.physicalHeight?.takeIf { it > 0 } ?: metrics.heightPixels.takeIf { it > 0 } ?: 1080
             val modeHz = activeMode?.refreshRate?.takeIf { it > 0f } ?: d.refreshRate.takeIf { it > 0f } ?: 60f
             val renderHz = runCatching { d.refreshRate.takeIf { it > 0f } }.getOrNull() ?: modeHz
-            val vsyncHz = runCatching {
-                if (activeMode != null) {
-                    val m = activeMode.javaClass.getMethod("getVsyncRate")
-                    (m.invoke(activeMode) as? Float)?.takeIf { it > 0f }
+            val vsyncHz: Float? = if (activeMode != null) {
+                val extractor = displayVsyncRateExtractor
+                if (extractor != null) {
+                    runCatching { extractor(activeMode)?.takeIf { it.isFinite() && it > 0f } }.getOrNull()
                 } else {
-                    null
+                    invokeDisplayModeVsyncRate(activeMode)
                 }
-            }.getOrNull() ?: modeHz
+            } else {
+                null
+            }
             val supportedRefreshSteps = runCatching { d.supportedRefreshRates }.getOrNull() ?: FloatArray(0)
-            val hasArr = runCatching {
-                val method = d.javaClass.getMethod("hasArrSupport")
-                (method.invoke(d) as? Boolean) ?: false
-            }.getOrDefault(false)
+            val arrResult: Boolean? = run {
+                val extractor = displayArrSupportExtractor
+                if (extractor != null) {
+                    runCatching { extractor(d) }.getOrNull()
+                } else {
+                    invokeDisplayHasArrSupport(d)
+                }
+            }
+            val hasArr = arrResult ?: false
+            val arrAvailable = arrResult != null
             val panelModel = runCatching {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     val info = d.deviceProductInfo
@@ -714,6 +791,7 @@ class TelemetryCollector(
                 vrrCapable = drmConn?.vrrCapable ?: false,
                 vrrKernelEnabled = drmConn?.vrrKernelEnabled ?: false,
                 hasAndroidArr = hasArr,
+                androidArrAvailable = arrAvailable,
                 maxBpc = drmConn?.maxBpc ?: 8,
                 panelModel = panelModel,
                 drmConnectorName = drmConn?.connectorName,
@@ -825,6 +903,7 @@ class TelemetryCollector(
         isConnected: Boolean,
     ): LinkMetadata {
         val iface = lp?.interfaceName?.takeIf { it.isNotBlank() } ?: fallbackIface
+        val cleanIface = iface.trim().filter { it.isLetterOrDigit() || it == '_' || it == '-' || it == '.' }
         val lpMtu = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             runCatching { lp?.mtu ?: 0 }.getOrDefault(0)
         } else {
@@ -832,18 +911,13 @@ class TelemetryCollector(
         }
         val mtu = when {
             lpMtu > 0 -> lpMtu
-            isConnected && iface.isNotBlank() && iface != "None" && networkInterfaceAccessible != false -> {
-                val niMtu = try {
-                    val m = NetworkInterface.getByName(iface)?.mtu ?: 0
-                    networkInterfaceAccessible = true
-                    m
-                } catch (_: Throwable) {
-                    networkInterfaceAccessible = false
-                    0
-                }
-                if (niMtu > 0) niMtu else 1500
+            isConnected && cleanIface.isNotEmpty() && !cleanIface.equals("None", ignoreCase = true) -> {
+                readSmallFile(File(netSysfsRoot, "$cleanIface/mtu"))
+                    ?.toIntOrNull()
+                    ?.takeIf { it in 68..65_535 }
+                    ?: 0
             }
-            else -> 1500
+            else -> 0
         }
         val addrs = runCatching { lp?.linkAddresses.orEmpty() }.getOrDefault(emptyList())
         val hasIpv4 = addrs.any { it?.address is Inet4Address }
@@ -870,10 +944,14 @@ class TelemetryCollector(
 
     private fun readWifiDoubleField(wifiInfo: WifiInfo?, getterName: String): Double {
         if (wifiInfo == null) return 0.0
-        return runCatching {
-            val method = wifiInfo.javaClass.getMethod(getterName)
+        val cacheKey = "WifiInfo.$getterName"
+        val method = resolveMethodOnce(cacheKey, wifiInfo.javaClass, getterName) ?: return 0.0
+        return try {
             ((method.invoke(wifiInfo) as? Number)?.toDouble() ?: 0.0).coerceAtLeast(0.0)
-        }.getOrDefault(0.0)
+        } catch (t: Throwable) {
+            if (isPermanentReflectionDenial(t)) markMethodUnavailable(cacheKey)
+            0.0
+        }
     }
 
     @Suppress("DEPRECATION")
@@ -1255,7 +1333,7 @@ class TelemetryCollector(
         val cleanIface = ifaceName.trim().filter { it.isLetterOrDigit() || it == '_' || it == '-' }.ifEmpty { "wlan0" }
         val candidates = if (cleanIface == "wlan0") listOf("wlan0") else listOf(cleanIface, "wlan0")
         for (iface in candidates) {
-            val link = File("/sys/class/net/$iface/device/driver")
+            val link = File(netSysfsRoot, "$iface/device/driver")
             val resolved = runCatching {
                 if (link.exists()) link.canonicalFile.name else ""
             }.getOrDefault("")
@@ -1286,10 +1364,18 @@ class TelemetryCollector(
         cachedDumpsysWifiMeta.countryAndSource?.let { return it }
 
         if (wm != null && hasLocationPerm) {
-            val sysCountry = runCatching {
-                val method = wm.javaClass.getMethod("getCountryCode")
-                (method.invoke(wm) as? String)?.trim()?.uppercase(java.util.Locale.US)
-            }.getOrNull()
+            val cacheKey = "WifiManager.getCountryCode"
+            val method = resolveMethodOnce(cacheKey, wm.javaClass, "getCountryCode")
+            val sysCountry = if (method != null) {
+                try {
+                    (method.invoke(wm) as? String)?.trim()?.uppercase(java.util.Locale.US)
+                } catch (t: Throwable) {
+                    if (isPermanentReflectionDenial(t)) markMethodUnavailable(cacheKey)
+                    null
+                }
+            } else {
+                null
+            }
             if (WirelessTelemetryParsers.isValidRegulatoryCountryCode(sysCountry)) {
                 return sysCountry!! to "WifiManager RegDomain"
             }
@@ -1944,7 +2030,8 @@ class TelemetryCollector(
             )
         }
 
-        // Bind A2DP profile proxy lazily to inspect negotiated BluetoothCodecConfig
+        // Bind A2DP profile proxy lazily and listen for A2DP connection/codec state changes
+        ensureA2dpBroadcastReceiverRegistered()
         if (!a2dpProxyRequested && isEnabled) {
             a2dpProxyRequested = true
             runCatching {
@@ -1954,12 +2041,15 @@ class TelemetryCollector(
                         override fun onServiceConnected(profile: Int, proxy: BluetoothProfile?) {
                             if (profile == BluetoothProfile.A2DP) {
                                 a2dpProxy = proxy as? BluetoothA2dp
+                                onA2dpConnectionOrProxyChanged()
                             }
                         }
 
                         override fun onServiceDisconnected(profile: Int) {
                             if (profile == BluetoothProfile.A2DP) {
                                 a2dpProxy = null
+                                cachedA2dpCodecInfo = null
+                                lastProbedA2dpDevice = null
                             }
                         }
                     },
@@ -1968,43 +2058,61 @@ class TelemetryCollector(
             }
         }
 
-        val maxAudio = runCatching {
-            val m = adapter.javaClass.getMethod("getMaxConnectedAudioDevices")
-            ((m.invoke(adapter) as? Number)?.toInt() ?: 1).coerceAtLeast(1)
-        }.getOrDefault(1)
+        val maxAudio = run {
+            val cacheKey = "BluetoothAdapter.getMaxConnectedAudioDevices"
+            val m = resolveMethodOnce(cacheKey, adapter.javaClass, "getMaxConnectedAudioDevices")
+            if (m != null) {
+                try {
+                    ((m.invoke(adapter) as? Number)?.toInt() ?: 1).coerceAtLeast(1)
+                } catch (t: Throwable) {
+                    if (isPermanentReflectionDenial(t)) markMethodUnavailable(cacheKey)
+                    1
+                }
+            } else {
+                1
+            }
+        }
 
-        // Inspect A2DP codec status if an A2DP proxy is available
-        val proxy = a2dpProxy
-        if (proxy != null) {
-            runCatching {
-                val activeDevice = proxy.connectedDevices.firstOrNull()
-                val getCodecStatusMethod = proxy.javaClass.getMethod("getCodecStatus", BluetoothDevice::class.java)
-                val statusObj = getCodecStatusMethod.invoke(proxy, activeDevice)
-                if (statusObj != null) {
-                    val cfgObj = statusObj.javaClass.getMethod("getCodecConfig").invoke(statusObj)
-                    if (cfgObj != null) {
-                        val cType = (cfgObj.javaClass.getMethod("getCodecType").invoke(cfgObj) as? Number)?.toInt() ?: -1
-                        val sRate = (cfgObj.javaClass.getMethod("getSampleRate").invoke(cfgObj) as? Number)?.toInt() ?: 0
-                        val bSample = (cfgObj.javaClass.getMethod("getBitsPerSample").invoke(cfgObj) as? Number)?.toInt() ?: 0
-                        val chMode = (cfgObj.javaClass.getMethod("getChannelMode").invoke(cfgObj) as? Number)?.toInt() ?: 0
-                        val spec1 = (cfgObj.javaClass.getMethod("getCodecSpecific1").invoke(cfgObj) as? Number)?.toLong() ?: 0L
-                        if (cType >= 0 && (activeDevice != null || btOutput != null)) {
-                            codecName = WirelessTelemetryParsers.formatBluetoothCodecType(cType)
-                            sampleRateStr = WirelessTelemetryParsers.formatBluetoothSampleRate(sRate)
-                            bitsStr = WirelessTelemetryParsers.formatBluetoothBitsPerSample(bSample)
-                            channelStr = WirelessTelemetryParsers.formatBluetoothChannelMode(chMode)
-                            qualityStr = WirelessTelemetryParsers.formatBluetoothBitrateQuality(cType, spec1)
+        // Inspect A2DP codec status only when an A2DP sink is connected (never pass null device)
+        val proxyAdapter: A2dpProxyAdapter? = testA2dpProxyAdapter ?: a2dpProxy?.let { realProxy ->
+            object : A2dpProxyAdapter {
+                override fun connectedDevices(): List<BluetoothDevice> =
+                    runCatching { realProxy.connectedDevices.orEmpty() }.getOrDefault(emptyList())
+
+                override fun queryCodecStatus(device: BluetoothDevice): CachedA2dpCodecInfo? =
+                    probeA2dpCodecStatusOnce(realProxy, device)
+            }
+        }
+        if (proxyAdapter != null) {
+            val activeDevice = runCatching { proxyAdapter.connectedDevices().firstOrNull() }.getOrNull()
+            if (activeDevice == null) {
+                cachedA2dpCodecInfo = null
+                lastProbedA2dpDevice = null
+            } else {
+                if (!a2dpCodecStatusDenied && (a2dpCodecDirty || activeDevice != lastProbedA2dpDevice)) {
+                    a2dpCodecDirty = false
+                    lastProbedA2dpDevice = activeDevice
+                    cachedA2dpCodecInfo = try {
+                        proxyAdapter.queryCodecStatus(activeDevice)
+                    } catch (t: Throwable) {
+                        val root = (t as? InvocationTargetException)?.targetException ?: t
+                        if (root is SecurityException) {
+                            a2dpCodecStatusDenied = true
                         }
+                        null
                     }
-                    val selectableList = statusObj.javaClass.getMethod("getCodecsSelectableCapabilities").invoke(statusObj) as? List<*>
-                    if (!selectableList.isNullOrEmpty()) {
-                        val names = selectableList.mapNotNull { cap ->
-                            val t = (cap?.javaClass?.getMethod("getCodecType")?.invoke(cap) as? Number)?.toInt()
-                            if (t != null && t >= 0) WirelessTelemetryParsers.formatBluetoothCodecType(t) else null
-                        }.distinct()
-                        if (names.isNotEmpty()) {
-                            selectableSummary = names.joinToString(", ")
-                        }
+                }
+                val info = cachedA2dpCodecInfo
+                if (info != null) {
+                    if (info.codecType >= 0) {
+                        codecName = WirelessTelemetryParsers.formatBluetoothCodecType(info.codecType)
+                        sampleRateStr = WirelessTelemetryParsers.formatBluetoothSampleRate(info.sampleRate)
+                        bitsStr = WirelessTelemetryParsers.formatBluetoothBitsPerSample(info.bitsPerSample)
+                        channelStr = WirelessTelemetryParsers.formatBluetoothChannelMode(info.channelMode)
+                        qualityStr = WirelessTelemetryParsers.formatBluetoothBitrateQuality(info.codecType, info.codecSpecific1)
+                    }
+                    if (!info.selectableSummary.isNullOrEmpty()) {
+                        selectableSummary = info.selectableSummary
                     }
                 }
             }
@@ -2021,12 +2129,34 @@ class TelemetryCollector(
         val peripherals = allDevices.mapNotNull { dev ->
             val rawName = runCatching { dev.name }.getOrNull()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
             val cleanName = WirelessTelemetryParsers.sanitizePeripheralDisplayName(rawName)
-            val isConn = gattConnected.contains(dev) || runCatching {
-                (dev.javaClass.getMethod("isConnected").invoke(dev) as? Boolean) ?: false
-            }.getOrDefault(false)
-            val batt = runCatching {
-                ((dev.javaClass.getMethod("getBatteryLevel").invoke(dev) as? Number)?.toInt() ?: -1)
-            }.getOrDefault(-1)
+            val isConn = gattConnected.contains(dev) || run {
+                val cacheKey = "BluetoothDevice.isConnected"
+                val m = resolveMethodOnce(cacheKey, dev.javaClass, "isConnected")
+                if (m != null) {
+                    try {
+                        (m.invoke(dev) as? Boolean) ?: false
+                    } catch (t: Throwable) {
+                        if (isPermanentReflectionDenial(t)) markMethodUnavailable(cacheKey)
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+            val batt = run {
+                val cacheKey = "BluetoothDevice.getBatteryLevel"
+                val m = resolveMethodOnce(cacheKey, dev.javaClass, "getBatteryLevel")
+                if (m != null) {
+                    try {
+                        (m.invoke(dev) as? Number)?.toInt() ?: -1
+                    } catch (t: Throwable) {
+                        if (isPermanentReflectionDenial(t)) markMethodUnavailable(cacheKey)
+                        -1
+                    }
+                } else {
+                    -1
+                }
+            }
             val dType = runCatching { dev.type }.getOrDefault(0)
             val btClass = runCatching { dev.bluetoothClass }.getOrNull()
             val majorClass = btClass?.majorDeviceClass ?: 0
@@ -2209,6 +2339,7 @@ class TelemetryCollector(
         }
         val attrs = HashMap<String, String>()
         var curIdleMs: Long? = null
+        var mediaEngineReadable = true
 
         val xeFreqDir = File(drmSysfsRoot, "card0/device/tile0/gt0/freq0")
         val xeMediaFreqDir = File(drmSysfsRoot, "card0/device/tile0/gt1/freq0")
@@ -2217,46 +2348,86 @@ class TelemetryCollector(
         val kgslDir = File("/sys/class/kgsl/kgsl-3d0")
         var fallbackBusyFraction: Float? = null
 
-        if (xeFreqDir.isDirectory) {
-            for (name in listOf("act_freq", "cur_freq", "min_freq", "max_freq", "rp0_freq", "rpa_freq", "rpe_freq", "rpn_freq", "power_profile")) {
-                val v = readSmallFile(File(xeFreqDir, name))
-                if (v != null) attrs[name] = v
+        val backend = cachedGpuBackend ?: run {
+            val detected = when {
+                xeFreqDir.isDirectory -> GpuSysfsBackend.XE
+                i915GtDir.isDirectory -> GpuSysfsBackend.I915
+                kgslDir.isDirectory -> GpuSysfsBackend.KGSL
+                else -> GpuSysfsBackend.NONE
             }
-            if (xeMediaFreqDir.isDirectory) {
-                val mediaFreq = readSmallFile(File(xeMediaFreqDir, "act_freq"))?.takeIf { it != "0" }
-                    ?: readSmallFile(File(xeMediaFreqDir, "cur_freq"))
-                if (mediaFreq != null) attrs["media_freq"] = mediaFreq
-            }
-            val thrDir = File(xeFreqDir, "throttle")
-            if (thrDir.isDirectory) {
-                readSmallFile(File(thrDir, "status"))?.let { attrs["throttle_status"] = it }
-                for (r in listOf("reason_pl1", "reason_pl2", "reason_pl4", "reason_prochot", "reason_ratl", "reason_thermal", "reason_vr_edc", "reason_vr_thermalert")) {
-                    readSmallFile(File(thrDir, r))?.let { attrs[r] = it }
-                }
-            }
-            curIdleMs = readSmallFile(xeIdleFile)?.toLongOrNull()
-        } else if (i915GtDir.isDirectory) {
-            readSmallFile(File(i915GtDir, "rps_act_freq_mhz"))?.let { attrs["act_freq"] = it }
-            readSmallFile(File(i915GtDir, "rps_cur_freq_mhz"))?.let { attrs["cur_freq"] = it }
-            readSmallFile(File(i915GtDir, "rps_min_freq_mhz"))?.let { attrs["min_freq"] = it }
-            readSmallFile(File(i915GtDir, "rps_max_freq_mhz"))?.let { attrs["max_freq"] = it }
-            readSmallFile(File(i915GtDir, "rps_RP0_freq_mhz"))?.let { attrs["rp0_freq"] = it }
-            readSmallFile(File(i915GtDir, "rps_RP1_freq_mhz"))?.let { attrs["rpe_freq"] = it }
-            readSmallFile(File(i915GtDir, "rps_RPn_freq_mhz"))?.let { attrs["rpn_freq"] = it }
-            curIdleMs = readSmallFile(File(i915GtDir, "rc6_residency_ms"))?.toLongOrNull()
-        } else if (kgslDir.isDirectory) {
-            readSmallFile(File(kgslDir, "gpuclk"))?.let {
-                attrs["act_freq"] = it
-                attrs["cur_freq"] = it
-            }
-            readSmallFile(File(kgslDir, "max_gpuclk"))?.let { attrs["max_freq"] = it }
-            readSmallFile(File(kgslDir, "min_clock_mhz"))?.let { attrs["min_freq"] = it }
-            fallbackBusyFraction = SysfsParsers.parseQualcommKgslGpuBusy(
-                readSmallFile(File(kgslDir, "gpu_busy_percentage"))
-                    ?: readSmallFile(File(kgslDir, "gpubusy")),
-            )
+            cachedGpuBackend = detected
+            detected
         }
 
+        when (backend) {
+            GpuSysfsBackend.XE -> {
+                for (name in listOf("act_freq", "cur_freq", "min_freq", "max_freq", "rp0_freq", "rpa_freq", "rpe_freq", "rpn_freq", "power_profile")) {
+                    val v = readSmallFile(File(xeFreqDir, name))
+                    if (v != null) attrs[name] = v
+                }
+                val mediaActFile = File(xeMediaFreqDir, "act_freq")
+                val mediaCurFile = File(xeMediaFreqDir, "cur_freq")
+                val mediaActRaw = readSmallFile(mediaActFile)
+                val mediaCurRaw = readSmallFile(mediaCurFile)
+                val mediaFreq = mediaActRaw?.takeIf { it != "0" } ?: mediaCurRaw
+                if (mediaFreq != null) {
+                    attrs["media_freq"] = mediaFreq
+                } else if (mediaActFile.path in unreadablePaths || mediaCurFile.path in unreadablePaths) {
+                    mediaEngineReadable = false
+                }
+
+                val thrDir = File(xeFreqDir, "throttle")
+                readSmallFile(File(thrDir, "status"))?.let { attrs["throttle_status"] = it }
+                val reasonNames = cachedXeThrottleReasonFiles ?: run {
+                    val listed = runCatching {
+                        thrDir.listFiles()
+                            ?.map { it.name }
+                            ?.filter { it.startsWith("reason_") && it.length > "reason_".length }
+                            ?.sorted()
+                    }.getOrNull()
+                    if (listed != null) {
+                        val resolved = listed.ifEmpty { DEFAULT_XE_THROTTLE_REASON_FILES }
+                        cachedXeThrottleReasonFiles = resolved
+                        resolved
+                    } else if (File(thrDir, "status").path in unreadablePaths) {
+                        val empty = emptyList<String>()
+                        cachedXeThrottleReasonFiles = empty
+                        empty
+                    } else {
+                        DEFAULT_XE_THROTTLE_REASON_FILES
+                    }
+                }
+                for (r in reasonNames) {
+                    readSmallFile(File(thrDir, r))?.let { attrs[r] = it }
+                }
+                curIdleMs = readSmallFile(xeIdleFile)?.toLongOrNull()
+            }
+            GpuSysfsBackend.I915 -> {
+                readSmallFile(File(i915GtDir, "rps_act_freq_mhz"))?.let { attrs["act_freq"] = it }
+                readSmallFile(File(i915GtDir, "rps_cur_freq_mhz"))?.let { attrs["cur_freq"] = it }
+                readSmallFile(File(i915GtDir, "rps_min_freq_mhz"))?.let { attrs["min_freq"] = it }
+                readSmallFile(File(i915GtDir, "rps_max_freq_mhz"))?.let { attrs["max_freq"] = it }
+                readSmallFile(File(i915GtDir, "rps_RP0_freq_mhz"))?.let { attrs["rp0_freq"] = it }
+                readSmallFile(File(i915GtDir, "rps_RP1_freq_mhz"))?.let { attrs["rpe_freq"] = it }
+                readSmallFile(File(i915GtDir, "rps_RPn_freq_mhz"))?.let { attrs["rpn_freq"] = it }
+                curIdleMs = readSmallFile(File(i915GtDir, "rc6_residency_ms"))?.toLongOrNull()
+            }
+            GpuSysfsBackend.KGSL -> {
+                readSmallFile(File(kgslDir, "gpuclk"))?.let {
+                    attrs["act_freq"] = it
+                    attrs["cur_freq"] = it
+                }
+                readSmallFile(File(kgslDir, "max_gpuclk"))?.let { attrs["max_freq"] = it }
+                readSmallFile(File(kgslDir, "min_clock_mhz"))?.let { attrs["min_freq"] = it }
+                fallbackBusyFraction = SysfsParsers.parseQualcommKgslGpuBusy(
+                    readSmallFile(File(kgslDir, "gpu_busy_percentage"))
+                        ?: readSmallFile(File(kgslDir, "gpubusy")),
+                )
+            }
+            GpuSysfsBackend.NONE -> Unit
+        }
+
+        val busyCounterReadable = curIdleMs != null || fallbackBusyFraction != null
         val dtMs = nowElapsedMs - lastGpuSampleElapsedMs
         val activeResidency: Float? = if (
             lastGpuSampleElapsedMs > 0L &&
@@ -2282,19 +2453,30 @@ class TelemetryCollector(
 
         val driver = cachedGpuDrmVersion?.driverName ?: "xe"
         val desc = cachedGpuDrmVersion?.description ?: "Intel Xe2 Graphics"
-        return SysfsParsers.parseGpuTelemetry(
+        val parsed = SysfsParsers.parseGpuTelemetry(
             attrs = attrs,
             driverName = driver,
             deviceName = desc,
             activeResidencyFraction = activeResidency,
+            busyCounterReadable = busyCounterReadable,
+            mediaEngineFreqReadable = mediaEngineReadable,
         )
+        if (!parsed.actualFreqAvailable) {
+            return parsed
+        }
+        gpuActualFreqRing.push(parsed.actualFreqMhz.toFloat())
+        return parsed.copy(avgActualFreqMhz = gpuActualFreqRing.average().roundToInt())
     }
 
     private fun readNpu(nowElapsedMs: Long): NpuTelemetrySnapshot {
-        val accelDevNode = if (File("/dev/accel/accel0").exists() && !File("/dev/accel0").exists()) {
-            "/dev/accel/accel0"
-        } else {
-            "/dev/accel0"
+        val accelDevNode = cachedAccelDevNode ?: run {
+            val resolved = if (File("/dev/accel/accel0").exists() && !File("/dev/accel0").exists()) {
+                "/dev/accel/accel0"
+            } else {
+                "/dev/accel0"
+            }
+            cachedAccelDevNode = resolved
+            resolved
         }
         if (!npuDrmProbed) {
             npuDrmProbed = true
@@ -2328,6 +2510,16 @@ class TelemetryCollector(
             }
         }
 
+        val primaryCounterDenied = listOf(
+            "npu_busy_time_us",
+            "npu_current_frequency_mhz",
+            "npu_max_frequency_mhz",
+        ).any { File(accelDevDir, it).path in unreadablePaths }
+        val hasAnySysfsFreqOrBusy = attrs.containsKey("npu_busy_time_us") ||
+            attrs.containsKey("npu_current_frequency_mhz") ||
+            attrs.containsKey("current_freq")
+        val sysfsCountersReadable = hasAnySysfsFreqOrBusy || !primaryCounterDenied
+
         val curBusyUs = attrs["npu_busy_time_us"]?.toLongOrNull()
         val dtUs = (nowElapsedMs - lastNpuSampleElapsedMs) * 1_000L
         val busyFraction: Float? = if (
@@ -2358,6 +2550,7 @@ class TelemetryCollector(
             ivpuParams = cachedIvpuStaticParams,
             busyDeltaFraction = busyFraction,
             heartbeatActive = heartbeatActive,
+            sysfsCountersReadable = sysfsCountersReadable,
         )
     }
 
@@ -2762,24 +2955,150 @@ class TelemetryCollector(
         return map
     }
 
-    @android.annotation.SuppressLint("PrivateApi")
-    private fun readSystemProperty(key: String): String? {
+    private fun onA2dpConnectionOrProxyChanged() {
+        a2dpCodecStatusDenied = false
+        a2dpCodecDirty = true
+        cachedA2dpCodecInfo = null
+        lastProbedA2dpDevice = null
+    }
+
+    private fun ensureA2dpBroadcastReceiverRegistered() {
+        if (a2dpReceiverRegistered) return
+        a2dpReceiverRegistered = true
+        val appCtx = context.applicationContext
+        runCatching {
+            val filter = IntentFilter().apply {
+                addAction(BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED)
+                addAction(ACTION_A2DP_CODEC_CONFIG_CHANGED)
+            }
+            ContextCompat.registerReceiver(
+                appCtx,
+                object : BroadcastReceiver() {
+                    override fun onReceive(ctx: Context?, intent: Intent?) {
+                        when (intent?.action) {
+                            BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED -> onA2dpConnectionOrProxyChanged()
+                            ACTION_A2DP_CODEC_CONFIG_CHANGED -> a2dpCodecDirty = true
+                        }
+                    }
+                },
+                filter,
+                ContextCompat.RECEIVER_EXPORTED,
+            )
+        }
+    }
+
+    private fun probeA2dpCodecStatusOnce(proxy: BluetoothA2dp, activeDevice: BluetoothDevice): CachedA2dpCodecInfo? {
+        val cacheKey = "BluetoothA2dp.getCodecStatus:${proxy.javaClass.name}"
+        val getCodecStatusMethod = resolveMethodOnce(
+            cacheKey,
+            proxy.javaClass,
+            "getCodecStatus",
+            BluetoothDevice::class.java,
+        ) ?: return null
+        val statusObj = try {
+            getCodecStatusMethod.invoke(proxy, activeDevice)
+        } catch (t: Throwable) {
+            val root = (t as? InvocationTargetException)?.targetException ?: t
+            if (root is SecurityException) {
+                a2dpCodecStatusDenied = true
+            } else if (isPermanentReflectionDenial(t)) {
+                markMethodUnavailable(cacheKey)
+            }
+            return null
+        } ?: return null
+
         return runCatching {
-            val cls = Class.forName("android.os.SystemProperties")
-            val getMethod = cls.getMethod("get", String::class.java)
-            (getMethod.invoke(null, key) as? String)?.trim()?.takeIf { it.isNotEmpty() }
+            var cType = -1
+            var sRate = 0
+            var bSample = 0
+            var chMode = 0
+            var spec1 = 0L
+            val cfgObj = resolveMethodOnce("BluetoothCodecStatus.getCodecConfig", statusObj.javaClass, "getCodecConfig")
+                ?.invoke(statusObj)
+            if (cfgObj != null) {
+                cType = (resolveMethodOnce("BluetoothCodecConfig.getCodecType", cfgObj.javaClass, "getCodecType")
+                    ?.invoke(cfgObj) as? Number)?.toInt() ?: -1
+                sRate = (resolveMethodOnce("BluetoothCodecConfig.getSampleRate", cfgObj.javaClass, "getSampleRate")
+                    ?.invoke(cfgObj) as? Number)?.toInt() ?: 0
+                bSample = (resolveMethodOnce("BluetoothCodecConfig.getBitsPerSample", cfgObj.javaClass, "getBitsPerSample")
+                    ?.invoke(cfgObj) as? Number)?.toInt() ?: 0
+                chMode = (resolveMethodOnce("BluetoothCodecConfig.getChannelMode", cfgObj.javaClass, "getChannelMode")
+                    ?.invoke(cfgObj) as? Number)?.toInt() ?: 0
+                spec1 = (resolveMethodOnce("BluetoothCodecConfig.getCodecSpecific1", cfgObj.javaClass, "getCodecSpecific1")
+                    ?.invoke(cfgObj) as? Number)?.toLong() ?: 0L
+            }
+            val selectableList = resolveMethodOnce(
+                "BluetoothCodecStatus.getCodecsSelectableCapabilities",
+                statusObj.javaClass,
+                "getCodecsSelectableCapabilities",
+            )?.invoke(statusObj) as? List<*>
+            val selectableSummary = selectableList
+                ?.mapNotNull { cap ->
+                    if (cap == null) return@mapNotNull null
+                    val t = (resolveMethodOnce("BluetoothCodecConfig.getCodecType", cap.javaClass, "getCodecType")
+                        ?.invoke(cap) as? Number)?.toInt()
+                    if (t != null && t >= 0) WirelessTelemetryParsers.formatBluetoothCodecType(t) else null
+                }
+                ?.distinct()
+                ?.takeIf { it.isNotEmpty() }
+                ?.joinToString(", ")
+
+            CachedA2dpCodecInfo(
+                codecType = cType,
+                sampleRate = sRate,
+                bitsPerSample = bSample,
+                channelMode = chMode,
+                codecSpecific1 = spec1,
+                selectableSummary = selectableSummary,
+            )
         }.getOrNull()
     }
 
-    private fun readSmallFile(file: File, maxBytes: Int = 256): String? {
+    private fun invokeDisplayModeVsyncRate(activeMode: android.view.Display.Mode): Float? {
+        val cacheKey = "Display.Mode.getVsyncRate"
+        val method = resolveMethodOnce(cacheKey, activeMode.javaClass, "getVsyncRate") ?: return null
         return try {
-            if (!file.isFile || !file.canRead()) return null
-            file.inputStream().use { input ->
+            (method.invoke(activeMode) as? Float)?.takeIf { it.isFinite() && it > 0f }
+        } catch (t: Throwable) {
+            if (isPermanentReflectionDenial(t)) markMethodUnavailable(cacheKey)
+            null
+        }
+    }
+
+    private fun invokeDisplayHasArrSupport(display: android.view.Display): Boolean? {
+        val cacheKey = "Display.hasArrSupport"
+        val method = resolveMethodOnce(cacheKey, display.javaClass, "hasArrSupport") ?: return null
+        return try {
+            method.invoke(display) as? Boolean
+        } catch (t: Throwable) {
+            if (isPermanentReflectionDenial(t)) markMethodUnavailable(cacheKey)
+            null
+        }
+    }
+
+    private fun readSystemProperty(key: String): String? {
+        val method = resolveSystemPropertiesGetMethod() ?: return null
+        return try {
+            (method.invoke(null, key) as? String)?.trim()?.takeIf { it.isNotEmpty() }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun readSmallFile(file: File, maxBytes: Int = 256): String? {
+        val pathKey = file.path
+        if (pathKey in unreadablePaths) return null
+        fileOpenObserverForTesting?.invoke(pathKey)
+        return try {
+            Files.newInputStream(file.toPath()).use { input ->
                 val buf = ByteArray(maxBytes)
                 val n = input.read(buf)
                 if (n <= 0) null else String(buf, 0, n, Charsets.UTF_8).trim()
             }
-        } catch (_: Exception) {
+        } catch (t: Throwable) {
+            if (isPermissionFailure(t)) {
+                unreadablePaths += pathKey
+            }
             null
         }
     }
@@ -2788,6 +3107,86 @@ class TelemetryCollector(
         SafeAttempt(block(), null)
     } catch (t: Throwable) {
         SafeAttempt(null, t)
+    }
+
+    companion object {
+        private const val ACTION_A2DP_CODEC_CONFIG_CHANGED =
+            "android.bluetooth.a2dp.profile.action.CODEC_CONFIG_CHANGED"
+
+        private val DEFAULT_XE_THROTTLE_REASON_FILES = listOf(
+            "reason_pl1",
+            "reason_pl2",
+            "reason_pl4",
+            "reason_prochot",
+            "reason_ratl",
+            "reason_thermal",
+            "reason_vr_edc",
+            "reason_vr_tdc",
+            "reason_vr_thermalert",
+        )
+
+        private class OptionalMethod(val method: Method?)
+
+        private val reflectedMethods = ConcurrentHashMap<String, OptionalMethod>()
+
+        @android.annotation.SuppressLint("PrivateApi")
+        private fun resolveSystemPropertiesGetMethod(): Method? {
+            return reflectedMethods.getOrPut("SystemProperties.get") {
+                val m = try {
+                    Class.forName("android.os.SystemProperties").getMethod("get", String::class.java)
+                } catch (_: Throwable) {
+                    null
+                }
+                OptionalMethod(m)
+            }.method
+        }
+
+        private fun resolveMethodOnce(
+            cacheKey: String,
+            targetClass: Class<*>,
+            methodName: String,
+            vararg paramTypes: Class<*>,
+        ): Method? {
+            return reflectedMethods.getOrPut(cacheKey) {
+                val m = try {
+                    targetClass.getMethod(methodName, *paramTypes)
+                } catch (_: Throwable) {
+                    null
+                }
+                OptionalMethod(m)
+            }.method
+        }
+
+        private fun markMethodUnavailable(cacheKey: String) {
+            reflectedMethods[cacheKey] = OptionalMethod(null)
+        }
+
+        private fun isPermanentReflectionDenial(t: Throwable): Boolean {
+            val root = (t as? InvocationTargetException)?.targetException ?: t
+            return root is IllegalAccessException ||
+                root is NoSuchMethodException ||
+                root is LinkageError ||
+                (root is SecurityException && root.message?.contains("hidden", ignoreCase = true) == true)
+        }
+
+        internal fun isPermissionFailure(t: Throwable): Boolean {
+            if (t is NoSuchFileException) return false
+            if (t is AccessDeniedException || t is SecurityException) return true
+            var cur: Throwable? = t
+            while (cur != null) {
+                if (cur is AccessDeniedException || cur is SecurityException) return true
+                val msg = cur.message.orEmpty()
+                if (msg.contains("Permission denied", ignoreCase = true) ||
+                    msg.contains("Operation not permitted", ignoreCase = true) ||
+                    msg.contains("EACCES", ignoreCase = true) ||
+                    msg.contains("EPERM", ignoreCase = true)
+                ) {
+                    return true
+                }
+                cur = cur.cause
+            }
+            return t is IOException && t.message?.contains("denied", ignoreCase = true) == true
+        }
     }
 }
 

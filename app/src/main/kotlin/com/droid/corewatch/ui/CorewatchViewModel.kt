@@ -166,7 +166,7 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
         CaffeineController.syncWakeLock(ctx, snap.caffeineEvaluation.isActive)
 
         cpuRing.push(snap.avgCpuUtilizationFraction * 100f)
-        gpuRing.push(snap.gpu.utilizationFraction * 100f)
+        snap.gpu.utilizationFraction?.let { gpuRing.push(it * 100f) }
         npuRing.push(snap.npu.utilizationFraction * 100f)
         thermalRing.push(snap.primaryCpuTempCelsius)
         wattsRing.push(abs(snap.battery.watts))
@@ -443,6 +443,7 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
         collector.invalidateGraphicsStatsCache()
         collector.invalidateWifiCaches()
         collector.invalidateUsbCaches()
+        collector.invalidateBluetoothCaches()
         sampleNow()
     }
 

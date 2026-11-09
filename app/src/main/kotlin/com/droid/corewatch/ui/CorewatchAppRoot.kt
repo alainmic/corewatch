@@ -1113,39 +1113,30 @@ internal fun MiniHudView(
                     )
 
                     // 2. GPU & NPU Hardware Accelerators Sparkline Row
+                    val npuHudPrimary = when {
+                        !snap.npu.isPresent -> "NPU N/A"
+                        !snap.npu.sysfsCountersReadable && snap.npu.activeContexts == 0 -> "NPU —"
+                        else -> String.format(Locale.US, "NPU %d%%", (snap.npu.utilizationFraction * 100f).roundToInt())
+                    }
+                    val gpuAvgPart = snap.gpu.avgActualFreqMhz?.let { "avg $it · " } ?: ""
                     MiniHudSparklineCard(
                         title = "GPU & NPU",
-                        primaryValue = if (snap.npu.isPresent) {
-                            String.format(
-                                Locale.US,
-                                "GPU %d%% (%d MHz) · NPU %d%%",
-                                (snap.gpu.utilizationFraction * 100f).roundToInt(),
-                                snap.gpu.displayFreqMhz,
-                                (snap.npu.utilizationFraction * 100f).roundToInt(),
-                            )
-                        } else {
-                            String.format(
-                                Locale.US,
-                                "GPU %d%% (%d MHz) · NPU N/A",
-                                (snap.gpu.utilizationFraction * 100f).roundToInt(),
-                                snap.gpu.displayFreqMhz,
-                            )
-                        },
+                        primaryValue = "GPU ${snap.gpu.headlineBusyLabel} (${snap.gpu.headlineFreqLabel}) · $npuHudPrimary",
                         subValue = if (snap.npu.isPresent) {
-                            String.format(
-                                Locale.US,
-                                "GPU %s · NPU %s (%d/%d MHz)",
-                                snap.gpu.scalingStateLabel,
-                                snap.npu.scalingStateLabel,
-                                snap.npu.currentFreqMhz,
-                                snap.npu.maxFreqMhz,
-                            )
+                            val npuSub = if (snap.npu.sysfsCountersReadable) {
+                                String.format(
+                                    Locale.US,
+                                    "%s (%d/%d MHz)",
+                                    snap.npu.scalingStateLabel,
+                                    snap.npu.currentFreqMhz,
+                                    snap.npu.maxFreqMhz,
+                                )
+                            } else {
+                                "counters unavailable (${snap.npu.activeContexts}/${snap.npu.maxContexts} ctx)"
+                            }
+                            "GPU ${snap.gpu.scalingStateLabel} (${gpuAvgPart}req ${snap.gpu.requestedFreqMhz} MHz) · NPU $npuSub"
                         } else {
-                            String.format(
-                                Locale.US,
-                                "GPU %s · No NPU on SoC",
-                                snap.gpu.scalingStateLabel,
-                            )
+                            "GPU ${snap.gpu.scalingStateLabel} (${gpuAvgPart}req ${snap.gpu.requestedFreqMhz} MHz · floor ${snap.gpu.minFreqMhz} MHz) · No NPU on SoC"
                         },
                         samples = hist.gpuLoadSamples,
                         lineColor = cs.tertiary,
@@ -1467,28 +1458,33 @@ private fun OverviewThermalsTab(state: CorewatchUiState, vm: CorewatchViewModel)
                             Text("GPU Accelerator (60s)", style = MaterialTheme.typography.titleMedium)
                         }
                         Text(
-                            text = String.format(
-                                Locale.US,
-                                "%d%% · %d MHz",
-                                (snap.gpu.utilizationFraction * 100f).roundToInt(),
-                                snap.gpu.displayFreqMhz,
-                            ),
+                            text = "${snap.gpu.headlineBusyLabel} · ${snap.gpu.headlineFreqLabel}",
                             style = CorewatchMonoTypography.metricLarge,
                             color = cs.secondary,
                         )
                     }
+                    val gpuBusyHint = if (snap.gpu.utilizationFraction == null && !snap.gpu.busyCounterReadable) {
+                        " · busy % unavailable on this build"
+                    } else {
+                        ""
+                    }
                     Text(
-                        text = "${snap.gpu.deviceName} (${snap.gpu.driverName}) · State: ${snap.gpu.scalingStateLabel} · Profile: ${snap.gpu.powerProfile}",
+                        text = "${snap.gpu.deviceName} (${snap.gpu.driverName}) · State: ${snap.gpu.scalingStateLabel} · Profile: ${snap.gpu.powerProfile}$gpuBusyHint",
                         style = CorewatchMonoTypography.hudSmall,
                         color = cs.onSurface,
                     )
-                    val mediaSuffix = snap.gpu.mediaEngineFreqMhz?.let { " · Media GT1: $it MHz" } ?: ""
+                    val avgClockPrefix = snap.gpu.avgActualFreqMhz?.let { "Avg actual: $it MHz · " } ?: ""
+                    val mediaSuffix = when {
+                        snap.gpu.mediaEngineFreqMhz != null -> " · Media GT1: ${snap.gpu.mediaEngineFreqMhz} MHz"
+                        !snap.gpu.mediaEngineFreqReadable -> " · Media engine clock: not readable on this build"
+                        else -> ""
+                    }
                     Text(
                         text = String.format(
                             Locale.US,
-                            "Clock: %d MHz (Slice: %d MHz) · Range: %d–%d MHz (RPe %d MHz)%s · Throttle: %s",
+                            "%srequested %d MHz · floor %d MHz · max %d MHz (RPe %d MHz)%s · Throttle: %s",
+                            avgClockPrefix,
                             snap.gpu.requestedFreqMhz,
-                            snap.gpu.actualFreqMhz,
                             snap.gpu.minFreqMhz,
                             snap.gpu.maxFreqMhz,
                             snap.gpu.efficientFreqMhz,
@@ -1499,7 +1495,7 @@ private fun OverviewThermalsTab(state: CorewatchUiState, vm: CorewatchViewModel)
                         color = if (snap.gpu.isThrottled) cs.error else cs.onSurfaceVariant,
                     )
                     LinearProgressIndicator(
-                        progress = { snap.gpu.utilizationFraction.coerceIn(0f, 1f) },
+                        progress = { (snap.gpu.utilizationFraction ?: 0f).coerceIn(0f, 1f) },
                         modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape),
                         color = if (snap.gpu.isThrottled) cs.error else cs.secondary,
                         trackColor = cs.surfaceContainerHighest,
@@ -1532,16 +1528,17 @@ private fun OverviewThermalsTab(state: CorewatchUiState, vm: CorewatchViewModel)
                             Text("NPU Accelerator (60s)", style = MaterialTheme.typography.titleMedium)
                         }
                         Text(
-                            text = if (snap.npu.isPresent) {
-                                String.format(
+                            text = when {
+                                !snap.npu.isPresent -> "Not Present"
+                                !snap.npu.sysfsCountersReadable && snap.npu.activeContexts == 0 ->
+                                    "— · Max ${snap.npu.maxFreqMhz} MHz"
+                                else -> String.format(
                                     Locale.US,
                                     "%d%% · %d / %d MHz",
                                     (snap.npu.utilizationFraction * 100f).roundToInt(),
                                     snap.npu.currentFreqMhz,
                                     snap.npu.maxFreqMhz,
                                 )
-                            } else {
-                                "Not Present"
                             },
                             style = CorewatchMonoTypography.metricLarge,
                             color = if (snap.npu.isPresent) cs.tertiary else cs.onSurfaceVariant,
@@ -1557,17 +1554,26 @@ private fun OverviewThermalsTab(state: CorewatchUiState, vm: CorewatchViewModel)
                         color = cs.onSurface,
                     )
                     Text(
-                        text = if (snap.npu.isPresent) {
-                            String.format(
-                                Locale.US,
-                                "Active Contexts: %d / %d · Max DPU Clock: %d MHz · Peak: %.1f%%",
-                                snap.npu.activeContexts,
-                                snap.npu.maxContexts,
-                                snap.npu.maxFreqMhz,
-                                hist.npuLoadPeak,
-                            )
-                        } else {
-                            "No dedicated NPU accelerator (/dev/accel0, /sys/class/accel) detected on this processor"
+                        text = when {
+                            !snap.npu.isPresent ->
+                                "No dedicated NPU accelerator (/dev/accel0, /sys/class/accel) detected on this processor"
+                            !snap.npu.sysfsCountersReadable ->
+                                String.format(
+                                    Locale.US,
+                                    "NPU counters: not readable on this build · Active Contexts: %d / %d · Max DPU Clock: %d MHz",
+                                    snap.npu.activeContexts,
+                                    snap.npu.maxContexts,
+                                    snap.npu.maxFreqMhz,
+                                )
+                            else ->
+                                String.format(
+                                    Locale.US,
+                                    "Active Contexts: %d / %d · Max DPU Clock: %d MHz · Peak: %.1f%%",
+                                    snap.npu.activeContexts,
+                                    snap.npu.maxContexts,
+                                    snap.npu.maxFreqMhz,
+                                    hist.npuLoadPeak,
+                                )
                         },
                         style = CorewatchMonoTypography.hudSmall,
                         color = cs.onSurfaceVariant,
@@ -2933,9 +2939,9 @@ private fun WifiRadioLinkCard(
             Text(
                 text = String.format(
                     Locale.US,
-                    "Interface: %s (MTU %d) · %s · Role: %s",
+                    "Interface: %s (MTU %s) · %s · Role: %s",
                     wifi.interfaceName,
-                    wifi.mtu,
+                    wifi.mtuLabel,
                     wifi.ipStackLabel,
                     wifi.routeRoleLabel,
                 ),
@@ -3100,9 +3106,9 @@ private fun WiredEthernetLinkCard(
             Text(
                 text = String.format(
                     Locale.US,
-                    "Interface: %s (MTU %d) · %s · %s (%s)",
+                    "Interface: %s (MTU %s) · %s · %s (%s)",
                     eth.interfaceName,
-                    eth.mtu,
+                    eth.mtuLabel,
                     eth.ipStackLabel,
                     if (eth.isValidated) "Validated" else "Unvalidated",
                     if (eth.isMetered) "Metered" else "Unmetered",
@@ -3891,7 +3897,11 @@ private fun DisplayCard(disp: DisplaySpec) {
                             "DRM vrr_capable: %s · CRTC VRR_ENABLED: %s · Android ARR: %s · 5m VRR Switches: %d",
                             if (disp.vrrCapable) "Yes (1)" else "No (0)",
                             if (disp.vrrKernelEnabled) "Active (1)" else "Idle (0)",
-                            if (disp.hasAndroidArr) "Supported" else "eDP Dynamic Steps",
+                            when {
+                                !disp.androidArrAvailable -> "Unavailable"
+                                disp.hasAndroidArr -> "Supported"
+                                else -> "eDP Dynamic Steps"
+                            },
                             disp.vrrSwitchCount5m,
                         ),
                         style = CorewatchMonoTypography.hudSmall,

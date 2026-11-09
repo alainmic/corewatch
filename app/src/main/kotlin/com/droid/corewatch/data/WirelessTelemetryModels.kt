@@ -379,7 +379,7 @@ data class WifiTelemetrySnapshot(
     val interfaceName: String = "wlan0",
     val isPrimaryDefaultRoute: Boolean = false,
     val routeRoleLabel: String = "Disconnected",
-    val mtu: Int = 1500,
+    val mtu: Int = 0,
     val isValidated: Boolean = false,
     val isMetered: Boolean = false,
     val ipStackLabel: String = "N/A",
@@ -423,6 +423,9 @@ data class WifiTelemetrySnapshot(
             isValidated -> "$signalQualityLabel ($signalQualityPercent%)"
             else -> "Unvalidated Link"
         }
+
+    val mtuLabel: String
+        get() = if (mtu > 0) "$mtu" else "—"
 }
 
 /**
@@ -436,7 +439,7 @@ data class EthernetTelemetrySnapshot(
     val isPrimaryDefaultRoute: Boolean = false,
     val isValidated: Boolean = false,
     val isMetered: Boolean = false,
-    val mtu: Int = 1500,
+    val mtu: Int = 0,
     val negotiatedSpeedMbps: Int = 0,
     val downstreamBandwidthKbps: Int = 0,
     val upstreamBandwidthKbps: Int = 0,
@@ -447,6 +450,9 @@ data class EthernetTelemetrySnapshot(
     val isEmulatorVirtualNic: Boolean = false,
     val throughput: NetworkThroughput = NetworkThroughput(),
 ) {
+    val mtuLabel: String
+        get() = if (mtu > 0) "$mtu" else "—"
+
     val routeRoleLabel: String
         get() = when {
             !isConnected -> "Undocked"

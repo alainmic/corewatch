@@ -32,11 +32,12 @@ data class DisplaySpec(
     val supportedModes: List<DisplayModeSpec>,
     val bottleneckWarning: String?,
     val renderFrameRateHz: Float = activeRefreshHz,
-    val vsyncRateHz: Float = activeRefreshHz,
+    val vsyncRateHz: Float? = activeRefreshHz,
     val supportedRefreshStepsHz: List<Float> = listOf(activeRefreshHz),
     val vrrCapable: Boolean = false,
     val vrrKernelEnabled: Boolean = false,
     val hasAndroidArr: Boolean = false,
+    val androidArrAvailable: Boolean = true,
     val maxBpc: Int = 8,
     val panelModel: String = "",
     val drmConnectorName: String = "",
@@ -68,7 +69,7 @@ data class DisplaySpec(
     val vrrStatusBadge: String
         get() = when {
             vrrKernelEnabled || hasAndroidArr -> "VRR Active"
-            isVrrSupported && kotlin.math.abs(renderFrameRateHz - vsyncRateHz) >= 1f ->
+            isVrrSupported && vsyncRateHz != null && kotlin.math.abs(renderFrameRateHz - vsyncRateHz) >= 1f ->
                 "Dynamic Cadence (${renderFrameRateHz.roundToInt()}/${vsyncRateHz.roundToInt()} Hz)"
             isVrrSupported -> "VRR Capable"
             else -> "Fixed Refresh"
@@ -87,7 +88,11 @@ data class DisplaySpec(
         }
 
     val liveCadenceSummary: String
-        get() = String.format(Locale.US, "Render %.0f Hz · VSync %.0f Hz", renderFrameRateHz, vsyncRateHz)
+        get() = if (vsyncRateHz != null) {
+            String.format(Locale.US, "Render %.0f Hz · VSync %.0f Hz", renderFrameRateHz, vsyncRateHz)
+        } else {
+            String.format(Locale.US, "Render %.0f Hz · Mode %.0f Hz (VSync rate unavailable)", renderFrameRateHz, activeRefreshHz)
+        }
 }
 
 /**
@@ -109,11 +114,12 @@ object DisplayAuditor {
         hdrTypeIds: IntArray,
         modes: List<DisplayModeSpec>,
         renderFrameRateHz: Float = activeRefreshHz,
-        vsyncRateHz: Float = activeRefreshHz,
+        vsyncRateHz: Float? = activeRefreshHz,
         supportedRefreshRatesHz: FloatArray = floatArrayOf(),
         vrrCapable: Boolean = false,
         vrrKernelEnabled: Boolean = false,
         hasAndroidArr: Boolean = false,
+        androidArrAvailable: Boolean = true,
         maxBpc: Int = 8,
         panelModel: String? = null,
         drmConnectorName: String? = null,
@@ -136,7 +142,7 @@ object DisplayAuditor {
         val safeHeight = activeHeight.coerceIn(240, 16_384)
         val safeHz = if (activeRefreshHz.isFinite() && activeRefreshHz > 0f) activeRefreshHz.coerceIn(1f, 480f) else 60f
         val safeRenderHz = if (renderFrameRateHz.isFinite() && renderFrameRateHz > 0f) renderFrameRateHz.coerceIn(1f, 480f) else safeHz
-        val safeVsyncHz = if (vsyncRateHz.isFinite() && vsyncRateHz > 0f) vsyncRateHz.coerceIn(1f, 480f) else safeHz
+        val safeVsyncHz = vsyncRateHz?.takeIf { it.isFinite() && it > 0f }?.coerceIn(1f, 480f)
 
         val normalizedModes = if (modes.isEmpty()) {
             listOf(DisplayModeSpec(activeModeId, safeWidth, safeHeight, safeHz, isActive = true))
@@ -210,6 +216,7 @@ object DisplayAuditor {
             vrrCapable = inferredVrrCapable,
             vrrKernelEnabled = vrrKernelEnabled,
             hasAndroidArr = hasAndroidArr,
+            androidArrAvailable = androidArrAvailable,
             maxBpc = maxBpc.coerceIn(6, 16),
             panelModel = SysfsParsers.sanitizeSensorName(panelModel, ""),
             drmConnectorName = cleanConnector,

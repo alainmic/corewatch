@@ -138,20 +138,27 @@ object DiagnosticReportBuilder {
             appendLine("| **OS Release** | `$os` |")
             appendLine("| **Thermal Status** | `${snapshot.thermalLevel.label}` (Headroom: `$headroomStr`, Peak: `$sensorSummary`) |")
             appendLine("| **CPU Scaling** | `$coreTopology` — Avg `${avgCpuPct}%`, Peak `${snapshot.maxCpuFreqMhz} MHz` |")
+            val gpuBusyReport = snapshot.gpu.utilizationFraction?.let {
+                "`${(it * 100f).roundToInt()}%` active"
+            } ?: "`—` (busy % unavailable)"
+            val gpuAvgReport = snapshot.gpu.avgActualFreqMhz?.let { ", avg `$it MHz`" } ?: ""
             appendLine(
                 String.format(
                     Locale.US,
-                    "| **GPU Accelerator** | `%s` (`%s`) — `%d%%` active (`%d / %d MHz`, `%s`, Throttle: `%s`) |",
+                    "| **GPU Accelerator** | `%s` (`%s`) — %s (`%s`%s, requested `%d MHz`, floor `%d MHz`, max `%d MHz`, `%s`, Throttle: `%s`) |",
                     SysfsParsers.sanitizeSensorName(snapshot.gpu.deviceName, "GPU"),
                     SysfsParsers.sanitizeSensorName(snapshot.gpu.driverName, "drm"),
-                    (snapshot.gpu.utilizationFraction * 100f).roundToInt(),
-                    snapshot.gpu.displayFreqMhz,
+                    gpuBusyReport,
+                    SysfsParsers.sanitizeSensorName(snapshot.gpu.headlineFreqLabel, "—"),
+                    gpuAvgReport,
+                    snapshot.gpu.requestedFreqMhz,
+                    snapshot.gpu.minFreqMhz,
                     snapshot.gpu.maxFreqMhz,
                     snapshot.gpu.scalingStateLabel,
                     SysfsParsers.sanitizeSensorName(snapshot.gpu.throttleSummary, "Nominal"),
                 ),
             )
-            if (snapshot.npu.isPresent) {
+            if (snapshot.npu.isPresent && snapshot.npu.sysfsCountersReadable) {
                 appendLine(
                     String.format(
                         Locale.US,
@@ -161,6 +168,20 @@ object DiagnosticReportBuilder {
                         SysfsParsers.sanitizeSensorName(snapshot.npu.firmwareVersion, "v1.0"),
                         (snapshot.npu.utilizationFraction * 100f).roundToInt(),
                         snapshot.npu.currentFreqMhz,
+                        snapshot.npu.maxFreqMhz,
+                        snapshot.npu.scalingStateLabel,
+                        snapshot.npu.activeContexts,
+                        snapshot.npu.maxContexts,
+                    ),
+                )
+            } else if (snapshot.npu.isPresent) {
+                appendLine(
+                    String.format(
+                        Locale.US,
+                        "| **NPU Accelerator** | `%s` (`%s`, `%s`) — `NPU counters not readable` (Max `%d MHz`, `%s`, `%d / %d` contexts) |",
+                        SysfsParsers.sanitizeSensorName(snapshot.npu.deviceName, "NPU"),
+                        SysfsParsers.sanitizeSensorName(snapshot.npu.driverName, "accel"),
+                        SysfsParsers.sanitizeSensorName(snapshot.npu.firmwareVersion, "v1.0"),
                         snapshot.npu.maxFreqMhz,
                         snapshot.npu.scalingStateLabel,
                         snapshot.npu.activeContexts,
@@ -265,11 +286,11 @@ object DiagnosticReportBuilder {
                 val warnSuffix = if (snapshot.ethernet.dockBottleneckWarning != null) " ⚠️ 100BASE-TX Ceiling" else ""
                 String.format(
                     Locale.US,
-                    "`%s` — `%s` (`%s` · MTU `%d` · `%s` · `%s` · RX `%.2f` / TX `%.2f Mbps` · Total Net RX `%.2f` / TX `%.2f Mbps`)%s",
+                    "`%s` — `%s` (`%s` · MTU `%s` · `%s` · `%s` · RX `%.2f` / TX `%.2f Mbps` · Total Net RX `%.2f` / TX `%.2f Mbps`)%s",
                     SysfsParsers.sanitizeSensorName(snapshot.ethernet.interfaceName, "eth0"),
                     SysfsParsers.sanitizeSensorName(snapshot.ethernet.linkSpeedTierLabel, "Connected"),
                     SysfsParsers.sanitizeSensorName(snapshot.ethernet.routeRoleLabel, "Primary Default Route"),
-                    snapshot.ethernet.mtu,
+                    snapshot.ethernet.mtuLabel,
                     SysfsParsers.sanitizeSensorName(snapshot.ethernet.ipStackLabel, "N/A"),
                     SysfsParsers.sanitizeSensorName(snapshot.ethernet.dnsSummaryLabel, "N/A"),
                     snapshot.ethernet.throughput.rxMbps,

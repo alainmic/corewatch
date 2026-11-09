@@ -186,12 +186,28 @@ class CorewatchFuzzTest {
                 physicalYDpi = r.nextFloat() * 400f,
                 hdrTypeIds = IntArray(r.nextInt(5)) { r.nextInt(-1, 7) },
                 modes = listOf(DisplayModeSpec(1, 3840, 2160, 60f, false)),
+                vsyncRateHz = if (r.nextBoolean()) null else r.nextFloat() * 240f,
+                androidArrAvailable = r.nextBoolean(),
+            )
+            val gpuSnap = SysfsParsers.parseGpuTelemetry(
+                attrs = buildMap {
+                    if (r.nextBoolean()) put("act_freq", listOf("0", "950", "1800000", randomStr(r, 8))[r.nextInt(4)])
+                    put("cur_freq", listOf("300", "900", randomStr(r, 8))[r.nextInt(3)])
+                    put("min_freq", listOf("100", "850", randomStr(r, 8))[r.nextInt(3)])
+                    put("max_freq", listOf("1200", "2500", randomStr(r, 8))[r.nextInt(3)])
+                    if (r.nextBoolean()) put("reason_vr_tdc", if (r.nextBoolean()) "1" else "0")
+                    if (r.nextInt(4) == 0) put("reason_${randomStr(r, 8)}", "1")
+                },
+                activeResidencyFraction = if (r.nextBoolean()) null else r.nextFloat(),
+                avgActualFreqMhz = if (r.nextBoolean()) null else r.nextInt(0, 3000),
+                mediaEngineFreqReadable = r.nextBoolean(),
             )
             val snap = SystemTelemetrySnapshot(
                 deviceBoard = randomStr(r, 30),
                 deviceModel = randomStr(r, 30),
                 osVersion = randomStr(r, 30),
                 cpuAbi = randomStr(r, 20),
+                gpu = gpuSnap,
                 displays = listOf(disp),
                 wifi = WifiTelemetrySnapshot(
                     isConnected = r.nextBoolean(),

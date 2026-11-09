@@ -3,6 +3,7 @@
 
 package com.droid.corewatch.data
 
+import java.util.Locale
 import kotlin.math.roundToInt
 
 enum class CoreCluster(val label: String) {
@@ -93,37 +94,59 @@ data class GpuTelemetrySnapshot(
     val driverName: String = "xe",
     val deviceName: String = "Intel Xe2 Graphics",
     val actualFreqMhz: Int = 0,
+    val actualFreqAvailable: Boolean = true,
+    val avgActualFreqMhz: Int? = null,
     val requestedFreqMhz: Int = 800,
     val minFreqMhz: Int = 100,
     val efficientFreqMhz: Int = 850,
     val maxFreqMhz: Int = 2500,
     val activeResidencyFraction: Float? = null,
+    val busyCounterReadable: Boolean = activeResidencyFraction != null,
     val powerProfile: String = "power_saving",
     val isThrottled: Boolean = false,
     val throttleReasons: List<String> = emptyList(),
     val mediaEngineFreqMhz: Int? = null,
+    val mediaEngineFreqReadable: Boolean = true,
 ) {
     /**
-     * Operating GPU frequency in MHz (`actualFreqMhz` when an EU slice is mid-frame, or GuC SLPC
-     * `requestedFreqMhz` / `cur_freq` when sampled during an inter-frame RC6 micro-sleep window).
+     * Headline GPU operating clock: `act_freq` when active (`"950 MHz"`), `"Idle (RC6)"` when
+     * `act_freq == 0`, or `"—"` when `act_freq` is missing/unreadable.
      */
-    val displayFreqMhz: Int
-        get() = if (actualFreqMhz > 0) actualFreqMhz else requestedFreqMhz
-
-    val utilizationFraction: Float
-        get() {
-            if (activeResidencyFraction != null) return activeResidencyFraction.coerceIn(0f, 1f)
-            if (maxFreqMhz <= 0) return 0f
-            return (actualFreqMhz.toFloat() / maxFreqMhz.toFloat()).coerceIn(0f, 1f)
+    val headlineFreqLabel: String
+        get() = when {
+            !actualFreqAvailable -> "—"
+            actualFreqMhz <= 0 -> "Idle (RC6)"
+            else -> "$actualFreqMhz MHz"
         }
 
+    /**
+     * True GPU duty cycle from RC6 idle residency (`gtidle/idle_residency_ms`, `rc6_residency_ms`)
+     * or Qualcomm KGSL busy counters. Never derived from `actualFreqMhz / maxFreqMhz`.
+     */
+    val utilizationFraction: Float?
+        get() = activeResidencyFraction?.coerceIn(0f, 1f)
+
+    val headlineBusyLabel: String
+        get() = utilizationFraction?.let { "${(it * 100f).roundToInt()}%" } ?: "—"
+
     val scalingStateLabel: String
-        get() = when {
-            isThrottled -> "throttled"
-            actualFreqMhz == 0 && utilizationFraction < 0.05f -> "rc6-sleep"
-            utilizationFraction >= 0.62f -> "turbo"
-            utilizationFraction >= 0.25f -> "balanced"
-            else -> "powersave"
+        get() {
+            if (isThrottled) return "throttled"
+            val util = utilizationFraction
+            return if (util != null) {
+                when {
+                    actualFreqAvailable && actualFreqMhz == 0 && util < 0.05f -> "rc6-sleep"
+                    util >= 0.62f -> "turbo"
+                    util >= 0.25f -> "balanced"
+                    else -> "powersave"
+                }
+            } else {
+                when {
+                    !actualFreqAvailable -> "unknown"
+                    actualFreqMhz == 0 -> "rc6-sleep"
+                    else -> "active"
+                }
+            }
         }
 
     val throttleSummary: String
@@ -132,6 +155,7 @@ data class GpuTelemetrySnapshot(
 
 data class NpuTelemetrySnapshot(
     val isPresent: Boolean = true,
+    val sysfsCountersReadable: Boolean = true,
     val driverName: String = "intel_vpu",
     val deviceName: String = "Intel NPU",
     val currentFreqMhz: Int = 0,
@@ -333,6 +357,9 @@ object SysfsParsers {
         driverName: String = "xe",
         deviceName: String = "Intel Xe2 Graphics",
         activeResidencyFraction: Float? = null,
+        busyCounterReadable: Boolean = activeResidencyFraction != null,
+        avgActualFreqMhz: Int? = null,
+        mediaEngineFreqReadable: Boolean = true,
     ): GpuTelemetrySnapshot {
         val rawMax = parseFreqToMhz(attrs["max_freq"])
             ?: parseFreqToMhz(attrs["rp0_freq"])
@@ -344,7 +371,9 @@ object SysfsParsers {
         val effMhz = (parseFreqToMhz(attrs["rpe_freq"])
             ?: ((minMhz + maxMhz) / 2)).coerceIn(minMhz, maxMhz)
         val reqMhz = (parseFreqToMhz(attrs["cur_freq"]) ?: minMhz).coerceIn(0, maxMhz)
-        val actMhz = (parseFreqToMhz(attrs["act_freq"]) ?: reqMhz).coerceIn(0, maxMhz)
+        val parsedActMhz = parseFreqToMhz(attrs["act_freq"])
+        val actAvailable = parsedActMhz != null
+        val actMhz = (parsedActMhz ?: 0).coerceIn(0, maxMhz)
 
         val profileRaw = attrs["power_profile"].orEmpty()
         val selectedProfile = PROFILE_BRACKET_REGEX.find(profileRaw)?.groupValues?.getOrNull(1)
@@ -352,18 +381,13 @@ object SysfsParsers {
             ?: "power_saving"
 
         val reasons = ArrayList<String>()
-        val reasonKeys = listOf(
-            "reason_pl1" to "PL1",
-            "reason_pl2" to "PL2",
-            "reason_pl4" to "PL4",
-            "reason_prochot" to "PROCHOT",
-            "reason_ratl" to "RATL",
-            "reason_thermal" to "THERMAL",
-            "reason_vr_edc" to "VR_EDC",
-            "reason_vr_thermalert" to "VR_THERMALERT",
-        )
-        for ((k, label) in reasonKeys) {
-            if (attrs[k]?.trim() == "1") {
+        val reasonKeys = attrs.keys
+            .filter { it.startsWith("reason_") && it.length > "reason_".length }
+            .sorted()
+        for (key in reasonKeys) {
+            if (attrs[key]?.trim() == "1") {
+                val label = THROTTLE_REASON_LABELS[key]
+                    ?: sanitizeSensorName(key.removePrefix("reason_").uppercase(Locale.US), "THROTTLE")
                 reasons += label
             }
         }
@@ -374,15 +398,19 @@ object SysfsParsers {
             driverName = sanitizeSensorName(driverName, "gpu"),
             deviceName = sanitizeSensorName(deviceName, "Integrated GPU"),
             actualFreqMhz = actMhz,
+            actualFreqAvailable = actAvailable,
+            avgActualFreqMhz = avgActualFreqMhz?.coerceIn(0, maxMhz),
             requestedFreqMhz = reqMhz,
             minFreqMhz = minMhz,
             efficientFreqMhz = effMhz,
             maxFreqMhz = maxMhz,
             activeResidencyFraction = activeResidencyFraction?.coerceIn(0f, 1f),
+            busyCounterReadable = busyCounterReadable,
             powerProfile = sanitizeSensorName(selectedProfile, "power_saving"),
             isThrottled = statusThrottled,
             throttleReasons = reasons,
             mediaEngineFreqMhz = mediaMhz,
+            mediaEngineFreqReadable = mediaEngineFreqReadable,
         )
     }
 
@@ -462,16 +490,19 @@ object SysfsParsers {
         ivpuParams: IvpuParamInfo? = null,
         busyDeltaFraction: Float? = null,
         heartbeatActive: Boolean = false,
+        sysfsCountersReadable: Boolean = true,
     ): NpuTelemetrySnapshot {
         val hasHardwareEvidence =
             attrs.isNotEmpty() ||
                 drmVersion != null ||
                 ivpuParams != null ||
                 busyDeltaFraction != null ||
-                heartbeatActive
+                heartbeatActive ||
+                !sysfsCountersReadable
         if (!hasHardwareEvidence) {
             return NpuTelemetrySnapshot(
                 isPresent = false,
+                sysfsCountersReadable = true,
                 driverName = "none",
                 deviceName = "No NPU Present on SoC",
                 currentFreqMhz = 0,
@@ -525,6 +556,7 @@ object SysfsParsers {
 
         return NpuTelemetrySnapshot(
             isPresent = true,
+            sysfsCountersReadable = sysfsCountersReadable,
             driverName = driver,
             deviceName = sanitizeSensorName(baseDesc, "Intel NPU"),
             currentFreqMhz = curMhz,
@@ -548,6 +580,18 @@ object SysfsParsers {
             else -> v.toInt() // Already MHz
         }
     }
+
+    private val THROTTLE_REASON_LABELS = mapOf(
+        "reason_pl1" to "PL1",
+        "reason_pl2" to "PL2",
+        "reason_pl4" to "PL4",
+        "reason_prochot" to "PROCHOT",
+        "reason_ratl" to "RATL",
+        "reason_thermal" to "THERMAL",
+        "reason_vr_edc" to "VR_EDC",
+        "reason_vr_tdc" to "VR_TDC",
+        "reason_vr_thermalert" to "VR_THERMALERT",
+    )
 
     private val WHITESPACE_REGEX = Regex("\\s+")
     private val PROFILE_BRACKET_REGEX = Regex("\\[([^\\]]+)]")

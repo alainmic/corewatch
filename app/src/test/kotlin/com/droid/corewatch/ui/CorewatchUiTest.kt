@@ -48,6 +48,7 @@ import com.droid.corewatch.ui.theme.CorewatchTheme
 import com.droid.corewatch.ui.theme.ThemeMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -808,7 +809,7 @@ class CorewatchUiTest {
             assertEquals(0.06f, snap2.cpuCores[0].utilizationFraction, 0.01f)
             assertEquals(0.05f, snap2.cpuCores[1].utilizationFraction, 0.01f)
             assertEquals("powersave", snap2.cpuCores[1].scalingStateLabel)
-            assertEquals(0.25f, snap2.gpu.utilizationFraction, 0.01f)
+            assertEquals(0.25f, snap2.gpu.utilizationFraction!!, 0.01f)
             assertTrue(snap2.npu.isPresent)
             assertEquals(0.40f, snap2.npu.utilizationFraction, 0.01f)
             assertTrue(snap1.thermalSensors.any { it.celsius > 50f })
@@ -2156,7 +2157,7 @@ class CorewatchUiTest {
             rc6File.writeText("1600\n")
             val deniedBtOff = collectorI915.sample(CaffeineConfig(), nowElapsedMs = 2_000L)
             assertEquals("Off", deniedBtOff.bluetooth.connectionStateLabel)
-            assertEquals(0.40f, deniedBtOff.gpu.utilizationFraction, 0.02f)
+            assertEquals(0.40f, deniedBtOff.gpu.utilizationFraction!!, 0.02f)
 
             // Grant BLUETOOTH_CONNECT, DUMP, READ_LOGS, ACCESS_FINE_LOCATION, NEARBY_WIFI_DEVICES
             shadowAdapter.setEnabled(true)
@@ -2298,6 +2299,264 @@ class CorewatchUiTest {
             }
         } finally {
             com.droid.corewatch.data.AccelIoctlBridge.testDrmConnectorsProvider = null
+            tempRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun sysfsPermissionCacheRollingGpuActFreqThrottleEnumerationVsyncSysfsMtuAndA2dpGuard() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val shadowApp = org.robolectric.Shadows.shadowOf(app)
+        val tempRoot = java.nio.file.Files.createTempDirectory("cw_issues_1_to_7").toFile()
+        val lockedFiles = ArrayList<java.io.File>()
+        try {
+            // 1. Setup Xe GPU sysfs with unreadable gt1 media clocks & unreadable gtidle residency,
+            //    dynamic throttle/reason_vr_tdc = 1, and rolling act_freq samples [0, 0, 300, 244] -> avg 136 MHz.
+            val drmRoot = java.io.File(tempRoot, "drm").apply { mkdirs() }
+            val xeFreq0 = java.io.File(drmRoot, "card0/device/tile0/gt0/freq0").apply { mkdirs() }
+            val actFreqFile = java.io.File(xeFreq0, "act_freq").apply { writeText("0\n") }
+            java.io.File(xeFreq0, "cur_freq").writeText("900\n")
+            java.io.File(xeFreq0, "min_freq").writeText("850\n")
+            java.io.File(xeFreq0, "rpe_freq").writeText("900\n")
+            java.io.File(xeFreq0, "max_freq").writeText("2500\n")
+            val missingRpaFile = java.io.File(xeFreq0, "rpa_freq") // Missing at poll 1..2, created at poll 3
+
+            val xeThr = java.io.File(xeFreq0, "throttle").apply { mkdirs() }
+            java.io.File(xeThr, "status").writeText("1\n")
+            java.io.File(xeThr, "reason_vr_tdc").writeText("1\n")
+            java.io.File(xeThr, "reason_ratl").writeText("1\n")
+
+            val xeFreq1 = java.io.File(drmRoot, "card0/device/tile0/gt1/freq0").apply { mkdirs() }
+            val mediaAct = java.io.File(xeFreq1, "act_freq").apply {
+                writeText("500\n")
+                setReadable(false, false)
+                lockedFiles += this
+            }
+            val mediaCur = java.io.File(xeFreq1, "cur_freq").apply {
+                writeText("500\n")
+                setReadable(false, false)
+                lockedFiles += this
+            }
+
+            val xeIdleDir = java.io.File(drmRoot, "card0/device/tile0/gt0/gtidle").apply { mkdirs() }
+            val idleResFile = java.io.File(xeIdleDir, "idle_residency_ms").apply {
+                writeText("4000\n")
+                setReadable(false, false)
+                lockedFiles += this
+            }
+
+            // 2. Setup NPU /dev/accel0 ioctl provider while locking sysfs npu_* counter files (EACCES)
+            val accelRoot = java.io.File(tempRoot, "accel").apply { mkdirs() }
+            val accelDev = java.io.File(accelRoot, "accel0/device").apply { mkdirs() }
+            for (name in listOf("npu_busy_time_us", "npu_current_frequency_mhz", "npu_max_frequency_mhz")) {
+                java.io.File(accelDev, name).apply {
+                    writeText("1000\n")
+                    setReadable(false, false)
+                    lockedFiles += this
+                }
+            }
+            com.droid.corewatch.data.AccelIoctlBridge.testDrmVersionProvider = { path ->
+                if (path.contains("accel")) "intel_vpu|Driver for Intel NPU|1.0.0" else "xe|Intel Xe2 Graphics|1.1.0"
+            }
+            com.droid.corewatch.data.AccelIoctlBridge.testIvpuParamsProvider = { _, _ ->
+                longArrayOf(0xB03EL, 7L, 2_000_000_000L, 64L, 0x00030025L, 12L, 3L, 0L)
+            }
+
+            // 3. Setup Network MTU: wlan0 has LinkProperties.mtu = 0 -> reads /sys/class/net/wlan0/mtu = 1420;
+            //    eth1 has LinkProperties.mtu = 0 and no sysfs mtu file -> mtu = 0 ("—", never 1500).
+            val netRoot = java.io.File(tempRoot, "net").apply { mkdirs() }
+            java.io.File(netRoot, "wlan0").apply { mkdirs() }.let { java.io.File(it, "mtu").writeText("1420\n") }
+
+            val cm = app.getSystemService(android.net.ConnectivityManager::class.java)
+            val shadowCm = org.robolectric.Shadows.shadowOf(cm)
+            shadowCm.clearAllNetworks()
+            val wifiNet = org.robolectric.shadows.ShadowNetwork.newInstance(301)
+            val wifiCaps = org.robolectric.shadows.ShadowNetworkCapabilities.newInstance().also { caps ->
+                val sc = org.robolectric.Shadows.shadowOf(caps)
+                sc.addTransportType(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+                sc.addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                sc.addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            }
+            val wifiLp = android.net.LinkProperties().apply {
+                interfaceName = "wlan0"
+                mtu = 0
+            }
+            shadowCm.addNetwork(wifiNet, null)
+            shadowCm.setNetworkCapabilities(wifiNet, wifiCaps)
+            shadowCm.setLinkProperties(wifiNet, wifiLp)
+
+            val ethNet = org.robolectric.shadows.ShadowNetwork.newInstance(302)
+            val ethCaps = org.robolectric.shadows.ShadowNetworkCapabilities.newInstance().also { caps ->
+                val sc = org.robolectric.Shadows.shadowOf(caps)
+                sc.addTransportType(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
+                sc.addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                sc.addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            }
+            val ethLp = android.net.LinkProperties().apply {
+                interfaceName = "eth1"
+                mtu = 0
+            }
+            shadowCm.addNetwork(ethNet, null)
+            shadowCm.setNetworkCapabilities(ethNet, ethCaps)
+            shadowCm.setLinkProperties(ethNet, ethLp)
+
+            // 4. Setup Bluetooth A2DP proxy test double to verify Issue #7 (empty connectedDevices + SecurityException caching)
+            shadowApp.grantPermissions(android.Manifest.permission.BLUETOOTH_CONNECT)
+            val btMgr = app.getSystemService(android.bluetooth.BluetoothManager::class.java)
+            org.robolectric.Shadows.shadowOf(btMgr.adapter).setEnabled(true)
+            val audioMgr = app.getSystemService(android.media.AudioManager::class.java)
+            val a2dpOut = org.robolectric.shadows.AudioDeviceInfoBuilder.newBuilder()
+                .setType(android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP)
+                .build()
+            org.robolectric.Shadows.shadowOf(audioMgr).setOutputDevices(listOf(a2dpOut))
+
+            var fakeConnectedA2dpDevices: List<android.bluetooth.BluetoothDevice> = emptyList()
+            var getCodecStatusCalls = 0
+            var throwSecurityOnCodecQuery = true
+            val fakeA2dpAdapter = object : com.droid.corewatch.data.TelemetryCollector.A2dpProxyAdapter {
+                override fun connectedDevices(): List<android.bluetooth.BluetoothDevice> = fakeConnectedA2dpDevices
+
+                override fun queryCodecStatus(
+                    device: android.bluetooth.BluetoothDevice,
+                ): com.droid.corewatch.data.TelemetryCollector.CachedA2dpCodecInfo? {
+                    getCodecStatusCalls++
+                    if (throwSecurityOnCodecQuery) {
+                        throw SecurityException("BLUETOOTH_PRIVILEGED required for getCodecStatus")
+                    }
+                    return com.droid.corewatch.data.TelemetryCollector.CachedA2dpCodecInfo(
+                        codecType = 1, // AAC
+                        sampleRate = 0x2, // 48.0 kHz
+                        bitsPerSample = 0x1, // 16-bit
+                        channelMode = 0x2, // Stereo
+                        codecSpecific1 = 0L,
+                        selectableSummary = "SBC, AAC",
+                    )
+                }
+            }
+
+            val openCounts = HashMap<String, Int>()
+            val collector = com.droid.corewatch.data.TelemetryCollector(
+                context = app,
+                drmSysfsRoot = drmRoot,
+                accelSysfsRoot = accelRoot,
+                netSysfsRoot = netRoot,
+            ).also { c ->
+                c.fileOpenObserverForTesting = { p -> openCounts[p] = (openCounts[p] ?: 0) + 1 }
+                c.displayVsyncRateExtractor = { null }
+                c.displayArrSupportExtractor = { null }
+                c.testA2dpProxyAdapter = fakeA2dpAdapter
+            }
+            org.robolectric.util.ReflectionHelpers.setField(
+                collector,
+                "cachedBtLogcatText",
+                "mCodecConfig: {codecName:LDAC,mCodecType:4,mCodecPriority:1000,mSampleRate:0x4(96000),mBitsPerSample:0x4(24),mChannelMode:0x2(STEREO),mCodecSpecific1:1000}",
+            )
+
+            // Poll 1: act_freq = 0 (no connected A2DP device -> getCodecStatus never called with null)
+            val s1 = collector.sample(CaffeineConfig(), nowElapsedMs = 1_000L)
+            assertEquals("Idle (RC6)", s1.gpu.headlineFreqLabel)
+            assertNull(s1.gpu.utilizationFraction)
+            assertEquals("—", s1.gpu.headlineBusyLabel)
+            assertFalse(s1.gpu.busyCounterReadable)
+            assertFalse(s1.gpu.mediaEngineFreqReadable)
+            assertEquals("RATL, VR_TDC", s1.gpu.throttleSummary)
+            assertTrue(s1.npu.isPresent)
+            assertFalse(s1.npu.sysfsCountersReadable)
+            assertEquals(2000, s1.npu.maxFreqMhz)
+            assertEquals(1420, s1.wifi.mtu)
+            assertEquals("1420", s1.wifi.mtuLabel)
+            assertEquals(0, s1.ethernet.mtu)
+            assertEquals("—", s1.ethernet.mtuLabel)
+            assertNull(s1.displays.first().vsyncRateHz)
+            assertTrue(s1.displays.first().liveCadenceSummary.contains("VSync rate unavailable"))
+            assertFalse(s1.displays.first().androidArrAvailable)
+
+            // Poll 2: act_freq = 0
+            collector.sample(CaffeineConfig(), nowElapsedMs = 2_000L)
+            // Poll 3: act_freq = 300, and missing rpa_freq appears now (must still be retried & read!)
+            actFreqFile.writeText("300\n")
+            missingRpaFile.writeText("1800\n")
+            val s3 = collector.sample(CaffeineConfig(), nowElapsedMs = 3_000L)
+            assertEquals("300 MHz", s3.gpu.headlineFreqLabel)
+
+            // Poll 4: act_freq = 244 -> rolling avg over [0, 0, 300, 244] = 544 / 4 = 136 MHz
+            actFreqFile.writeText("244\n")
+            val s4 = collector.sample(CaffeineConfig(), nowElapsedMs = 4_000L)
+            assertEquals(136, s4.gpu.avgActualFreqMhz)
+            assertEquals("Expected 0 getCodecStatus calls when connectedDevices is empty", 0, getCodecStatusCalls)
+
+            // Verify every chmod 000 sysfs path was probed AT MOST ONCE across 4 polls, while missingRpaFile was retried!
+            for (locked in lockedFiles) {
+                assertTrue("Expected ${locked.path} cached unreadable", collector.isPathMarkedUnreadable(locked))
+                assertEquals("Expected ${locked.name} opened once", 1, openCounts[locked.path])
+            }
+            assertFalse("Missing file must not be cached unreadable", collector.isPathMarkedUnreadable(missingRpaFile))
+            assertEquals(4, openCounts[missingRpaFile.path])
+
+            // Verify Issue #7: when A2DP sink connects & getCodecStatus throws SecurityException,
+            // it is probed ONCE, cached across polls (using LDAC logcat fallback), and re-probed ONLY on ACTION_CONNECTION_STATE_CHANGED!
+            val btSink = btMgr.adapter.getRemoteDevice("AA:BB:CC:11:22:33")
+            fakeConnectedA2dpDevices = listOf(btSink)
+            val btDenied1 = collector.sample(CaffeineConfig(), nowElapsedMs = 5_000L)
+            val btDenied2 = collector.sample(CaffeineConfig(), nowElapsedMs = 6_000L)
+            val btDenied3 = collector.sample(CaffeineConfig(), nowElapsedMs = 7_000L)
+            assertEquals(1, getCodecStatusCalls)
+            assertEquals("LDAC", btDenied1.bluetooth.audioCodec.activeCodecName)
+            assertEquals("LDAC", btDenied2.bluetooth.audioCodec.activeCodecName)
+            assertEquals("LDAC", btDenied3.bluetooth.audioCodec.activeCodecName)
+
+            // Now simulate A2DP connection state change when getCodecStatus succeeds -> re-probes once and caches AAC!
+            throwSecurityOnCodecQuery = false
+            app.sendBroadcast(android.content.Intent(android.bluetooth.BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED))
+            org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+            val btAllowed1 = collector.sample(CaffeineConfig(), nowElapsedMs = 8_000L)
+            val btAllowed2 = collector.sample(CaffeineConfig(), nowElapsedMs = 9_000L)
+            assertEquals(2, getCodecStatusCalls)
+            assertEquals("AAC", btAllowed1.bluetooth.audioCodec.activeCodecName)
+            assertEquals("AAC", btAllowed2.bluetooth.audioCodec.activeCodecName)
+
+            // 5. Render s4 in Compose Workbench + Mini-HUD + Display + Network tabs and verify all new UI hints!
+            val vm = CorewatchViewModel(app)
+            vm.setSnapshotForTesting(s4)
+            composeRule.setContent {
+                CorewatchTheme(dark = true) {
+                    CorewatchAppRoot(vm = vm)
+                }
+            }
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("— · 244 MHz").performScrollTo().assertIsDisplayed()
+            composeRule.onNodeWithText("busy % unavailable on this build", substring = true).performScrollTo().assertIsDisplayed()
+            composeRule.onNodeWithText("Avg actual: 136 MHz · requested 900 MHz · floor 850 MHz", substring = true)
+                .performScrollTo()
+                .assertIsDisplayed()
+            composeRule.onNodeWithText("Media engine clock: not readable on this build", substring = true)
+                .performScrollTo()
+                .assertIsDisplayed()
+            composeRule.onNodeWithText("Throttle: RATL, VR_TDC", substring = true).performScrollTo().assertIsDisplayed()
+            composeRule.onNodeWithText("NPU counters: not readable on this build", substring = true)
+                .performScrollTo()
+                .assertIsDisplayed()
+
+            // Switch to Display tab (Tab 4) -> verify VSync rate unavailable & Android ARR: Unavailable
+            composeRule.onNodeWithTag("tab_3").performClick()
+            composeRule.onNodeWithText("VSync rate unavailable", substring = true).performScrollTo().assertIsDisplayed()
+            composeRule.onNodeWithText("Android ARR: Unavailable", substring = true).performScrollTo().assertIsDisplayed()
+
+            // Switch to Network tab (Tab 5) -> verify wlan0 MTU 1420 and eth1 MTU —
+            composeRule.onNodeWithTag("tab_4").performClick()
+            composeRule.onNodeWithText("Interface: wlan0 (MTU 1420)", substring = true).performScrollTo().assertIsDisplayed()
+            composeRule.onNodeWithText("Interface: eth1 (MTU —)", substring = true).performScrollTo().assertIsDisplayed()
+
+            // Switch to Mini-HUD -> verify GPU & NPU primary & sub labels
+            composeRule.onNodeWithTag("btn_mini_hud").performClick()
+            composeRule.onNodeWithText("GPU — (244 MHz) · NPU —").assertIsDisplayed()
+            composeRule.onNodeWithText("counters unavailable", substring = true).assertIsDisplayed()
+        } finally {
+            for (f in lockedFiles) {
+                runCatching { f.setReadable(true, false) }
+            }
+            com.droid.corewatch.data.AccelIoctlBridge.testDrmVersionProvider = null
+            com.droid.corewatch.data.AccelIoctlBridge.testIvpuParamsProvider = null
             tempRoot.deleteRecursively()
         }
     }

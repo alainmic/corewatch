@@ -4,9 +4,11 @@
 package com.droid.corewatch.data
 
 import java.io.File
+import java.nio.file.Files
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -1186,16 +1188,22 @@ object UsbPeripheralParsers {
         return count
     }
 
+    private val unreadableUsbAttrPaths: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
     private fun readSmallAttr(dir: File, name: String): String? {
+        val f = File(dir, name)
+        val pathKey = f.path
+        if (pathKey in unreadableUsbAttrPaths) return null
         return try {
-            val f = File(dir, name)
-            if (!f.isFile || !f.canRead()) return null
-            f.inputStream().use { input ->
+            Files.newInputStream(f.toPath()).use { input ->
                 val buf = ByteArray(256)
                 val n = input.read(buf)
                 if (n <= 0) null else String(buf, 0, n, Charsets.UTF_8).trim()
             }
-        } catch (_: Exception) {
+        } catch (t: Throwable) {
+            if (TelemetryCollector.isPermissionFailure(t)) {
+                unreadableUsbAttrPaths += pathKey
+            }
             null
         }
     }

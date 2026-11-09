@@ -331,7 +331,11 @@ class CorewatchDataUnitTest {
             activeResidencyFraction = 0.01f,
         )
         assertEquals("rc6-sleep", idleGpu.scalingStateLabel)
-        assertEquals(800, idleGpu.displayFreqMhz)
+        assertEquals(0, idleGpu.actualFreqMhz)
+        assertTrue(idleGpu.actualFreqAvailable)
+        assertEquals("Idle (RC6)", idleGpu.headlineFreqLabel)
+        assertEquals("1%", idleGpu.headlineBusyLabel)
+        assertEquals(800, idleGpu.requestedFreqMhz)
         assertEquals("base", idleGpu.powerProfile)
         assertFalse(idleGpu.isThrottled)
         assertEquals("Nominal", idleGpu.throttleSummary)
@@ -352,7 +356,9 @@ class CorewatchDataUnitTest {
         assertTrue(throttledGpu.isThrottled)
         assertEquals("throttled", throttledGpu.scalingStateLabel)
         assertEquals("PL1, THERMAL", throttledGpu.throttleSummary)
-        assertEquals(0.72f, throttledGpu.utilizationFraction, 0.02f)
+        assertEquals("1800 MHz", throttledGpu.headlineFreqLabel)
+        assertNull(throttledGpu.utilizationFraction)
+        assertEquals("—", throttledGpu.headlineBusyLabel)
 
         val drmVer = AccelIoctlBridge.parseDrmVersionString("intel_vpu|Driver for Intel NPU|1.0.0")
         assertNotNull(drmVer)
@@ -2102,5 +2108,133 @@ class CorewatchDataUnitTest {
         assertEquals(40, gpuSnap.longGpuJank5m)
         assertEquals(3, gpuSnap.longCpuJank5m)
         assertEquals(1, gpuSnap.activeAppCount5m)
+    }
+
+    @Test
+    fun gpuHeadlineActFreqNoResidencyThrottleReasonsVsyncUnavailableAndMtuFallback() {
+        // Issue #1 & #2: act_freq = 0 with no residency -> "Idle (RC6)", null utilization, "rc6-sleep"
+        val idleNoResidency = SysfsParsers.parseGpuTelemetry(
+            attrs = mapOf(
+                "act_freq" to "0",
+                "cur_freq" to "900",
+                "min_freq" to "850",
+                "rpe_freq" to "900",
+                "max_freq" to "2500",
+            ),
+            activeResidencyFraction = null,
+        )
+        assertTrue(idleNoResidency.actualFreqAvailable)
+        assertEquals(0, idleNoResidency.actualFreqMhz)
+        assertEquals(900, idleNoResidency.requestedFreqMhz)
+        assertEquals(850, idleNoResidency.minFreqMhz)
+        assertEquals("Idle (RC6)", idleNoResidency.headlineFreqLabel)
+        assertNull(idleNoResidency.utilizationFraction)
+        assertEquals("—", idleNoResidency.headlineBusyLabel)
+        assertEquals("rc6-sleep", idleNoResidency.scalingStateLabel)
+
+        // Issue #1 & #2: act_freq > 0 (300 / 1200 MHz) with no residency -> must NOT fake 25% busy or "balanced"
+        val activeNoResidency = SysfsParsers.parseGpuTelemetry(
+            attrs = mapOf(
+                "act_freq" to "300",
+                "cur_freq" to "300",
+                "min_freq" to "300",
+                "max_freq" to "1200",
+            ),
+            activeResidencyFraction = null,
+            avgActualFreqMhz = 136,
+        )
+        assertTrue(activeNoResidency.actualFreqAvailable)
+        assertEquals(300, activeNoResidency.actualFreqMhz)
+        assertEquals(136, activeNoResidency.avgActualFreqMhz)
+        assertEquals("300 MHz", activeNoResidency.headlineFreqLabel)
+        assertNull(activeNoResidency.utilizationFraction)
+        assertEquals("—", activeNoResidency.headlineBusyLabel)
+        assertEquals("active", activeNoResidency.scalingStateLabel)
+
+        // Issue #1: missing act_freq -> actualFreqAvailable = false, headline "—", state "unknown" without residency
+        val missingActFreq = SysfsParsers.parseGpuTelemetry(
+            attrs = mapOf(
+                "cur_freq" to "850",
+                "min_freq" to "850",
+                "max_freq" to "2500",
+            ),
+            activeResidencyFraction = null,
+        )
+        assertFalse(missingActFreq.actualFreqAvailable)
+        assertEquals(0, missingActFreq.actualFreqMhz)
+        assertEquals("—", missingActFreq.headlineFreqLabel)
+        assertNull(missingActFreq.utilizationFraction)
+        assertEquals("unknown", missingActFreq.scalingStateLabel)
+
+        // Issue #4: reason_vr_tdc + unknown reason_* suffix fallback
+        val vrTdcThrottled = SysfsParsers.parseGpuTelemetry(
+            attrs = mapOf(
+                "act_freq" to "950",
+                "cur_freq" to "1200",
+                "max_freq" to "2500",
+                "reason_vr_tdc" to "1",
+                "reason_vr_edc" to "0",
+                "reason_pbm_limit" to "1",
+            ),
+            activeResidencyFraction = 0.50f,
+        )
+        assertTrue(vrTdcThrottled.isThrottled)
+        assertEquals(listOf("PBM_LIMIT", "VR_TDC"), vrTdcThrottled.throttleReasons)
+        assertEquals("PBM_LIMIT, VR_TDC", vrTdcThrottled.throttleSummary)
+
+        // Issue #5: Display.Mode.getVsyncRate() unavailable -> liveCadenceSummary labels Mode Hz + VSync unavailable
+        val noVsyncDisplay = DisplayAuditor.auditDisplay(
+            displayId = 0,
+            rawName = "Built-in Screen",
+            activeModeId = 1,
+            activeWidth = 2560,
+            activeHeight = 1600,
+            activeRefreshHz = 120f,
+            logicalDpi = 240,
+            physicalXDpi = 227f,
+            physicalYDpi = 227f,
+            hdrTypeIds = intArrayOf(),
+            modes = listOf(DisplayModeSpec(1, 2560, 1600, 120f, isActive = true)),
+            renderFrameRateHz = 60f,
+            vsyncRateHz = null,
+            supportedRefreshRatesHz = floatArrayOf(60f, 120f),
+            vrrCapable = true,
+            androidArrAvailable = false,
+        )
+        assertNull(noVsyncDisplay.vsyncRateHz)
+        assertFalse(noVsyncDisplay.androidArrAvailable)
+        assertEquals("VRR Capable", noVsyncDisplay.vrrStatusBadge)
+        assertEquals("Render 60 Hz · Mode 120 Hz (VSync rate unavailable)", noVsyncDisplay.liveCadenceSummary)
+
+        // Issue #6 & DiagnosticReportBuilder: unknown MTU renders "—", GPU idle/unavailable & NPU unreadable counters format cleanly
+        val unknownMtuWifi = WifiTelemetrySnapshot(isConnected = true, mtu = 0)
+        val unknownMtuEth = EthernetTelemetrySnapshot(isConnected = true, interfaceName = "eth0", mtu = 0)
+        assertEquals("—", unknownMtuWifi.mtuLabel)
+        assertEquals("—", unknownMtuEth.mtuLabel)
+        assertEquals("9000", EthernetTelemetrySnapshot(isConnected = true, mtu = 9000).mtuLabel)
+
+        val lockedCountersNpu = SysfsParsers.parseNpuTelemetry(
+            attrs = emptyMap(),
+            drmVersion = DrmVersionInfo("intel_vpu", "Intel NPU", "1.0.0"),
+            ivpuParams = AccelIoctlBridge.parseIvpuParamsArray(
+                longArrayOf(0xB03EL, 7L, 2_000_000_000L, 64L, 0x00030025L, 0L, 3L, 0L),
+            ),
+            sysfsCountersReadable = false,
+        )
+        assertTrue(lockedCountersNpu.isPresent)
+        assertFalse(lockedCountersNpu.sysfsCountersReadable)
+
+        val md = DiagnosticReportBuilder.buildMarkdownReport(
+            SystemTelemetrySnapshot(
+                gpu = activeNoResidency,
+                npu = lockedCountersNpu,
+                ethernet = unknownMtuEth,
+                displays = listOf(noVsyncDisplay),
+            ),
+        )
+        assertTrue(md.contains("`—` (busy % unavailable)"))
+        assertTrue(md.contains("`300 MHz`, avg `136 MHz`, requested `300 MHz`, floor `300 MHz`"))
+        assertTrue(md.contains("`NPU counters not readable`"))
+        assertTrue(md.contains("MTU `—`"))
     }
 }
