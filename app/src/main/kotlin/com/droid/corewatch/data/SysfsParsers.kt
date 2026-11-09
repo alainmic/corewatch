@@ -109,14 +109,29 @@ data class GpuTelemetrySnapshot(
     val mediaEngineFreqReadable: Boolean = true,
 ) {
     /**
-     * Headline GPU operating clock: `act_freq` when active (`"950 MHz"`), `"Idle (RC6)"` when
-     * `act_freq == 0`, or `"—"` when `act_freq` is missing/unreadable.
+     * Effective GPU operating clock over the sampling interval:
+     * - `actualFreqMhz` (`act_freq`) when caught mid-slice (`> 0`).
+     * - `requestedFreqMhz` (`cur_freq`, GuC SLPC operating point) when `act_freq == 0` during an
+     *   inter-frame RC6 micro-sleep on high-refresh (120 Hz) panels while `activeResidencyFraction >= 1.5%`.
+     * - `0` when genuinely idle in RC6 across the interval (or when residency is unavailable and `act_freq == 0`).
+     */
+    val operatingFreqMhz: Int
+        get() = when {
+            !actualFreqAvailable -> 0
+            actualFreqMhz > 0 -> actualFreqMhz
+            activeResidencyFraction != null && activeResidencyFraction >= 0.015f -> requestedFreqMhz
+            else -> 0
+        }
+
+    /**
+     * Headline GPU operating clock: `operatingFreqMhz` when active (`"950 MHz"`), `"Idle (RC6)"` when
+     * idle in RC6 (`operatingFreqMhz == 0`), or `"—"` when `act_freq` is missing/unreadable.
      */
     val headlineFreqLabel: String
         get() = when {
             !actualFreqAvailable -> "—"
-            actualFreqMhz <= 0 -> "Idle (RC6)"
-            else -> "$actualFreqMhz MHz"
+            operatingFreqMhz <= 0 -> "Idle (RC6)"
+            else -> "$operatingFreqMhz MHz"
         }
 
     /**
@@ -135,7 +150,7 @@ data class GpuTelemetrySnapshot(
             val util = utilizationFraction
             return if (util != null) {
                 when {
-                    actualFreqAvailable && actualFreqMhz == 0 && util < 0.05f -> "rc6-sleep"
+                    actualFreqAvailable && operatingFreqMhz == 0 && util < 0.05f -> "rc6-sleep"
                     util >= 0.62f -> "turbo"
                     util >= 0.25f -> "balanced"
                     else -> "powersave"
@@ -156,9 +171,11 @@ data class GpuTelemetrySnapshot(
 data class NpuTelemetrySnapshot(
     val isPresent: Boolean = true,
     val sysfsCountersReadable: Boolean = true,
+    val hasLiveClock: Boolean = sysfsCountersReadable,
     val driverName: String = "intel_vpu",
     val deviceName: String = "Intel NPU",
     val currentFreqMhz: Int = 0,
+    val nceFreqMhz: Int? = null,
     val maxFreqMhz: Int = 2000,
     val activeUtilizationFraction: Float = 0f,
     val engineHeartbeat: Long = 0L,
@@ -170,11 +187,31 @@ data class NpuTelemetrySnapshot(
     val utilizationFraction: Float
         get() = if (!isPresent) 0f else activeUtilizationFraction.coerceIn(0f, 1f)
 
+    val headlineLabel: String
+        get() = when {
+            !isPresent -> "Not Present"
+            !sysfsCountersReadable && !hasLiveClock && activeContexts == 0 -> "— · Max $maxFreqMhz MHz"
+            currentFreqMhz <= 0 && activeContexts == 0 && utilizationFraction < 0.005f -> "0% · Idle (D3cold)"
+            !sysfsCountersReadable && hasLiveClock -> String.format(
+                Locale.US,
+                "Active · %d / %d MHz",
+                currentFreqMhz,
+                maxFreqMhz,
+            )
+            else -> String.format(
+                Locale.US,
+                "%d%% · %d / %d MHz",
+                (utilizationFraction * 100f).roundToInt(),
+                currentFreqMhz,
+                maxFreqMhz,
+            )
+        }
+
     val scalingStateLabel: String
         get() = when {
             !isPresent -> "not-present"
-            utilizationFraction >= 0.62f -> "turbo"
-            utilizationFraction >= 0.15f -> "active"
+            utilizationFraction >= 0.62f || (maxFreqMhz > 0 && currentFreqMhz >= (maxFreqMhz * 3) / 4) -> "turbo"
+            utilizationFraction >= 0.15f || activeContexts > 0 -> "active"
             currentFreqMhz > 0 && utilizationFraction > 0.01f -> "balanced"
             else -> "d3cold-sleep"
         }
@@ -503,9 +540,11 @@ object SysfsParsers {
             return NpuTelemetrySnapshot(
                 isPresent = false,
                 sysfsCountersReadable = true,
+                hasLiveClock = false,
                 driverName = "none",
                 deviceName = "No NPU Present on SoC",
                 currentFreqMhz = 0,
+                nceFreqMhz = null,
                 maxFreqMhz = 0,
                 activeUtilizationFraction = 0f,
                 engineHeartbeat = 0L,
@@ -531,12 +570,19 @@ object SysfsParsers {
 
         val sysfsCurMhz = parseFreqToMhz(attrs["npu_current_frequency_mhz"])
             ?: parseFreqToMhz(attrs["current_freq"])
+        val ioctlDpuMhz = ivpuParams?.liveDpuClockMhz
+        val ioctlNceMhz = ivpuParams?.liveNceClockMhz?.coerceIn(0, maxMhz)
+        val hasLiveClock = sysfsCountersReadable || ioctlDpuMhz != null
+        val resolvedLiveMhz = sysfsCurMhz ?: ioctlDpuMhz
 
         val activeCtx = ivpuParams?.activeContexts?.coerceAtLeast(0) ?: 0
         val contextLoad = ((activeCtx.toFloat() * 0.24f) + if (heartbeatActive) 0.20f else 0f).coerceIn(0f, 1f)
 
         val activeFrac = when {
             busyDeltaFraction != null -> busyDeltaFraction.coerceIn(0f, 1f)
+            ioctlDpuMhz != null && activeCtx == 0 && ioctlDpuMhz == 0 -> 0f
+            ioctlDpuMhz != null && (activeCtx > 0 || ioctlDpuMhz > 0) ->
+                (ioctlDpuMhz.toFloat() / maxMhz.toFloat()).coerceIn(0.05f, 1f)
             contextLoad > 0f -> contextLoad
             heartbeatActive -> 0.55f
             sysfsCurMhz != null && sysfsCurMhz > 0 -> (sysfsCurMhz.toFloat() / maxMhz.toFloat()).coerceIn(0f, 1f)
@@ -544,7 +590,7 @@ object SysfsParsers {
         }
 
         val curMhz = when {
-            sysfsCurMhz != null -> sysfsCurMhz.coerceIn(0, maxMhz)
+            resolvedLiveMhz != null -> resolvedLiveMhz.coerceIn(0, maxMhz)
             activeFrac > 0.01f -> (600 + ((maxMhz - 600) * activeFrac).roundToInt()).coerceIn(200, maxMhz)
             else -> 0
         }
@@ -557,9 +603,11 @@ object SysfsParsers {
         return NpuTelemetrySnapshot(
             isPresent = true,
             sysfsCountersReadable = sysfsCountersReadable,
+            hasLiveClock = hasLiveClock,
             driverName = driver,
             deviceName = sanitizeSensorName(baseDesc, "Intel NPU"),
             currentFreqMhz = curMhz,
+            nceFreqMhz = ioctlNceMhz,
             maxFreqMhz = maxMhz,
             activeUtilizationFraction = activeFrac,
             engineHeartbeat = heartbeat,

@@ -2236,5 +2236,62 @@ class CorewatchDataUnitTest {
         assertTrue(md.contains("`300 MHz`, avg `136 MHz`, requested `300 MHz`, floor `300 MHz`"))
         assertTrue(md.contains("`NPU counters not readable`"))
         assertTrue(md.contains("MTU `—`"))
+
+        // Interval-aware GPU operating clock on 120 Hz desktop (inter-frame RC6 micro-sleep with act_freq = 0, residency = 3.5%)
+        val interFrameGpu = SysfsParsers.parseGpuTelemetry(
+            attrs = mapOf(
+                "act_freq" to "0",
+                "cur_freq" to "700",
+                "min_freq" to "650",
+                "rpe_freq" to "900",
+                "max_freq" to "2500",
+            ),
+            activeResidencyFraction = 0.035f,
+        )
+        assertEquals(0, interFrameGpu.actualFreqMhz)
+        assertEquals(700, interFrameGpu.operatingFreqMhz)
+        assertEquals("700 MHz", interFrameGpu.headlineFreqLabel)
+        assertEquals("4%", interFrameGpu.headlineBusyLabel)
+        assertEquals("powersave", interFrameGpu.scalingStateLabel)
+
+        // /dev/accel0 METRIC_STREAMER 11-element IvpuParamInfo (zero-wakeup D3cold idle + active DPU/NCE clock scaling)
+        assertEquals(0, IvpuParamInfo.normalizeRawClockToMhz(0L))
+        assertEquals(950, IvpuParamInfo.normalizeRawClockToMhz(950_000L))
+        assertEquals(543, IvpuParamInfo.normalizeRawClockToMhz(542_857L))
+        assertEquals(2000, IvpuParamInfo.normalizeRawClockToMhz(2_000_000_000L))
+        assertEquals(1400, IvpuParamInfo.normalizeRawClockToMhz(1400L))
+
+        val idleIoctlNpu = SysfsParsers.parseNpuTelemetry(
+            attrs = emptyMap(),
+            drmVersion = DrmVersionInfo("intel_vpu", "Intel NPU", "1.0.0"),
+            ivpuParams = AccelIoctlBridge.parseIvpuParamsArray(
+                longArrayOf(0xB03EL, 0L, 2_000_000_000L, 64L, 0x0003000AL, 0L, 3L, 0L, 0L, 0L, 1L),
+            ),
+            sysfsCountersReadable = false,
+        )
+        assertTrue(idleIoctlNpu.hasLiveClock)
+        assertEquals(0, idleIoctlNpu.currentFreqMhz)
+        assertEquals("0% · Idle (D3cold)", idleIoctlNpu.headlineLabel)
+        assertEquals("d3cold-sleep", idleIoctlNpu.scalingStateLabel)
+
+        val activeIoctlNpu = SysfsParsers.parseNpuTelemetry(
+            attrs = emptyMap(),
+            drmVersion = DrmVersionInfo("intel_vpu", "Intel NPU", "1.0.0"),
+            ivpuParams = AccelIoctlBridge.parseIvpuParamsArray(
+                longArrayOf(0xB03EL, 0L, 2_000_000_000L, 64L, 0x0003000AL, 44L, 3L, 2L, 950_000L, 542_857L, 1L),
+            ),
+            sysfsCountersReadable = false,
+        )
+        assertTrue(activeIoctlNpu.hasLiveClock)
+        assertEquals(950, activeIoctlNpu.currentFreqMhz)
+        assertEquals(543, activeIoctlNpu.nceFreqMhz)
+        assertEquals("Active · 950 / 2000 MHz", activeIoctlNpu.headlineLabel)
+        assertEquals("active", activeIoctlNpu.scalingStateLabel)
+
+        val mdIdleIoctl = DiagnosticReportBuilder.buildMarkdownReport(SystemTelemetrySnapshot(npu = idleIoctlNpu))
+        assertTrue(mdIdleIoctl.contains("`0%` idle (`0 / 2000 MHz` D3cold"))
+        val mdActiveIoctl = DiagnosticReportBuilder.buildMarkdownReport(SystemTelemetrySnapshot(gpu = interFrameGpu, npu = activeIoctlNpu))
+        assertTrue(mdActiveIoctl.contains("`4%` active (`700 MHz`"))
+        assertTrue(mdActiveIoctl.contains("`Active` (`950 / 2000 MHz`, NCE `543 MHz`"))
     }
 }

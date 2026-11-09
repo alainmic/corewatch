@@ -1115,7 +1115,11 @@ internal fun MiniHudView(
                     // 2. GPU & NPU Hardware Accelerators Sparkline Row
                     val npuHudPrimary = when {
                         !snap.npu.isPresent -> "NPU N/A"
-                        !snap.npu.sysfsCountersReadable && snap.npu.activeContexts == 0 -> "NPU —"
+                        !snap.npu.sysfsCountersReadable && !snap.npu.hasLiveClock && snap.npu.activeContexts == 0 -> "NPU —"
+                        snap.npu.currentFreqMhz <= 0 && snap.npu.activeContexts == 0 && snap.npu.utilizationFraction < 0.005f ->
+                            "NPU Idle"
+                        !snap.npu.sysfsCountersReadable && snap.npu.hasLiveClock ->
+                            "NPU ${snap.npu.currentFreqMhz} MHz"
                         else -> String.format(Locale.US, "NPU %d%%", (snap.npu.utilizationFraction * 100f).roundToInt())
                     }
                     val gpuAvgPart = snap.gpu.avgActualFreqMhz?.let { "avg $it · " } ?: ""
@@ -1123,16 +1127,19 @@ internal fun MiniHudView(
                         title = "GPU & NPU",
                         primaryValue = "GPU ${snap.gpu.headlineBusyLabel} (${snap.gpu.headlineFreqLabel}) · $npuHudPrimary",
                         subValue = if (snap.npu.isPresent) {
-                            val npuSub = if (snap.npu.sysfsCountersReadable) {
-                                String.format(
-                                    Locale.US,
-                                    "%s (%d/%d MHz)",
-                                    snap.npu.scalingStateLabel,
-                                    snap.npu.currentFreqMhz,
-                                    snap.npu.maxFreqMhz,
-                                )
-                            } else {
-                                "counters unavailable (${snap.npu.activeContexts}/${snap.npu.maxContexts} ctx)"
+                            val npuSub = when {
+                                snap.npu.sysfsCountersReadable || snap.npu.hasLiveClock -> {
+                                    val ncePart = snap.npu.nceFreqMhz?.takeIf { it > 0 }?.let { " · NCE $it" } ?: ""
+                                    String.format(
+                                        Locale.US,
+                                        "%s (%d/%d MHz%s)",
+                                        snap.npu.scalingStateLabel,
+                                        snap.npu.currentFreqMhz,
+                                        snap.npu.maxFreqMhz,
+                                        ncePart,
+                                    )
+                                }
+                                else -> "counters unavailable (${snap.npu.activeContexts}/${snap.npu.maxContexts} ctx)"
                             }
                             "GPU ${snap.gpu.scalingStateLabel} (${gpuAvgPart}req ${snap.gpu.requestedFreqMhz} MHz) · NPU $npuSub"
                         } else {
@@ -1528,18 +1535,7 @@ private fun OverviewThermalsTab(state: CorewatchUiState, vm: CorewatchViewModel)
                             Text("NPU Accelerator (60s)", style = MaterialTheme.typography.titleMedium)
                         }
                         Text(
-                            text = when {
-                                !snap.npu.isPresent -> "Not Present"
-                                !snap.npu.sysfsCountersReadable && snap.npu.activeContexts == 0 ->
-                                    "— · Max ${snap.npu.maxFreqMhz} MHz"
-                                else -> String.format(
-                                    Locale.US,
-                                    "%d%% · %d / %d MHz",
-                                    (snap.npu.utilizationFraction * 100f).roundToInt(),
-                                    snap.npu.currentFreqMhz,
-                                    snap.npu.maxFreqMhz,
-                                )
-                            },
+                            text = snap.npu.headlineLabel,
                             style = CorewatchMonoTypography.metricLarge,
                             color = if (snap.npu.isPresent) cs.tertiary else cs.onSurfaceVariant,
                         )
@@ -1553,11 +1549,12 @@ private fun OverviewThermalsTab(state: CorewatchUiState, vm: CorewatchViewModel)
                         style = CorewatchMonoTypography.hudSmall,
                         color = cs.onSurface,
                     )
+                    val nceClockSegment = snap.npu.nceFreqMhz?.takeIf { it > 0 }?.let { " · NCE: $it MHz" } ?: ""
                     Text(
                         text = when {
                             !snap.npu.isPresent ->
                                 "No dedicated NPU accelerator (/dev/accel0, /sys/class/accel) detected on this processor"
-                            !snap.npu.sysfsCountersReadable ->
+                            !snap.npu.sysfsCountersReadable && !snap.npu.hasLiveClock ->
                                 String.format(
                                     Locale.US,
                                     "NPU counters: not readable on this build · Active Contexts: %d / %d · Max DPU Clock: %d MHz",
@@ -1565,10 +1562,30 @@ private fun OverviewThermalsTab(state: CorewatchUiState, vm: CorewatchViewModel)
                                     snap.npu.maxContexts,
                                     snap.npu.maxFreqMhz,
                                 )
+                            !snap.npu.sysfsCountersReadable && snap.npu.activeContexts == 0 && snap.npu.currentFreqMhz <= 0 ->
+                                String.format(
+                                    Locale.US,
+                                    "D3cold suspended (0 MHz) · Active Contexts: %d / %d · Max DPU Clock: %d MHz",
+                                    snap.npu.activeContexts,
+                                    snap.npu.maxContexts,
+                                    snap.npu.maxFreqMhz,
+                                )
+                            !snap.npu.sysfsCountersReadable ->
+                                String.format(
+                                    Locale.US,
+                                    "DPU: %d MHz%s · Active Contexts: %d / %d · Max: %d MHz (busy %% sysfs locked)",
+                                    snap.npu.currentFreqMhz,
+                                    nceClockSegment,
+                                    snap.npu.activeContexts,
+                                    snap.npu.maxContexts,
+                                    snap.npu.maxFreqMhz,
+                                )
                             else ->
                                 String.format(
                                     Locale.US,
-                                    "Active Contexts: %d / %d · Max DPU Clock: %d MHz · Peak: %.1f%%",
+                                    "DPU: %d MHz%s · Active Contexts: %d / %d · Max: %d MHz · Peak: %.1f%%",
+                                    snap.npu.currentFreqMhz,
+                                    nceClockSegment,
                                     snap.npu.activeContexts,
                                     snap.npu.maxContexts,
                                     snap.npu.maxFreqMhz,

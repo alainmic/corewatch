@@ -2551,6 +2551,53 @@ class CorewatchUiTest {
             composeRule.onNodeWithTag("btn_mini_hud").performClick()
             composeRule.onNodeWithText("GPU — (244 MHz) · NPU —").assertIsDisplayed()
             composeRule.onNodeWithText("counters unavailable", substring = true).assertIsDisplayed()
+            composeRule.onNodeWithTag("btn_expand_workbench").performClick()
+            composeRule.onNodeWithTag("tab_0").performClick()
+
+            // 6. Verify 120 Hz inter-frame GPU operating clock + /dev/accel0 METRIC_STREAMER NPU live clocks (idle -> active -> turbo -> idle)
+            idleResFile.setReadable(true, false)
+            idleResFile.writeText("4000\n")
+            actFreqFile.writeText("0\n")
+            var npuActiveCtx = 0L
+            var npuDpuRaw = 0L
+            var npuNceRaw = 0L
+            com.droid.corewatch.data.AccelIoctlBridge.testIvpuParamsProvider = { _, _ ->
+                longArrayOf(0xB03EL, 0L, 2_000_000_000L, 64L, 0x0003000AL, 50L, 3L, npuActiveCtx, npuDpuRaw, npuNceRaw, 1L)
+            }
+            val liveCollector = com.droid.corewatch.data.TelemetryCollector(
+                context = app,
+                drmSysfsRoot = drmRoot,
+                accelSysfsRoot = accelRoot,
+            )
+            // Poll A (10s): idle NPU (0 ctx -> 0 MHz D3cold) + baseline GPU idle residency
+            val liveIdle = liveCollector.sample(CaffeineConfig(), nowElapsedMs = 10_000L)
+            assertEquals("Idle (RC6)", liveIdle.gpu.headlineFreqLabel)
+            assertEquals("0% · Idle (D3cold)", liveIdle.npu.headlineLabel)
+            vm.setSnapshotForTesting(liveIdle)
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("0% · Idle (D3cold)").performScrollTo().assertIsDisplayed()
+            composeRule.onNodeWithText("D3cold suspended (0 MHz)", substring = true).performScrollTo().assertIsDisplayed()
+
+            // Poll B (11s): 4% GPU active residency (960 ms idle out of 1000 ms) with act_freq = 0, cur_freq = 900 -> "900 MHz"
+            //               and NPU active (1 ctx, DPU 950 MHz, NCE 543 MHz) via heartbeatOnly update!
+            idleResFile.writeText("4960\n")
+            npuActiveCtx = 1L
+            npuDpuRaw = 950_000L
+            npuNceRaw = 542_857L
+            val liveActive = liveCollector.sample(CaffeineConfig(), nowElapsedMs = 11_000L)
+            assertEquals("4%", liveActive.gpu.headlineBusyLabel)
+            assertEquals("900 MHz", liveActive.gpu.headlineFreqLabel)
+            assertEquals("Active · 950 / 2000 MHz", liveActive.npu.headlineLabel)
+            assertEquals(543, liveActive.npu.nceFreqMhz)
+            vm.setSnapshotForTesting(liveActive)
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("4% · 900 MHz").performScrollTo().assertIsDisplayed()
+            composeRule.onNodeWithText("Active · 950 / 2000 MHz").performScrollTo().assertIsDisplayed()
+            composeRule.onNodeWithText("DPU: 950 MHz · NCE: 543 MHz", substring = true).performScrollTo().assertIsDisplayed()
+
+            composeRule.onNodeWithTag("btn_mini_hud").performClick()
+            composeRule.onNodeWithText("GPU 4% (900 MHz) · NPU 950 MHz").assertIsDisplayed()
+            composeRule.onNodeWithText("NCE 543", substring = true).assertIsDisplayed()
         } finally {
             for (f in lockedFiles) {
                 runCatching { f.setReadable(true, false) }

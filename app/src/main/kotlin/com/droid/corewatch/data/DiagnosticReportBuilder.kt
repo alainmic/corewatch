@@ -159,16 +159,38 @@ object DiagnosticReportBuilder {
                 ),
             )
             if (snapshot.npu.isPresent && snapshot.npu.sysfsCountersReadable) {
+                val nceSuffix = snapshot.npu.nceFreqMhz?.takeIf { it > 0 }?.let { ", NCE `$it MHz`" } ?: ""
                 appendLine(
                     String.format(
                         Locale.US,
-                        "| **NPU Accelerator** | `%s` (`%s`, `%s`) — `%d%%` active (`%d / %d MHz`, `%s`, `%d / %d` contexts) |",
+                        "| **NPU Accelerator** | `%s` (`%s`, `%s`) — `%d%%` active (`%d / %d MHz`%s, `%s`, `%d / %d` contexts) |",
                         SysfsParsers.sanitizeSensorName(snapshot.npu.deviceName, "NPU"),
                         SysfsParsers.sanitizeSensorName(snapshot.npu.driverName, "accel"),
                         SysfsParsers.sanitizeSensorName(snapshot.npu.firmwareVersion, "v1.0"),
                         (snapshot.npu.utilizationFraction * 100f).roundToInt(),
                         snapshot.npu.currentFreqMhz,
                         snapshot.npu.maxFreqMhz,
+                        nceSuffix,
+                        snapshot.npu.scalingStateLabel,
+                        snapshot.npu.activeContexts,
+                        snapshot.npu.maxContexts,
+                    ),
+                )
+            } else if (snapshot.npu.isPresent && snapshot.npu.hasLiveClock) {
+                val nceSuffix = snapshot.npu.nceFreqMhz?.takeIf { it > 0 }?.let { ", NCE `$it MHz`" } ?: ""
+                val statePart = if (snapshot.npu.activeContexts == 0 && snapshot.npu.currentFreqMhz == 0) {
+                    "`0%` idle (`0 / ${snapshot.npu.maxFreqMhz} MHz` D3cold"
+                } else {
+                    "`Active` (`${snapshot.npu.currentFreqMhz} / ${snapshot.npu.maxFreqMhz} MHz`$nceSuffix"
+                }
+                appendLine(
+                    String.format(
+                        Locale.US,
+                        "| **NPU Accelerator** | `%s` (`%s`, `%s`) — %s, `%s`, `%d / %d` contexts) |",
+                        SysfsParsers.sanitizeSensorName(snapshot.npu.deviceName, "NPU"),
+                        SysfsParsers.sanitizeSensorName(snapshot.npu.driverName, "accel"),
+                        SysfsParsers.sanitizeSensorName(snapshot.npu.firmwareVersion, "v1.0"),
+                        statePart,
                         snapshot.npu.scalingStateLabel,
                         snapshot.npu.activeContexts,
                         snapshot.npu.maxContexts,

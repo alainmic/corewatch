@@ -28,8 +28,25 @@ data class IvpuParamInfo(
     val engineHeartbeat: Long,
     val tileConfig: Long,
     val activeContexts: Int = 0,
+    val liveDpuClockRaw: Long = -1L,
+    val liveNceClockRaw: Long = -1L,
+    val hasLiveClockIoctl: Boolean = false,
 ) {
     val maxClockMhz: Int get() = (maxClockHz / 1_000_000L).toInt().coerceAtLeast(0)
+
+    val liveDpuClockMhz: Int?
+        get() = if (hasLiveClockIoctl && liveDpuClockRaw >= 0L) {
+            normalizeRawClockToMhz(liveDpuClockRaw)
+        } else {
+            null
+        }
+
+    val liveNceClockMhz: Int?
+        get() = if (hasLiveClockIoctl && liveNceClockRaw >= 0L) {
+            normalizeRawClockToMhz(liveNceClockRaw)
+        } else {
+            null
+        }
 
     val deviceIdHex: String
         get() = String.format(Locale.US, "0x%04X", deviceId and 0xFFFF)
@@ -41,6 +58,17 @@ data class IvpuParamInfo(
             val minor = fwApiVersionRaw and 0xFFFFL
             return "v$major.$minor"
         }
+
+    companion object {
+        internal fun normalizeRawClockToMhz(raw: Long): Int {
+            if (raw <= 0L) return 0
+            return when {
+                raw >= 100_000_000L -> ((raw + 500_000L) / 1_000_000L).toInt()
+                raw >= 100_000L -> ((raw + 500L) / 1_000L).toInt()
+                else -> raw.toInt()
+            }.coerceIn(0, 10_000)
+        }
+    }
 }
 
 /**
@@ -161,6 +189,9 @@ object AccelIoctlBridge {
             engineHeartbeat = raw[5].coerceAtLeast(0L),
             tileConfig = raw[6].coerceAtLeast(0L),
             activeContexts = raw.getOrNull(7)?.toInt()?.coerceAtLeast(0) ?: 0,
+            liveDpuClockRaw = raw.getOrNull(8) ?: -1L,
+            liveNceClockRaw = raw.getOrNull(9) ?: -1L,
+            hasLiveClockIoctl = (raw.getOrNull(10) ?: 0L) != 0L,
         )
     }
 }

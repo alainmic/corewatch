@@ -2464,7 +2464,7 @@ class TelemetryCollector(
         if (!parsed.actualFreqAvailable) {
             return parsed
         }
-        gpuActualFreqRing.push(parsed.actualFreqMhz.toFloat())
+        gpuActualFreqRing.push(parsed.operatingFreqMhz.toFloat())
         return parsed.copy(avgActualFreqMhz = gpuActualFreqRing.average().roundToInt())
     }
 
@@ -2488,6 +2488,9 @@ class TelemetryCollector(
                 cachedIvpuStaticParams = cachedIvpuStaticParams!!.copy(
                     engineHeartbeat = hbUpdate.engineHeartbeat,
                     activeContexts = hbUpdate.activeContexts,
+                    liveDpuClockRaw = hbUpdate.liveDpuClockRaw,
+                    liveNceClockRaw = hbUpdate.liveNceClockRaw,
+                    hasLiveClockIoctl = hbUpdate.hasLiveClockIoctl,
                 )
             }
         }

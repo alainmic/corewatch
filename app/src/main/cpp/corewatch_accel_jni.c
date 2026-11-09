@@ -5,7 +5,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <drm/drm.h>
@@ -29,8 +31,30 @@ struct cw_drm_ivpu_param {
     uint64_t value;
 };
 
+struct cw_drm_ivpu_metric_streamer_start {
+    uint64_t metric_group_mask;
+    uint64_t sampling_period_ns;
+    uint32_t read_period_samples;
+    uint32_t sample_size;
+    uint32_t max_data_size;
+};
+
+struct cw_drm_ivpu_metric_streamer_get_data {
+    uint64_t metric_group_mask;
+    uint64_t buffer_ptr;
+    uint64_t buffer_size;
+    uint64_t data_size;
+};
+
+struct cw_drm_ivpu_metric_streamer_stop {
+    uint64_t metric_group_mask;
+};
+
 #define CW_DRM_IOCTL_VERSION _IOWR('d', 0x00, struct cw_drm_version)
 #define CW_DRM_IOCTL_IVPU_GET_PARAM _IOWR('d', 0x40 + 0x00, struct cw_drm_ivpu_param)
+#define CW_DRM_IOCTL_IVPU_METRIC_STREAMER_START _IOWR('d', 0x40 + 0x07, struct cw_drm_ivpu_metric_streamer_start)
+#define CW_DRM_IOCTL_IVPU_METRIC_STREAMER_STOP _IOW('d', 0x40 + 0x08, struct cw_drm_ivpu_metric_streamer_stop)
+#define CW_DRM_IOCTL_IVPU_METRIC_STREAMER_GET_DATA _IOWR('d', 0x40 + 0x09, struct cw_drm_ivpu_metric_streamer_get_data)
 
 #define CW_DRM_IVPU_PARAM_DEVICE_ID       0
 #define CW_DRM_IVPU_PARAM_DEVICE_REVISION 1
@@ -94,6 +118,60 @@ Java_com_droid_corewatch_data_AccelIoctlBridge_nativeQueryDrmVersion(
     return (*env)->NewStringUTF(env, formatted);
 }
 
+static pthread_mutex_t g_msMutex = PTHREAD_MUTEX_INITIALIZER;
+static int g_msFd = -1;
+static uint64_t g_curStreamDpuRaw = 0;
+static uint64_t g_curStreamNceRaw = 0;
+static int g_idleStreamPolls = 0;
+static jlong g_suspendedAtContexts = 0;
+
+static void cw_close_metric_streamer_locked(void) {
+    if (g_msFd >= 0) {
+        struct cw_drm_ivpu_metric_streamer_stop sp = { .metric_group_mask = 0x4ULL };
+        ioctl(g_msFd, CW_DRM_IOCTL_IVPU_METRIC_STREAMER_STOP, &sp);
+        close(g_msFd);
+        g_msFd = -1;
+    }
+    g_curStreamDpuRaw = 0;
+    g_curStreamNceRaw = 0;
+    g_idleStreamPolls = 0;
+}
+
+static int cw_drain_metric_streamer_locked(uint64_t *outDpu, uint64_t *outNce) {
+    uint64_t freqBuf[512];
+    memset(freqBuf, 0, sizeof(freqBuf));
+    struct cw_drm_ivpu_metric_streamer_get_data gd;
+    memset(&gd, 0, sizeof(gd));
+    gd.metric_group_mask = 0x4ULL;
+    gd.buffer_ptr = (uint64_t)(uintptr_t)freqBuf;
+    gd.buffer_size = sizeof(freqBuf);
+    if (ioctl(g_msFd, CW_DRM_IOCTL_IVPU_METRIC_STREAMER_GET_DATA, &gd) != 0) {
+        cw_close_metric_streamer_locked();
+        return 0;
+    }
+
+    uint64_t intervalPeakDpu = 0;
+    uint64_t intervalPeakNce = 0;
+    if (gd.data_size >= 24) {
+        size_t totalU64 = (size_t)(gd.data_size / 8);
+        if (totalU64 > 512) totalU64 = 512;
+        for (size_t base = 0; base + 2 < totalU64; base += 3) {
+            uint64_t dpu = freqBuf[base];
+            uint64_t nce = freqBuf[base + 1];
+            if (dpu >= intervalPeakDpu) {
+                intervalPeakDpu = dpu;
+                intervalPeakNce = nce;
+            }
+            g_curStreamDpuRaw = dpu;
+            g_curStreamNceRaw = nce;
+        }
+    }
+
+    *outDpu = (intervalPeakDpu > 0) ? intervalPeakDpu : g_curStreamDpuRaw;
+    *outNce = (intervalPeakDpu > 0) ? intervalPeakNce : g_curStreamNceRaw;
+    return 1;
+}
+
 JNIEXPORT jlongArray JNICALL
 Java_com_droid_corewatch_data_AccelIoctlBridge_nativeQueryIvpuParams(
     JNIEnv *env,
@@ -106,21 +184,90 @@ Java_com_droid_corewatch_data_AccelIoctlBridge_nativeQueryIvpuParams(
     const char *path = (*env)->GetStringUTFChars(env, pathJstr, NULL);
     if (path == NULL) return NULL;
 
-    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    char pathBuf[128];
+    snprintf(pathBuf, sizeof(pathBuf), "%s", path);
     (*env)->ReleaseStringUTFChars(env, pathJstr, path);
+
+    int fd = open(pathBuf, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) {
+        pthread_mutex_lock(&g_msMutex);
+        cw_close_metric_streamer_locked();
+        pthread_mutex_unlock(&g_msMutex);
         return NULL;
     }
 
-    jlong out[8];
+    jlong out[11];
     memset(out, 0, sizeof(out));
+    out[8] = -1;
+    out[9] = -1;
+    out[10] = 0;
 
+    pthread_mutex_lock(&g_msMutex);
     struct cw_drm_ivpu_param ctx = { .param = CW_DRM_IVPU_PARAM_CONTEXT_ID, .index = 0, .value = 0 };
+    int ctxOk = (ioctl(fd, CW_DRM_IOCTL_IVPU_GET_PARAM, &ctx) == 0);
+    /* Subtract our probe fd (2) plus our persistent metric streamer fd (1) if currently open. */
+    uint64_t selfContextBase = (g_msFd >= 0) ? 3ULL : 2ULL;
     jlong activeContexts = 0;
-    if (ioctl(fd, CW_DRM_IOCTL_IVPU_GET_PARAM, &ctx) == 0 && ctx.value >= 2) {
-        activeContexts = (jlong)(ctx.value - 2);
+    if (ctxOk && ctx.value >= selfContextBase) {
+        activeContexts = (jlong)(ctx.value - selfContextBase);
     }
     out[7] = activeContexts;
+
+    if (ctxOk) {
+        if (activeContexts == 0) {
+            /* Zero external NPU client contexts: close streamer if open so NPU sleeps in D3cold (0 MHz). */
+            cw_close_metric_streamer_locked();
+            g_suspendedAtContexts = 0;
+            out[8] = 0;
+            out[9] = 0;
+            out[10] = 1;
+        } else if (g_msFd < 0 && g_suspendedAtContexts > 0 && activeContexts == g_suspendedAtContexts) {
+            /* Leaked idle client context already went quiescent; avoid holding NPU runtime PM awake. */
+            out[8] = 0;
+            out[9] = 0;
+            out[10] = 1;
+        } else {
+            g_suspendedAtContexts = 0;
+            if (g_msFd < 0) {
+                g_msFd = open(pathBuf, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+                if (g_msFd >= 0) {
+                    struct cw_drm_ivpu_metric_streamer_start st;
+                    memset(&st, 0, sizeof(st));
+                    st.metric_group_mask = 0x4ULL;
+                    st.sampling_period_ns = 4000000ULL;
+                    st.read_period_samples = 1;
+                    if (ioctl(g_msFd, CW_DRM_IOCTL_IVPU_METRIC_STREAMER_START, &st) == 0) {
+                        g_curStreamDpuRaw = 0;
+                        g_curStreamNceRaw = 0;
+                        g_idleStreamPolls = 0;
+                        usleep(45000); /* Initial 45 ms window on 0->1 context transition */
+                    } else {
+                        close(g_msFd);
+                        g_msFd = -1;
+                    }
+                }
+            }
+            if (g_msFd >= 0) {
+                uint64_t dpuRaw = 0;
+                uint64_t nceRaw = 0;
+                if (cw_drain_metric_streamer_locked(&dpuRaw, &nceRaw)) {
+                    out[8] = (jlong)dpuRaw;
+                    out[9] = (jlong)nceRaw;
+                    out[10] = 1;
+                    if (dpuRaw == 0) {
+                        g_idleStreamPolls++;
+                        if (g_idleStreamPolls >= 3) {
+                            cw_close_metric_streamer_locked();
+                            g_suspendedAtContexts = activeContexts;
+                        }
+                    } else {
+                        g_idleStreamPolls = 0;
+                    }
+                }
+            }
+        }
+    }
+    pthread_mutex_unlock(&g_msMutex);
 
     if (heartbeatOnly) {
         if (activeContexts > 0) {
@@ -157,9 +304,9 @@ Java_com_droid_corewatch_data_AccelIoctlBridge_nativeQueryIvpuParams(
     }
 
     close(fd);
-    jlongArray arr = (*env)->NewLongArray(env, 8);
+    jlongArray arr = (*env)->NewLongArray(env, 11);
     if (arr != NULL) {
-        (*env)->SetLongArrayRegion(env, arr, 0, 8, out);
+        (*env)->SetLongArrayRegion(env, arr, 0, 11, out);
     }
     return arr;
 }
