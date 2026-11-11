@@ -14,3 +14,11 @@ captures/
 *.ap_
 *.dex
 .DS_Store
+
+# Signing & Google Play credentials (NEVER commit)
+*.jks
+*.keystore
+keystore.properties
+play-store-keys.json
+*play-account*.json
+*service-account*.json

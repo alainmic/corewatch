@@ -1,9 +1,18 @@
+import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.compose.compiler)
+  alias(libs.plugins.play.publisher)
   jacoco
+}
+
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+  if (keystorePropsFile.exists()) {
+    keystorePropsFile.inputStream().use { load(it) }
+  }
 }
 
 base.archivesName.set("Corewatch")
@@ -20,11 +29,31 @@ android {
     // Universal APK bundling 16KB-aligned x86_64 and arm64-v8a JNI bridges with pure-Kotlin fallbacks.
   }
 
+  signingConfigs {
+    create("upload") {
+      storeFile = file(
+        System.getenv("ANDROID_UPLOAD_KEYSTORE_PATH")
+          ?: keystoreProps.getProperty("storeFile")
+          ?: "upload-key.jks"
+      )
+      storePassword = System.getenv("ANDROID_UPLOAD_KEYSTORE_PASSWORD")
+        ?: keystoreProps.getProperty("storePassword")
+      keyAlias = System.getenv("ANDROID_UPLOAD_KEY_ALIAS")
+        ?: keystoreProps.getProperty("keyAlias")
+      keyPassword = System.getenv("ANDROID_UPLOAD_KEY_PASSWORD")
+        ?: keystoreProps.getProperty("keyPassword")
+      enableV1Signing = true
+      enableV2Signing = true
+      enableV3Signing = true
+    }
+  }
+
   buildTypes {
     debug {
       enableUnitTestCoverage = true
     }
     release {
+      signingConfig = signingConfigs.getByName("upload")
       isMinifyEnabled = true
       isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -61,6 +90,15 @@ android {
 
 kotlin {
   compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
+}
+
+play {
+  // Path to the Google Play Service Account JSON key file (relative to app/ directory)
+  serviceAccountCredentials.set(
+    file(System.getenv("ANDROID_PLAY_CREDENTIALS_PATH") ?: "play-store-keys.json")
+  )
+  track.set(System.getenv("ANDROID_PLAY_TRACK") ?: "internal")
+  defaultToAppBundles.set(true)
 }
 
 dependencies {

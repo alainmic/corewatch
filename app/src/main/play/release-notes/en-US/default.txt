@@ -1,0 +1,6 @@
+v1.1.2 (Build 4)
+• Live NPU metric-streamer clocks and 120Hz interval-aware GPU clock telemetry
+• Full 7-tab desktop hardware telemetry workbench & translucent Mini-HUD
+• Live CPU P/E core clocks, GPU/NPU counters, and USB-C PD battery wattage (W = V × I)
+• Variable Refresh Rate (VRR) residency, frame-jank profiler & 30Hz dock warnings
+• Split Wi-Fi 7 / 6E & 2.5GbE/10GbE Ethernet inspector + verbose AP beacon scanner

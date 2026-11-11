@@ -1,0 +1,1 @@
+CPU/GPU/NPU, thermal, wattage, VRR, Wi-Fi 7, USB & RAM monitor + Caffeine

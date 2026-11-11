@@ -1,0 +1,33 @@
+Corewatch brings high-density desktop hardware telemetry, power profiling, and keep-awake control to Android laptops, tablets, and phones—with zero network transmission and zero ads.
+
+KEY FEATURES
+
+• Dual-Layout Desktop Workbench & Floating Mini-HUD
+Switch between a full 7-tab diagnostic workbench and a translucent, draggable Always-On-Top Picture-in-Picture Mini-HUD with live 60-second sparklines for CPU, GPU & NPU, Thermal, Battery, and RAM/zram Swap. Configurable polling intervals (250ms, 500ms, 1s, 2s).
+
+• Thermals, Per-Core CPU, GPU & NPU Accelerators
+Inspect real-time thermal status, predictive thermal headroom, sensor zones, exact CPU model identification, per-core P-Core/E-Core frequencies, C-state idle residency, GPU active duty cycle & clocks (Intel Xe / i915 & Qualcomm Adreno), hardware throttle flags, and NPU accelerator telemetry.
+
+• Live Battery Wattage (W = V × I) & USB-C PD Profiler
+Track signed real-time charging/discharging wattage, voltage, current, cycle count, battery health, estimated runtime remaining, and session power curves.
+
+• "Caffeine" Keep-Awake Controller & Quick Settings Tile
+Prevent your device from dimming or sleeping during long builds, downloads, or docked presentations. Includes 30m / 1h / Indefinite timers, smart auto-triggers (AC power or external display connected), a Quick Settings tile, and an automatic <15% low-battery safety cutoff.
+
+• Variable Refresh Rate (VRR), Frame Jank & External Display Auditor
+Inspect built-in and external HDMI / USB-C DP Alt-Mode monitors, VRR / Adaptive Refresh Rate steps, rolling 5-minute refresh-rate time-in-state residency, VRR-aware frame jank & dropped-frame histograms, HDR capabilities, and 30Hz dock bottleneck warnings.
+
+• Wi-Fi 7 (802.11be), Multi-Gig Wired Ethernet & Verbose AP Scanner
+Monitor Wi-Fi 7/6E/6/5 link metrics, MLO links, RSSI sparklines, regulatory channel tables (2.4 / 5 / 6 GHz), surrounding AP beacon capabilities (channel width, security AKMs, QBSS load), and physical USB-C / Thunderbolt Ethernet speed tiers (10GbE / 2.5GbE / 1GbE) with 100Mbps cable bottleneck detection.
+
+• Bluetooth Audio Codec & Peripheral Inspector
+Verify negotiated Bluetooth audio codecs (LDAC, aptX HD, AAC, LC3 LE Audio, Opus, SBC), sample rates, bit depth, per-profile audio packet drops/underflows, and connected peripheral battery levels.
+
+• Multi-Tier USB & Type-C Topology Auditor
+Visualize physical xHCI USB 2.0 / 3.2 / USB4 / Thunderbolt controller and dock trees, negotiated link speeds (up to 40 Gbps), bus power budgets, bound kernel drivers, and SuperSpeed downgrade warnings.
+
+• Memory, zram Swap & PSI Pressure + 1-Click Markdown Report
+Monitor system RAM, zram compression ratios, kernel Pressure Stall Information (PSI), LMKD pressure, and copy a complete, privacy-scrubbed Markdown hardware snapshot in one click.
+
+100% LOCAL & PRIVATE
+Corewatch does not request the INTERNET permission. All telemetry stays strictly on your device.

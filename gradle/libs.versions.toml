@@ -12,6 +12,7 @@ coroutines = "1.10.2"
 junit = "4.13.2"
 kotlin = "2.3.20"
 nav3Core = "1.0.1"
+playPublisher = "4.1.1"
 robolectric = "4.16"
 
 [libraries]
@@ -40,3 +41,4 @@ robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectr
 [plugins]
 android-application = { id = "com.android.application", version.ref = "androidGradlePlugin" }
 compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+play-publisher = { id = "com.github.triplet.play", version.ref = "playPublisher" }
