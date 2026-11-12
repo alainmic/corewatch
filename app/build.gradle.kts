@@ -24,8 +24,8 @@ android {
     applicationId = "com.droid.corewatch"
     minSdk = 26
     targetSdk = 36
-    versionCode = 4
-    versionName = "1.1.2"
+    versionCode = 5
+    versionName = "1.1.3"
     // Universal APK bundling 16KB-aligned x86_64 and arm64-v8a JNI bridges with pure-Kotlin fallbacks.
   }
 

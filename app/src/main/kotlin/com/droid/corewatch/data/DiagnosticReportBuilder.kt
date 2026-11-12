@@ -244,7 +244,8 @@ object DiagnosticReportBuilder {
                         "System-Wide GraphicsStats"
                     }
                 snapshot.frameJank.isSystemWideTimeStats -> "System-Wide SF TimeStats"
-                else -> "App-Window FrameMetrics"
+                !snapshot.frameJank.hasDumpPermission -> "System-Wide GraphicsStats Locked"
+                else -> "System-Wide GraphicsStats Initializing"
             }
             appendLine(
                 String.format(

@@ -107,6 +107,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -116,6 +117,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.max
+import com.droid.corewatch.R
 import com.droid.corewatch.data.BandChannelSummary
 import com.droid.corewatch.data.CaffeineDuration
 import com.droid.corewatch.data.CoreCluster
@@ -2083,12 +2085,22 @@ private fun DisplaysTab(state: CorewatchUiState, vm: CorewatchViewModel) {
                         modifier = Modifier.weight(1f, fill = false),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
-                        Text(
-                            text = "Dropped & Janky Frames (Last 5 Mins · VRR-Aware)",
-                            style = MaterialTheme.typography.titleMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text(
+                                text = "Dropped & Janky Frames (Last 5 Mins · VRR-Aware)",
+                                style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                            BetaBadge(
+                                text = stringResource(R.string.badge_beta),
+                                modifier = Modifier.testTag("frame_jank_beta_badge"),
+                            )
+                        }
                         Text(
                             text = jank.windowSummaryLabel,
                             style = CorewatchMonoTypography.hudSmall,
@@ -2177,10 +2189,13 @@ private fun DisplaysTab(state: CorewatchUiState, vm: CorewatchViewModel) {
                     color = cs.onSurfaceVariant,
                 )
                 Text(
-                    text = if (jank.isSystemWideGraphicsStats) {
-                        "VRR Deadline Accounting: System-wide HWUI FrameTimeline / GraphicsStats across all apps ${jank.deadlineRangeLabel}"
-                    } else {
-                        "VRR Deadline Accounting: Per-frame dynamic FrameMetrics.DEADLINE ${jank.deadlineRangeLabel}"
+                    text = when {
+                        jank.isSystemWideGraphicsStats ->
+                            "VRR Deadline Accounting: System-wide HWUI FrameTimeline / GraphicsStats across all apps ${jank.deadlineRangeLabel}"
+                        !jank.hasDumpPermission ->
+                            "VRR Deadline Accounting: Waiting for system-wide GraphicsStats permission"
+                        else ->
+                            "VRR Deadline Accounting: Initializing system-wide HWUI FrameTimeline / GraphicsStats baseline..."
                     },
                     style = CorewatchMonoTypography.hudSmall,
                     color = cs.primary,
@@ -2202,7 +2217,7 @@ private fun DisplaysTab(state: CorewatchUiState, vm: CorewatchViewModel) {
                                 verticalArrangement = Arrangement.spacedBy(2.dp),
                             ) {
                                 Text(
-                                    text = "App-Window Fallback Active (System-Wide GraphicsStats Locked)",
+                                    text = "System-Wide GraphicsStats Locked",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = cs.onSurface,
                                 )
@@ -5259,6 +5274,25 @@ private fun ShortcutsDialog(onDismiss: () -> Unit) {
             TextButton(onClick = onDismiss) { Text("Close") }
         },
     )
+}
+
+@Composable
+private fun BetaBadge(text: String, modifier: Modifier = Modifier) {
+    val cs = MaterialTheme.colorScheme
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(cs.tertiaryContainer.copy(alpha = 0.85f))
+            .padding(horizontal = 6.dp, vertical = 1.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            color = cs.onTertiaryContainer,
+        )
+    }
 }
 
 @Composable

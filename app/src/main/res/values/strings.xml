@@ -2,4 +2,5 @@
 <resources>
     <string name="app_name">Corewatch</string>
     <string name="caffeine_tile_label">Corewatch Caffeine</string>
+    <string name="badge_beta" description="Compact pill badge label shown next to the Dropped &amp; Janky Frames card title to indicate beta status. [CHAR_LIMIT=12]">Beta</string>
 </resources>

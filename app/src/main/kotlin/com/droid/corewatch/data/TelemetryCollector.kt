@@ -2689,7 +2689,7 @@ class TelemetryCollector(
                         }
                     }
                 } catch (_: Throwable) {
-                    // Ignore process sandbox failures (falls back to Window FrameMetrics)
+                    // Ignore process sandbox failures when querying graphicsstats
                 } finally {
                     gfxStatsRefreshInFlight = false
                 }

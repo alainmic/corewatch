@@ -180,7 +180,11 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
             0f
         }
         wifiSignalRing.push(normalizedRssiPct)
-        jankRing.push(snap.frameJank.latestIntervalJankPercent)
+        if (!snap.frameJank.hasDumpPermission) {
+            jankRing.clear()
+        } else {
+            jankRing.push(snap.frameJank.latestIntervalJankPercent)
+        }
 
         val hist = TelemetryHistoryStats(
             cpuLoadSamples = cpuRing.toList(),
@@ -304,35 +308,6 @@ class CorewatchViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setSamplingInterval(interval: SamplingInterval) {
         _state.update { it.copy(samplingInterval = interval) }
-    }
-
-    fun recordFrameMetric(
-        totalDurationNs: Long,
-        deadlineNs: Long,
-        gpuDurationNs: Long,
-        intendedVsyncNs: Long,
-        vsyncNs: Long,
-        cpuStagesDurationNs: Long = -1L,
-        swapBuffersDurationNs: Long = -1L,
-        isFirstDrawFrame: Boolean = false,
-        droppedReportCount: Int = 0,
-        nowElapsedMs: Long = SystemClock.elapsedRealtime(),
-    ) {
-        val primaryDisplay = _state.value.snapshot.displays.firstOrNull()
-        val fallbackHz = primaryDisplay?.renderFrameRateHz ?: primaryDisplay?.activeRefreshHz ?: 120f
-        collector.vrrAndFrameTracker.recordFrameMetric(
-            nowElapsedMs = nowElapsedMs,
-            totalDurationNs = totalDurationNs,
-            deadlineNs = deadlineNs,
-            gpuDurationNs = gpuDurationNs,
-            intendedVsyncNs = intendedVsyncNs,
-            vsyncNs = vsyncNs,
-            fallbackHz = fallbackHz,
-            cpuStagesDurationNs = cpuStagesDurationNs,
-            swapBuffersDurationNs = swapBuffersDurationNs,
-            isFirstDrawFrame = isFirstDrawFrame,
-            droppedReportCount = droppedReportCount,
-        )
     }
 
     fun onTrimMemoryLevel(level: Int) {

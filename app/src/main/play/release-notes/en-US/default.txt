@@ -1,6 +1,6 @@
-v1.1.2 (Build 4)
+v1.1.3 (Build 5)
+• Added inline Beta badge to the Dropped & Janky Frames (VRR-Aware) card
+• Excluded Corewatch's own window from frame-jank stats and removed self-window fallback
+• Display zeroed frame-jank metrics until DUMP + PACKAGE_USAGE_STATS permissions are granted
 • Live NPU metric-streamer clocks and 120Hz interval-aware GPU clock telemetry
-• Full 7-tab desktop hardware telemetry workbench & translucent Mini-HUD
-• Live CPU P/E core clocks, GPU/NPU counters, and USB-C PD battery wattage (W = V × I)
-• Variable Refresh Rate (VRR) residency, frame-jank profiler & 30Hz dock warnings
-• Split Wi-Fi 7 / 6E & 2.5GbE/10GbE Ethernet inspector + verbose AP beacon scanner
+• Full 7-tab desktop hardware telemetry workbench, Mini-HUD, VRR, Wi-Fi 7, Bluetooth & USB diagnostics

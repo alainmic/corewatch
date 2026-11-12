@@ -481,44 +481,13 @@ class CorewatchDataUnitTest {
         assertEquals(120, buckets[0].hz)
         assertEquals(60, buckets[1].hz)
 
-        // Frame metrics: 1 smooth frame (6ms vs 8.33ms deadline) + 1 janky/dropped frame (20ms vs 8.33ms deadline)
-        tracker.recordFrameMetric(
-            nowElapsedMs = 2_000L,
-            totalDurationNs = 6_000_000L,
-            deadlineNs = 8_333_333L,
-            gpuDurationNs = 2_000_000L,
-            intendedVsyncNs = 100_000_000L,
-            vsyncNs = 100_000_000L,
-        )
-        tracker.recordFrameMetric(
-            nowElapsedMs = 2_200L,
-            totalDurationNs = 20_000_000L,
-            deadlineNs = 16_666_666L,
-            gpuDurationNs = 3_000_000L,
-            intendedVsyncNs = 120_000_000L,
-            vsyncNs = 140_000_000L,
-        )
-        val frameSnap = tracker.snapshotFrames(2_500L, defaultHz = 120)
-        assertEquals(2, frameSnap.evaluatedFrames5m)
-        assertEquals(1, frameSnap.jankyFrames5m)
-        assertEquals(1, frameSnap.droppedFrames5m)
-        assertEquals(1, frameSnap.longCpuJank5m)
-        assertEquals("[60, 120] Hz", frameSnap.deadlineRangeLabel)
-
-        // 1Hz VRR low-cadence frame where SurfaceFlinger FrameTimeline allocates a 60 Hz (16.67ms) deadline
-        // and RC6/PSR wakeup completes in 12.5ms -> smooth (within FrameMetrics.DEADLINE).
-        tracker.recordFrameMetric(
-            nowElapsedMs = 3_200L,
-            totalDurationNs = 12_500_000L,
-            deadlineNs = 16_666_666L,
-            gpuDurationNs = 8_000_000L,
-            intendedVsyncNs = 1_140_000_000L,
-            vsyncNs = 1_140_000_000L,
-            cpuStagesDurationNs = 4_500_000L,
-        )
-        val afterIdleWakeup = tracker.snapshotFrames(3_500L, defaultHz = 120)
-        assertEquals(3, afterIdleWakeup.evaluatedFrames5m)
-        assertEquals(1, afterIdleWakeup.jankyFrames5m)
+        // Without DUMP permission, frame metrics stay zeroed and locked (never reading self app-window metrics).
+        val lockedSnap = tracker.snapshotFrames(2_500L, defaultHz = 120, hasDumpPermission = false)
+        assertEquals(0, lockedSnap.evaluatedFrames5m)
+        assertEquals(0, lockedSnap.jankyFrames5m)
+        assertEquals(0, lockedSnap.droppedFrames5m)
+        assertEquals("SYSTEM-WIDE (LOCKED)", lockedSnap.scopeBadgeLabel)
+        assertEquals("[120] Hz", lockedSnap.deadlineRangeLabel)
     }
 
     @Test
@@ -1191,351 +1160,30 @@ class CorewatchDataUnitTest {
     }
 
     @Test
-    fun frameJankTrackerZeroAndSmoothStreamReportsZeroPercentDroppedAndJanky() {
+    fun frameJankTrackerZeroedWhenDumpPermissionLockedOrInitializing() {
         val tracker = VrrAndFrameWindowTracker(windowHorizonMs = 300_000L)
-        val emptySnap = tracker.snapshotFrames(nowElapsedMs = 1_000L, defaultHz = 120)
-        assertEquals(0, emptySnap.evaluatedFrames5m)
-        assertEquals(0, emptySnap.expectedFrames5m)
-        assertEquals(0, emptySnap.droppedFrames5m)
-        assertEquals(0, emptySnap.jankyFrames5m)
-        assertEquals(0f, emptySnap.droppedPercent5m, 0.001f)
-        assertEquals(0f, emptySnap.jankyPercent5m, 0.001f)
-        assertEquals(0f, emptySnap.latestIntervalJankPercent, 0.001f)
-        assertEquals("00:00 / 05:00", emptySnap.windowElapsedLabel)
-        assertEquals("[120] Hz", emptySnap.deadlineRangeLabel)
+        val lockedSnap = tracker.snapshotFrames(nowElapsedMs = 1_000L, defaultHz = 60, hasDumpPermission = false)
+        assertFalse(lockedSnap.hasDumpPermission)
+        assertFalse(lockedSnap.isSystemWide)
+        assertEquals("SYSTEM-WIDE (LOCKED)", lockedSnap.scopeBadgeLabel)
+        assertEquals(0, lockedSnap.evaluatedFrames5m)
+        assertEquals(0, lockedSnap.expectedFrames5m)
+        assertEquals(0, lockedSnap.droppedFrames5m)
+        assertEquals(0, lockedSnap.jankyFrames5m)
+        assertEquals(0f, lockedSnap.droppedPercent5m, 0.001f)
+        assertEquals(0f, lockedSnap.jankyPercent5m, 0.001f)
+        assertEquals(0f, lockedSnap.latestIntervalJankPercent, 0.001f)
+        assertEquals("00:00 / 05:00", lockedSnap.windowElapsedLabel)
+        assertEquals("[60] Hz", lockedSnap.deadlineRangeLabel)
 
-        // 120 smooth 120 Hz frames (6.0ms <= 8.33ms) + 60 smooth 60 Hz VRR frames (12.0ms <= 16.67ms)
-        repeat(120) { i ->
-            val vsyncNs = (i + 1L) * 8_333_333L
-            tracker.recordFrameMetric(
-                nowElapsedMs = 1_000L + (i * 8L),
-                totalDurationNs = 6_000_000L,
-                deadlineNs = 8_333_333L,
-                gpuDurationNs = 2_000_000L,
-                intendedVsyncNs = vsyncNs,
-                vsyncNs = vsyncNs,
-                cpuStagesDurationNs = 3_800_000L,
-                swapBuffersDurationNs = 200_000L,
-            )
-        }
-        repeat(60) { i ->
-            val vsyncNs = 1_000_000_000L + (i + 1L) * 16_666_667L
-            tracker.recordFrameMetric(
-                nowElapsedMs = 2_000L + (i * 16L),
-                totalDurationNs = 12_000_000L,
-                deadlineNs = 16_666_667L,
-                gpuDurationNs = 3_000_000L,
-                intendedVsyncNs = vsyncNs,
-                vsyncNs = vsyncNs,
-                cpuStagesDurationNs = 8_500_000L,
-                swapBuffersDurationNs = 500_000L,
-            )
-        }
-
-        val smoothSnap = tracker.snapshotFrames(nowElapsedMs = 3_000L, defaultHz = 120)
-        assertEquals(180, smoothSnap.evaluatedFrames5m)
-        assertEquals(180, smoothSnap.expectedFrames5m)
-        assertEquals(0, smoothSnap.droppedFrames5m)
-        assertEquals(0, smoothSnap.jankyFrames5m)
-        assertEquals(0f, smoothSnap.droppedPercent5m, 0.001f)
-        assertEquals(0f, smoothSnap.jankyPercent5m, 0.001f)
-        assertEquals(0f, smoothSnap.latestIntervalJankPercent, 0.001f)
-        assertEquals("[60, 120] Hz", smoothSnap.deadlineRangeLabel)
-    }
-
-    @Test
-    fun frameJankTrackerSustainedSubRefreshRatesReflectExactDroppedAndJankyPercentages() {
-        val deadline60HzNs = 16_666_667L
-
-        // Case 1: 30 FPS on 60 Hz (30 frames each taking 25ms -> 1 missed VSync per frame = 30 dropped / 60 expected = 50.00%)
-        val halfRateTracker = VrrAndFrameWindowTracker()
-        repeat(30) { i ->
-            val vsyncNs = (i + 1L) * 33_333_334L
-            halfRateTracker.recordFrameMetric(
-                nowElapsedMs = 1_000L + (i * 33L),
-                totalDurationNs = 25_000_000L,
-                deadlineNs = deadline60HzNs,
-                gpuDurationNs = 4_000_000L,
-                intendedVsyncNs = vsyncNs,
-                vsyncNs = vsyncNs,
-                cpuStagesDurationNs = 20_500_000L,
-                swapBuffersDurationNs = 500_000L,
-            )
-        }
-        val halfRateSnap = halfRateTracker.snapshotFrames(nowElapsedMs = 2_000L, defaultHz = 60)
-        assertEquals(30, halfRateSnap.evaluatedFrames5m)
-        assertEquals(30, halfRateSnap.jankyFrames5m)
-        assertEquals(30, halfRateSnap.droppedFrames5m)
-        assertEquals(60, halfRateSnap.expectedFrames5m)
-        assertEquals(100.0f, halfRateSnap.jankyPercent5m, 0.01f)
-        assertEquals(50.0f, halfRateSnap.droppedPercent5m, 0.01f)
-
-        // Case 2: 45 FPS on 60 Hz (30 smooth 10ms frames + 15 late 25ms frames -> 15/45 = 33.33% janky, 15/60 = 25.00% dropped)
-        val threeQuarterTracker = VrrAndFrameWindowTracker()
-        repeat(30) { i ->
-            val vsyncNs = (i + 1L) * deadline60HzNs
-            threeQuarterTracker.recordFrameMetric(
-                nowElapsedMs = 1_000L + (i * 16L),
-                totalDurationNs = 10_000_000L,
-                deadlineNs = deadline60HzNs,
-                gpuDurationNs = 2_000_000L,
-                intendedVsyncNs = vsyncNs,
-                vsyncNs = vsyncNs,
-                cpuStagesDurationNs = 7_500_000L,
-            )
-        }
-        repeat(15) { i ->
-            val vsyncNs = 600_000_000L + (i + 1L) * 33_333_334L
-            threeQuarterTracker.recordFrameMetric(
-                nowElapsedMs = 1_500L + (i * 33L),
-                totalDurationNs = 25_000_000L,
-                deadlineNs = deadline60HzNs,
-                gpuDurationNs = 3_000_000L,
-                intendedVsyncNs = vsyncNs,
-                vsyncNs = vsyncNs,
-                cpuStagesDurationNs = 21_500_000L,
-            )
-        }
-        val threeQuarterSnap = threeQuarterTracker.snapshotFrames(nowElapsedMs = 2_000L, defaultHz = 60)
-        assertEquals(45, threeQuarterSnap.evaluatedFrames5m)
-        assertEquals(15, threeQuarterSnap.jankyFrames5m)
-        assertEquals(15, threeQuarterSnap.droppedFrames5m)
-        assertEquals(60, threeQuarterSnap.expectedFrames5m)
-        assertEquals(33.33f, threeQuarterSnap.jankyPercent5m, 0.02f)
-        assertEquals(25.00f, threeQuarterSnap.droppedPercent5m, 0.01f)
-
-        // Case 3: 15 FPS on 60 Hz (15 frames each taking 55ms -> 3 missed VSyncs per frame = 45 dropped / 60 expected = 75.00%)
-        val quarterRateTracker = VrrAndFrameWindowTracker()
-        repeat(15) { i ->
-            val vsyncNs = (i + 1L) * 66_666_668L
-            quarterRateTracker.recordFrameMetric(
-                nowElapsedMs = 1_000L + (i * 66L),
-                totalDurationNs = 55_000_000L,
-                deadlineNs = deadline60HzNs,
-                gpuDurationNs = 5_000_000L,
-                intendedVsyncNs = vsyncNs,
-                vsyncNs = vsyncNs,
-                cpuStagesDurationNs = 49_000_000L,
-            )
-        }
-        val quarterRateSnap = quarterRateTracker.snapshotFrames(nowElapsedMs = 2_000L, defaultHz = 60)
-        assertEquals(15, quarterRateSnap.evaluatedFrames5m)
-        assertEquals(15, quarterRateSnap.jankyFrames5m)
-        assertEquals(45, quarterRateSnap.droppedFrames5m)
-        assertEquals(60, quarterRateSnap.expectedFrames5m)
-        assertEquals(100.0f, quarterRateSnap.jankyPercent5m, 0.01f)
-        assertEquals(75.0f, quarterRateSnap.droppedPercent5m, 0.01f)
-    }
-
-    @Test
-    fun frameJankTrackerMultiVsyncFreezeDistinguishesDroppedSlotRatioFromJankyFrameRatio() {
-        val tracker = VrrAndFrameWindowTracker()
-        val deadline60HzNs = 16_666_667L
-
-        // 30 smooth frames (0.5s) followed by 1 catastrophic 500ms UI freeze (overrun = 483.33ms -> 29 missed VSyncs)
-        repeat(30) { i ->
-            val vsyncNs = (i + 1L) * deadline60HzNs
-            tracker.recordFrameMetric(
-                nowElapsedMs = 1_000L + (i * 16L),
-                totalDurationNs = 7_000_000L,
-                deadlineNs = deadline60HzNs,
-                gpuDurationNs = 2_000_000L,
-                intendedVsyncNs = vsyncNs,
-                vsyncNs = vsyncNs,
-                cpuStagesDurationNs = 4_800_000L,
-            )
-        }
-        tracker.recordFrameMetric(
-            nowElapsedMs = 1_980L,
-            totalDurationNs = 500_000_000L,
-            deadlineNs = deadline60HzNs,
-            gpuDurationNs = 3_000_000L,
-            intendedVsyncNs = 600_000_000L,
-            vsyncNs = 1_080_000_000L,
-            cpuStagesDurationNs = 496_000_000L,
-        )
-
-        val snap = tracker.snapshotFrames(nowElapsedMs = 2_000L, defaultHz = 60)
-        assertEquals(31, snap.evaluatedFrames5m)
-        assertEquals(1, snap.jankyFrames5m)
-        assertEquals(29, snap.droppedFrames5m)
-        assertEquals(60, snap.expectedFrames5m)
-        assertEquals(1, snap.sfMissedFrames5m)
-        assertEquals(1, snap.longCpuJank5m)
-        // 1 of 31 rendered frames missed deadline (3.23%), while 29 of 60 expected VSyncs were dropped (48.33%)
-        assertEquals(3.23f, snap.jankyPercent5m, 0.02f)
-        assertEquals(48.33f, snap.droppedPercent5m, 0.02f)
-    }
-
-    @Test
-    fun frameJankTrackerHonorsPerFrameVrrDeadlineOverStaleFallbackHzAndExemptsFirstDraw() {
-        val tracker = VrrAndFrameWindowTracker()
-
-        // First-draw cold layout inflate (150ms) is exempt from display jank/drop evaluation, while recording droppedReports.
-        tracker.recordFrameMetric(
-            nowElapsedMs = 1_000L,
-            totalDurationNs = 150_000_000L,
-            deadlineNs = 8_333_333L,
-            gpuDurationNs = 12_000_000L,
-            intendedVsyncNs = 100_000_000L,
-            vsyncNs = 200_000_000L,
-            isFirstDrawFrame = true,
-            droppedReportCount = 2,
-        )
-        val afterFirstDraw = tracker.snapshotFrames(nowElapsedMs = 1_100L, defaultHz = 120)
-        assertEquals(0, afterFirstDraw.evaluatedFrames5m)
-        assertEquals(0, afterFirstDraw.jankyFrames5m)
-        assertEquals(0, afterFirstDraw.droppedFrames5m)
-        assertEquals(2, afterFirstDraw.droppedReports5m)
-
-        // VRR panel ramps from 20 Hz idle to 120 Hz (deadline = 8.33ms), while 1Hz Display sample fallbackHz is still stale at 20 Hz.
-        // A 14ms frame MUST be flagged as janky against its real 8.33ms FrameMetrics.DEADLINE.
-        tracker.recordFrameMetric(
-            nowElapsedMs = 1_200L,
-            totalDurationNs = 14_000_000L,
-            deadlineNs = 8_333_333L,
-            gpuDurationNs = 2_000_000L,
-            intendedVsyncNs = 300_000_000L,
-            vsyncNs = 300_000_000L,
-            fallbackHz = 20f,
-            cpuStagesDurationNs = 11_500_000L,
-            droppedReportCount = 1,
-        )
-        val afterVrrRamp = tracker.snapshotFrames(nowElapsedMs = 1_300L, defaultHz = 120)
-        assertEquals(1, afterVrrRamp.evaluatedFrames5m)
-        assertEquals(1, afterVrrRamp.jankyFrames5m)
-        assertEquals(1, afterVrrRamp.droppedFrames5m)
-        assertEquals(3, afterVrrRamp.droppedReports5m)
-        assertEquals(100.0f, afterVrrRamp.jankyPercent5m, 0.01f)
-        assertEquals(50.0f, afterVrrRamp.droppedPercent5m, 0.01f)
-        assertEquals("[120] Hz", afterVrrRamp.deadlineRangeLabel)
-
-        // When deadlineNs is unavailable (-1L), fallbackHz (60 Hz -> 16.67ms) is used cleanly.
-        tracker.recordFrameMetric(
-            nowElapsedMs = 1_400L,
-            totalDurationNs = 12_000_000L,
-            deadlineNs = -1L,
-            gpuDurationNs = 2_000_000L,
-            intendedVsyncNs = 320_000_000L,
-            vsyncNs = 320_000_000L,
-            fallbackHz = 60f,
-            cpuStagesDurationNs = 9_500_000L,
-        )
-        val afterFallback = tracker.snapshotFrames(nowElapsedMs = 1_500L, defaultHz = 120)
-        assertEquals(2, afterFallback.evaluatedFrames5m)
-        assertEquals(1, afterFallback.jankyFrames5m)
-        assertEquals("[60, 120] Hz", afterFallback.deadlineRangeLabel)
-    }
-
-    @Test
-    fun frameJankTrackerClassifiesLongCpuLongGpuBufferStuffingAndMissedVsyncAccurately() {
-        val tracker = VrrAndFrameWindowTracker()
-        val deadlineNs = 16_666_667L
-
-        // 1. Long CPU + Choreographer Missed VSync (vsyncSlip = 17ms, cpu = 19ms, gpu = 2ms, swap = 0.2ms, total = 21.2ms)
-        tracker.recordFrameMetric(
-            nowElapsedMs = 1_000L,
-            totalDurationNs = 21_200_000L,
-            deadlineNs = deadlineNs,
-            gpuDurationNs = 2_000_000L,
-            intendedVsyncNs = 100_000_000L,
-            vsyncNs = 117_000_000L,
-            cpuStagesDurationNs = 19_000_000L,
-            swapBuffersDurationNs = 200_000L,
-        )
-        // 2. Long GPU (vsyncSlip = 0, cpu = 3ms, gpu = 16ms, swap = 0.2ms, total = 19.2ms)
-        tracker.recordFrameMetric(
-            nowElapsedMs = 1_100L,
-            totalDurationNs = 19_200_000L,
-            deadlineNs = deadlineNs,
-            gpuDurationNs = 16_000_000L,
-            intendedVsyncNs = 200_000_000L,
-            vsyncNs = 200_000_000L,
-            cpuStagesDurationNs = 3_000_000L,
-            swapBuffersDurationNs = 200_000L,
-        )
-        // 3. Buffer Stuffing via SWAP_BUFFERS_DURATION stall (vsyncSlip = 0, cpu = 3ms, gpu = 2ms, swap = 15ms, total = 20ms)
-        tracker.recordFrameMetric(
-            nowElapsedMs = 1_200L,
-            totalDurationNs = 20_000_000L,
-            deadlineNs = deadlineNs,
-            gpuDurationNs = 2_000_000L,
-            intendedVsyncNs = 300_000_000L,
-            vsyncNs = 300_000_000L,
-            cpuStagesDurationNs = 3_000_000L,
-            swapBuffersDurationNs = 15_000_000L,
-        )
-
-        val snap = tracker.snapshotFrames(nowElapsedMs = 1_300L, defaultHz = 60)
-        assertEquals(3, snap.evaluatedFrames5m)
-        assertEquals(3, snap.jankyFrames5m)
-        assertEquals(3, snap.droppedFrames5m)
-        assertEquals(1, snap.longCpuJank5m)
-        assertEquals(1, snap.longGpuJank5m)
-        assertEquals(1, snap.bufferStuffing5m)
-        assertEquals(1, snap.sfMissedFrames5m)
-    }
-
-    @Test
-    fun frameJankTrackerRollingFiveMinutePruningAndIdleSparklineDecay() {
-        val tracker = VrrAndFrameWindowTracker(windowHorizonMs = 300_000L)
-        val deadlineNs = 16_666_667L
-
-        // At t = 1,000ms: 2 smooth + 2 janky frames -> 50.0% interval jank
-        repeat(2) { i ->
-            tracker.recordFrameMetric(
-                nowElapsedMs = 1_000L + (i * 16L),
-                totalDurationNs = 8_000_000L,
-                deadlineNs = deadlineNs,
-                gpuDurationNs = 2_000_000L,
-                intendedVsyncNs = 100_000_000L,
-                vsyncNs = 100_000_000L,
-                cpuStagesDurationNs = 5_500_000L,
-            )
-            tracker.recordFrameMetric(
-                nowElapsedMs = 1_100L + (i * 33L),
-                totalDurationNs = 24_000_000L,
-                deadlineNs = deadlineNs,
-                gpuDurationNs = 2_000_000L,
-                intendedVsyncNs = 200_000_000L,
-                vsyncNs = 200_000_000L,
-                cpuStagesDurationNs = 21_500_000L,
-            )
-        }
-        val activeSnap = tracker.snapshotFrames(nowElapsedMs = 1_500L, defaultHz = 60)
-        assertEquals(50.0f, activeSnap.jankyPercent5m, 0.01f)
-        assertEquals(50.0f, activeSnap.latestIntervalJankPercent, 0.01f)
-
-        // At t = 5,000ms (screen static for 3.8s): 60s sparkline latestIntervalJankPercent decays to 0%,
-        // while the 5-minute cumulative jank % remains 50.0%.
-        val idleSnap = tracker.snapshotFrames(nowElapsedMs = 5_000L, defaultHz = 60)
-        assertEquals(50.0f, idleSnap.jankyPercent5m, 0.01f)
-        assertEquals(0.0f, idleSnap.latestIntervalJankPercent, 0.001f)
-        assertEquals("00:04 / 05:00", idleSnap.windowElapsedLabel)
-
-        // At t = 305,000ms (> 300s after t = 1,000ms bucket): old jank ages out completely.
-        val expiredSnap = tracker.snapshotFrames(nowElapsedMs = 305_000L, defaultHz = 60)
-        assertEquals(0, expiredSnap.evaluatedFrames5m)
-        assertEquals(0, expiredSnap.jankyFrames5m)
-        assertEquals(0, expiredSnap.droppedFrames5m)
-        assertEquals(0.0f, expiredSnap.jankyPercent5m, 0.001f)
-        assertEquals(0.0f, expiredSnap.droppedPercent5m, 0.001f)
-        assertEquals("00:00 / 05:00", expiredSnap.windowElapsedLabel)
-
-        // Recording a fresh smooth frame after expiration starts a fresh window duration (00:01 / 05:00, not 05:00 / 05:00).
-        tracker.recordFrameMetric(
-            nowElapsedMs = 306_000L,
-            totalDurationNs = 8_000_000L,
-            deadlineNs = deadlineNs,
-            gpuDurationNs = 2_000_000L,
-            intendedVsyncNs = 500_000_000L,
-            vsyncNs = 500_000_000L,
-            cpuStagesDurationNs = 5_500_000L,
-        )
-        val freshWindowSnap = tracker.snapshotFrames(nowElapsedMs = 307_200L, defaultHz = 60)
-        assertEquals(1, freshWindowSnap.evaluatedFrames5m)
-        assertEquals(0f, freshWindowSnap.jankyPercent5m, 0.001f)
-        assertEquals("00:01 / 05:00", freshWindowSnap.windowElapsedLabel)
+        val initSnap = tracker.snapshotFrames(nowElapsedMs = 1_200L, defaultHz = 120, hasDumpPermission = true)
+        assertTrue(initSnap.hasDumpPermission)
+        assertFalse(initSnap.isSystemWide)
+        assertEquals("SYSTEM-WIDE (INITIALIZING)", initSnap.scopeBadgeLabel)
+        assertEquals(0, initSnap.evaluatedFrames5m)
+        assertEquals(0f, initSnap.droppedPercent5m, 0.001f)
+        assertEquals(0f, initSnap.jankyPercent5m, 0.001f)
+        assertEquals("[120] Hz", initSnap.deadlineRangeLabel)
     }
 
     @Test
@@ -1819,23 +1467,26 @@ class CorewatchDataUnitTest {
             50th gpu percentile: 4950ms
             HISTOGRAM: 5ms=0 4950ms=0
             GPU HISTOGRAM: 1ms=0 4950ms=0
+
+            UID: 1010279
+            Package: com.droid.corewatch
+            Version: 4
+            Stats since: 1793664000025ns
+            Stats end: 1793715546093ns
+            Total frames rendered: 100
+            Janky frames: 20 (20.00%)
+            Number Slow UI thread: 20
+            Number Frame deadline missed: 20
+            HISTOGRAM: 5ms=80 28ms=20
+            GPU HISTOGRAM: 2ms=100
         """.trimIndent()
 
         val parsedT0 = GraphicsStatsParsers.parseDumpsysGraphicsStats(dumpT0)
-        assertEquals(4, parsedT0.size)
+        assertEquals(5, parsedT0.size)
         assertTrue(parsedT0[3].cpuHistogramMsCounts.isEmpty())
         assertTrue(parsedT0[3].gpuHistogramMsCounts.isEmpty())
 
         val tracker = VrrAndFrameWindowTracker(windowHorizonMs = 300_000L)
-        // Also record 1 app-window FrameMetrics frame so we can verify fallback vs system-wide separation
-        tracker.recordFrameMetric(
-            nowElapsedMs = 900L,
-            totalDurationNs = 6_000_000L,
-            deadlineNs = 8_333_333L,
-            gpuDurationNs = 1_500_000L,
-            intendedVsyncNs = 10_000_000L,
-            vsyncNs = 10_000_000L,
-        )
 
         // 3. First GraphicsStats sample at t=1000ms establishes baseline with 0 historical leak!
         tracker.recordGraphicsStatsSample(nowElapsedMs = 1_000L, records = parsedT0, effectiveHz = 120f)
@@ -1853,6 +1504,7 @@ class CorewatchDataUnitTest {
         // - SystemUI (UID 1010204): +30 smooth frames (same package name -> still 1 distinct app for systemui)
         // - Chrome (UID 1010180): +60 frames, +1 janky (1 at 18ms -> 2 missed slots, 0 slow CPU, 0 GPU overrun, +1 deadline missed -> +1 buffer stuffing!)
         // - Newly launched app (com.example.editor, statsSince >= baselineMax): 40 frames, 1 janky (1 at 26ms -> 3 missed slots, GPU 12ms=1 -> +1 long GPU)
+        // - Self package (com.droid.corewatch): +250 frames, +60 janky with 300ms stalls -> MUST be excluded!
         val dumpT1 = """
             UID: 10204
             Package: com.android.systemui
@@ -1917,12 +1569,24 @@ class CorewatchDataUnitTest {
             Number Frame deadline missed: 1
             HISTOGRAM: 6ms=39 26ms=1
             GPU HISTOGRAM: 2ms=39 12ms=1
+
+            UID: 1010279
+            Package: com.droid.corewatch
+            Version: 4
+            Stats since: 1793664000025ns
+            Stats end: 1793717546093ns
+            Total frames rendered: 350
+            Janky frames: 80 (22.86%)
+            Number Slow UI thread: 80
+            Number Frame deadline missed: 80
+            HISTOGRAM: 5ms=270 28ms=75 300ms=5
+            GPU HISTOGRAM: 2ms=350
         """.trimIndent()
 
         val parsedT1 = GraphicsStatsParsers.parseDumpsysGraphicsStats(dumpT1)
         tracker.recordGraphicsStatsSample(nowElapsedMs = 3_000L, records = parsedT1, effectiveHz = 120f)
         val snapT1 = tracker.snapshotFrames(nowElapsedMs = 3_000L, defaultHz = 120, hasDumpPermission = true)
-        assertEquals(250, snapT1.evaluatedFrames5m) // 120 + 30 + 60 + 40
+        assertEquals(250, snapT1.evaluatedFrames5m) // 120 + 30 + 60 + 40 (com.droid.corewatch excluded!)
         assertEquals(4, snapT1.jankyFrames5m) // 2 + 0 + 1 + 1
         assertEquals(13, snapT1.droppedFrames5m) // 8 + 0 + 2 + 3
         assertEquals(3, snapT1.activeAppCount5m) // systemui, chrome, editor
@@ -1939,12 +1603,18 @@ class CorewatchDataUnitTest {
         assertFalse(report.contains("com.android.chrome"))
         assertFalse(report.contains("com.example.editor"))
 
-        // 5. Automatic fallback to APP WINDOW (FRAMEMETRICS) when DUMP permission is not granted
-        val fallbackSnap = tracker.snapshotFrames(nowElapsedMs = 3_000L, defaultHz = 120, hasDumpPermission = false)
-        assertFalse(fallbackSnap.isSystemWideGraphicsStats)
-        assertFalse(fallbackSnap.isSystemWide)
-        assertEquals("APP WINDOW (FRAMEMETRICS)", fallbackSnap.scopeBadgeLabel)
-        assertEquals(1, fallbackSnap.evaluatedFrames5m)
+        // 5. Locked state (hasDumpPermission = false): zeros out metrics instead of reading Corewatch's own window
+        val lockedSnap = tracker.snapshotFrames(nowElapsedMs = 3_000L, defaultHz = 120, hasDumpPermission = false)
+        assertFalse(lockedSnap.isSystemWideGraphicsStats)
+        assertFalse(lockedSnap.isSystemWide)
+        assertEquals("SYSTEM-WIDE (LOCKED)", lockedSnap.scopeBadgeLabel)
+        assertEquals(0, lockedSnap.evaluatedFrames5m)
+        assertEquals(0, lockedSnap.droppedFrames5m)
+        assertEquals(0, lockedSnap.jankyFrames5m)
+        assertEquals(0f, lockedSnap.droppedPercent5m, 0.001f)
+        assertEquals(0f, lockedSnap.jankyPercent5m, 0.001f)
+        val lockedReport = DiagnosticReportBuilder.buildMarkdownReport(SystemTelemetrySnapshot(frameJank = lockedSnap))
+        assertTrue(lockedReport.contains("System-Wide GraphicsStats Locked"))
 
         // 6. VRR 60Hz budget inference on a 120Hz panel: 59 smooth 12ms frames + 1 janky 20ms frame -> 1 missed 60Hz VSync (not 2)
         val vrrTracker = VrrAndFrameWindowTracker(windowHorizonMs = 300_000L)
